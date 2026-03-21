@@ -34,6 +34,9 @@ jobs:
       - name: Run bootstrap parser tests
         run: python3 tests/bootstrap/test_parser.py
 
+      - name: Run bootstrap scope resolver tests
+        run: python3 tests/bootstrap/test_scope.py
+
   # ── xocore PLAN VM (Linux x86-64 only) ─────────────────────────────────
   plan-vm:
     name: PLAN VM (xocore)

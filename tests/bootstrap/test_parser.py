@@ -630,6 +630,198 @@ def test_cons_right_assoc():
 
 
 # ============================================================
+# Additional expression coverage
+# ============================================================
+
+def test_expr_unary_negate():
+    e = expr('-42')
+    assert isinstance(e, ExprUnary)
+    assert e.op == '-'
+    assert isinstance(e.operand, ExprNat)
+
+def test_expr_unary_not():
+    e = expr('¬True')
+    assert isinstance(e, ExprUnary)
+    assert e.op == '¬'
+
+def test_expr_rawtext():
+    e = expr(r'r"raw\nno-escape"')
+    assert isinstance(e, ExprRawText)
+    assert '\\n' in e.value
+
+def test_expr_bytes():
+    e = expr('b"ABC"')
+    assert isinstance(e, ExprBytes)
+    assert e.value == b'ABC'
+
+def test_expr_hexbytes():
+    e = expr('x"414243"')
+    assert isinstance(e, ExprHexBytes)
+    assert e.value == b'ABC'
+
+def test_expr_pin_with_type():
+    e = expr('@result : Nat = 42 in result')
+    assert isinstance(e, ExprPin)
+    assert e.name == 'result'
+    assert isinstance(e.type_ann, TyCon)
+    assert isinstance(e.rhs, ExprNat)
+
+def test_expr_let_nested():
+    e = expr('let foo = 1 in let bar = 2 in foo')
+    assert isinstance(e, ExprLet)
+    assert isinstance(e.body, ExprLet)
+
+def test_expr_record_update():
+    e = expr('base { x = 1 }')
+    assert isinstance(e, ExprRecordUpdate)
+    assert len(e.fields) == 1
+    assert e.fields[0][0] == 'x'
+
+def test_expr_record_update_multi():
+    e = expr('base { x = 1, y = 2 }')
+    assert isinstance(e, ExprRecordUpdate)
+    assert len(e.fields) == 2
+
+def test_expr_unary_prec():
+    """-foo bar parses as (-foo) bar (unary binds tighter than app)."""
+    e = expr('-foo')
+    assert isinstance(e, ExprUnary)
+    assert e.op == '-'
+
+
+# ============================================================
+# Additional type coverage
+# ============================================================
+
+def test_type_bottom():
+    t = ty('⊥')
+    assert isinstance(t, TyBottom)
+
+def test_type_empty():
+    t = ty('∅')
+    assert isinstance(t, TyEmpty)
+
+def test_type_record():
+    t = ty('{ x : Nat, y : Nat }')
+    assert isinstance(t, TyRecord)
+    assert len(t.fields) == 2
+    assert t.fields[0][0] == 'x'
+    assert t.fields[1][0] == 'y'
+
+def test_type_record_single():
+    t = ty('{ x : Nat }')
+    assert isinstance(t, TyRecord)
+    assert t.fields[0][0] == 'x'
+
+def test_type_arrow_multi():
+    """A → B → C → D is right-associative: A → (B → (C → D))."""
+    t = ty('A → B → C → D')
+    assert isinstance(t, TyArr)
+    assert isinstance(t.to_, TyArr)
+    assert isinstance(t.to_.to_, TyArr)
+
+def test_type_constrained_multi():
+    t = ty('(Eq a, Ord a) => a')
+    assert isinstance(t, TyConstrained)
+    assert len(t.constraints) == 2
+
+def test_type_effect_multi():
+    t = ty('{IO, State s} Nat')
+    assert isinstance(t, TyEffect)
+    assert len(t.row.entries) == 2
+
+def test_type_effect_row_var():
+    t = ty('{IO | r} Nat')
+    assert isinstance(t, TyEffect)
+    assert t.row.row_var is not None
+
+def test_type_decl_alias_with_params():
+    d = decl('type Pair a b = (a, b)')
+    assert isinstance(d, DeclTypeAlias)
+    assert d.params == ['a', 'b']
+
+def test_type_decl_record_with_params():
+    d = decl('type Box a = { value : a }')
+    assert isinstance(d, DeclRecord)
+    assert d.params == ['a']
+    assert d.fields[0][0] == 'value'
+
+def test_type_decl_builtin_with_params():
+    d = decl('type Map k v : builtin')
+    assert isinstance(d, DeclTypeBuiltin)
+    assert d.params == ['k', 'v']
+
+
+# ============================================================
+# Additional pattern coverage
+# ============================================================
+
+def test_pat_text():
+    p_ = pat('"hello"')
+    assert isinstance(p_, PatText)
+    assert p_.value == 'hello'
+
+def test_pat_or_multi():
+    """A | B | C is a 3-way or-pattern."""
+    p_ = pat('A | B | C')
+    assert isinstance(p_, PatOr)
+    assert len(p_.pats) == 3
+
+def test_pat_cons_multi():
+    """a :: b :: [] is a :: (b :: [])."""
+    p_ = pat('foo :: bar :: []')
+    assert isinstance(p_, PatCons)
+    assert isinstance(p_.tail, PatCons)
+
+def test_pat_as_tuple():
+    """(a, b) as pair — as-binding on tuple pattern."""
+    p_ = pat('(foo, bar) as pair')
+    assert isinstance(p_, PatAs)
+    assert isinstance(p_.pat, PatTuple)
+    assert p_.name == 'pair'
+
+
+# ============================================================
+# Additional error path coverage
+# ============================================================
+
+def test_parse_error_empty_match():
+    try:
+        expr('match foo { }')
+        assert False, "should have raised"
+    except ParseError:
+        pass
+
+def test_parse_error_match_no_arrow():
+    try:
+        expr('match foo { | True }')
+        assert False, "should have raised"
+    except ParseError:
+        pass
+
+def test_parse_error_unclosed_effect_row():
+    try:
+        ty('{IO Nat')
+        assert False, "should have raised"
+    except ParseError:
+        pass
+
+def test_parse_error_missing_type():
+    try:
+        p('let foo : = 42')
+        assert False, "should have raised"
+    except ParseError:
+        pass
+
+def test_parse_error_incomplete_lambda():
+    try:
+        expr('λ x →')
+        assert False, "should have raised"
+    except ParseError:
+        pass
+
+
+# ============================================================
 # Run as script
 # ============================================================
 
