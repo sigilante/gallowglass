@@ -4,11 +4,26 @@ PYTHON := python3
 PLANVM ?= planvm
 DOCKER_IMAGE := gallowglass-dev
 
-.PHONY: test test-harness test-plan test-seed test-bootstrap \
-        test-planvm test-planvm-docker docker-build clean help
+.PHONY: test test-ci test-harness test-plan test-seed test-bootstrap \
+        test-planvm test-planvm-docker docker-build _docker-ensure clean help
 
 ## Run all local tests (Python harness only — no planvm required)
 test: test-harness test-bootstrap
+
+## Reproduce full CI locally using Docker (= make test + planvm seed validation).
+## First run builds the Docker image (~5 min); subsequent runs use layer cache.
+## Use this as the gate before opening a PR.
+test-ci: test _docker-ensure
+	@echo "--- planvm seed validation (Docker) ---"
+	docker run --rm -v "$(PWD):/work" $(DOCKER_IMAGE) \
+	    sh -c 'PLANVM=planvm $(PYTHON) tests/planvm/test_seed_planvm.py'
+	@echo "--- All CI checks passed ---"
+
+# Internal: build the Docker image if it doesn't already exist.
+_docker-ensure:
+	@docker image inspect $(DOCKER_IMAGE) > /dev/null 2>&1 \
+	    || (echo "Building $(DOCKER_IMAGE) Docker image (first time only)..." \
+	        && docker build -t $(DOCKER_IMAGE) dev/docker/)
 
 ## Run all Python harness tests
 test-harness: test-plan test-seed
