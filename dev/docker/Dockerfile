@@ -13,7 +13,11 @@
 
 FROM nixos/nix:2.18.1
 
-# Install git and Python into the Nix environment
+# Enable nix-command and flakes (required for `nix develop`).
+RUN mkdir -p /etc/nix && \
+    echo 'experimental-features = nix-command flakes' >> /etc/nix/nix.conf
+
+# Install git and Python into the Nix environment.
 RUN nix-env -iA nixpkgs.git nixpkgs.python312 nixpkgs.gnumake
 
 # Build planvm from source.
