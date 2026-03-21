@@ -1,0 +1,23 @@
+;;; Token type definitions for the Gallowglass bootstrap lexer.
+;;; Written in Sire (PLAN assembly language).
+;;;
+;;; Token types correspond to spec/06-surface-syntax.md §1 (Lexical Grammar).
+;;; Each token is represented as a PLAN value: (tag payload).
+
+;;; Token tags (nat constants):
+;;;   0  TokIdent      -- snake_case identifier or operator name
+;;;   1  TokUpper      -- PascalCase identifier (type/constructor)
+;;;   2  TokNat        -- natural number literal
+;;;   3  TokText       -- text literal (UTF-8 validated)
+;;;   4  TokOp         -- operator (→, λ, ∀, etc.)
+;;;   5  TokPunct      -- punctuation (= | ( ) { } [ ] , ; : . @ _)
+;;;   6  TokKeyword    -- reserved keyword
+;;;   7  TokEOF        -- end of file
+
+;;; Keywords (represented as text nats):
+;;;   let  in  where  if  then  else
+;;;   type  eff  class  instance  module  import  external  mod
+;;;   match  with  handle  return  pin  fix
+;;;   True  False
+
+;;; TODO: Milestone 1 — implement token constructors and predicates.

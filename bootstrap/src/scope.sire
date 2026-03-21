@@ -1,0 +1,23 @@
+;;; Scope resolver for the Gallowglass bootstrap compiler.
+;;; Written in Sire (PLAN assembly language).
+;;;
+;;; Resolves unqualified names to fully-qualified names.
+;;; Tracks the current module, imported names, and local bindings.
+;;;
+;;; After scope resolution, every identifier in the AST is fully qualified:
+;;;   foo          →  Current.Module.foo
+;;;   List.map     →  Core.List.map   (after import Core.List)
+;;;
+;;; The scope environment is a stack of frames:
+;;;   GlobalFrame  module_name  exported_names
+;;;   LocalFrame   bindings
+
+;;; Entry point:
+;;;   resolve : ModuleEnv → Program → Program
+;;;     ModuleEnv: map from module name to its exported bindings.
+
+;;; Errors:
+;;;   Unbound name: file:line:col: error: unbound name `foo`
+;;;   Ambiguous name: file:line:col: error: ambiguous name `map` (imported from X and Y)
+
+;;; TODO: Milestone 2 (alongside parser).

@@ -1,0 +1,21 @@
+;;; Lowering pass: typed AST → Glass IR (restricted subset).
+;;; Written in Sire (PLAN assembly language).
+;;;
+;;; Implements a restricted version of spec/01-glass-ir.md.
+;;; The Glass IR produced by the bootstrap compiler omits:
+;;;   - Effect row annotations (all functions appear pure in Glass IR)
+;;;   - Contract nodes (Proof, Pending)
+;;;   - Dictionary elaboration nodes (WithDict)
+;;;
+;;; Transformations applied:
+;;;   1. Desugar if/then/else → match on Bool
+;;;   2. Desugar tuple literals → left-associated App
+;;;   3. Desugar operator sections → lambda
+;;;   4. Desugar let rec → SCC-aware binding group
+;;;   5. Insert dictionary arguments for typeclass methods
+;;;   6. Resolve @pin expressions to PinExpr nodes
+;;;   7. Assign de Bruijn indices for lambda-lifted SCCs (spec/02)
+;;;
+;;; Output: a list of GlassDecl nodes ready for codegen.
+
+;;; TODO: Milestone 4 (alongside codegen).

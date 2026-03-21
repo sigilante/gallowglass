@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  # ── Local harness tests (Python, any platform) ──────────────────────────
+  harness:
+    name: Harness tests (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run PLAN evaluator tests
+        run: python3 tests/sanity/test_plan.py
+
+      - name: Run seed round-trip tests
+        run: python3 tests/sanity/test_seed.py
+
+      - name: Run bootstrap structural tests
+        run: python3 tests/bootstrap/test_bootstrap.py
+
+  # ── xocore PLAN VM (Linux x86-64 only) ─────────────────────────────────
+  plan-vm:
+    name: PLAN VM (xocore)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Cache Nix store
+        uses: actions/cache@v4
+        with:
+          path: /nix/store
+          key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
+          restore-keys: nix-${{ runner.os }}-
+
+      - name: Clone xocore-tech/PLAN
+        run: |
+          git clone --depth=1 https://github.com/xocore-tech/PLAN.git /tmp/planvm
+
+      - name: Build PLAN VM
+        working-directory: /tmp/planvm
+        run: |
+          nix develop --command make all
+
+      - name: Smoke-test VM (runs Sire REPL on empty input)
+        working-directory: /tmp/planvm
+        run: |
+          echo "" | timeout 10 x/plan xseed/sire.seed || true
+
+      - name: Run xocore test suite
+        working-directory: /tmp/planvm
+        run: |
+          nix develop --command make test
+
+      - name: Make VM available for bootstrap tests
+        run: |
+          cp /tmp/planvm/x/plan /usr/local/bin/planvm
+          cp /tmp/planvm/xseed/sire.seed /tmp/sire.seed
+          echo "planvm installed: $(planvm --version 2>/dev/null || echo 'ok')"
+
+      # Bootstrap compiler tests run here once bootstrap/src/ has content.
+      # Placeholder: verify the VM binary exists and is executable.
+      - name: Bootstrap compiler tests (placeholder)
+        run: |
+          echo "Bootstrap tests: not yet implemented"
+          echo "VM at: $(which planvm)"
+          ls -lh /tmp/sire.seed

@@ -1,0 +1,10 @@
+;;; Bootstrap compiler prelude — utility laws used across all compiler modules.
+;;; Written in Sire (PLAN assembly language).
+;;;
+;;; This file must be loaded before all other bootstrap/src/*.sire files.
+
+;;; TODO: Milestone 1+
+;;; Implement basic list, option, result, and map utilities in Sire.
+;;; These back the compiler's internal data structures.
+
+;;; Placeholder — Sire syntax TBD from xocore boot.sire study.

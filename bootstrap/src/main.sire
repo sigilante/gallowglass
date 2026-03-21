@@ -1,0 +1,30 @@
+;;; Gallowglass bootstrap compiler — top-level driver.
+;;; Written in Sire (PLAN assembly language).
+;;;
+;;; Usage (once built):
+;;;   sire bootstrap/src/main.sire < input.gls > output.seed
+;;;
+;;; The compiler reads Gallowglass restricted dialect source from stdin,
+;;; compiles it through the pipeline defined in BOOTSTRAP.md §3, and
+;;; writes a seed file to stdout.
+;;;
+;;; Load order for Sire toolchain:
+;;;   prelude.sire   ← utility laws
+;;;   token.sire     ← token type definitions
+;;;   ast.sire       ← AST type definitions
+;;;   lexer.sire     ← bytes → token list
+;;;   parser.sire    ← token list → AST
+;;;   scope.sire     ← name resolution
+;;;   typecheck.sire ← HM type inference
+;;;   lower.sire     ← AST → Glass IR
+;;;   codegen.sire   ← Glass IR → PLAN
+;;;   emit.sire      ← PLAN → seed bytes
+;;;   main.sire      ← driver (this file)
+;;;
+;;; Pipeline:
+;;;   src-bytes
+;;;     → lex → parse → resolve → typecheck → lower → codegen → emit
+;;;     → seed-bytes
+
+;;; TODO: Milestone 4 — implement main entry point.
+;;; The driver wires together all pipeline stages and handles top-level errors.

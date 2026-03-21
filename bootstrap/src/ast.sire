@@ -1,0 +1,49 @@
+;;; AST type definitions for the Gallowglass bootstrap parser.
+;;; Written in Sire (PLAN assembly language).
+;;;
+;;; The AST represents the restricted Gallowglass dialect (see BOOTSTRAP.md §2).
+;;; Each node is a PLAN value: (tag field₀ field₁ ...).
+;;; Source locations are threaded through every node as (file, line, col).
+
+;;; Top-level declarations (Program = List Decl):
+;;;   DeclLet    name params type_ann body          -- let binding
+;;;   DeclType   name params constructors            -- algebraic type
+;;;   DeclClass  name param methods                  -- typeclass
+;;;   DeclInst   class_name type methods             -- instance
+;;;   DeclExt    module_name bindings                -- external mod
+;;;   DeclMod    name                                -- module declaration
+;;;   DeclImp    module_name names                   -- import
+
+;;; Expressions:
+;;;   ExprVar    name                                -- variable reference
+;;;   ExprApp    fun arg                             -- application
+;;;   ExprLam    params body                         -- λ expression
+;;;   ExprLet    name params type_ann rhs body       -- local let
+;;;   ExprLetRec bindings body                       -- let rec
+;;;   ExprMatch  scrutinee arms                      -- match expression
+;;;   ExprIf     cond then_ else_                    -- if/then/else
+;;;   ExprTuple  elems                               -- tuple literal
+;;;   ExprNat    value                               -- nat literal
+;;;   ExprText   value                               -- text literal
+;;;   ExprPin    expr                                -- @expr pin
+;;;   ExprOp     op lhs rhs                          -- binary operator
+;;;   ExprSect   side op expr                        -- operator section
+
+;;; Patterns:
+;;;   PatWild                                        -- _
+;;;   PatVar     name                                -- variable
+;;;   PatCon     name args                           -- Constructor pats
+;;;   PatNat     value                               -- nat literal
+;;;   PatTuple   pats                                -- tuple pattern
+;;;   PatAs      name pat                            -- name@pat
+
+;;; Types:
+;;;   TyVar      name                                -- type variable
+;;;   TyCon      name                                -- type constructor
+;;;   TyApp      f arg                               -- type application
+;;;   TyArr      from_ to_                           -- function type
+;;;   TyForall   var body                            -- ∀ a. Type
+;;;   TyEffect   row ty                              -- {EffRow} Type (parsed, not checked)
+;;;   TyTuple    elems                               -- tuple type
+
+;;; TODO: Milestone 2 — implement constructors and field accessors for each node.
