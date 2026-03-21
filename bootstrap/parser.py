@@ -294,7 +294,7 @@ class Parser:
         self._eat(KIND_KEYWORD, 'type')
         name = self._eat(KIND_PASCAL).value
         params = []
-        while self._check(KIND_TYPEVAR):
+        while self._check(KIND_TYPEVAR) or self._check(KIND_ROWVAR):
             params.append(self._advance().value)
 
         # builtin: type Foo : builtin  ('builtin' is KIND_SNAKE, not a keyword)
@@ -535,9 +535,15 @@ class Parser:
 
     def _parse_constrained_type(self) -> TyConstrained:
         loc = self._loc()
-        constraints = [self._parse_constraint()]
-        while self._try_eat(KIND_PUNCT, ','):
-            constraints.append(self._parse_constraint())
+        # (Eq a, Ord a) => T  or  Eq a => T
+        if self._check(KIND_PUNCT, '('):
+            self._advance()
+            constraints = [self._parse_constraint()]
+            while self._try_eat(KIND_PUNCT, ','):
+                constraints.append(self._parse_constraint())
+            self._eat(KIND_PUNCT, ')')
+        else:
+            constraints = [self._parse_constraint()]
         self._eat(KIND_PUNCT, '=>')
         ty = self._parse_type()
         return TyConstrained(constraints, ty, loc)
@@ -554,11 +560,19 @@ class Parser:
     def _parse_eff_type(self) -> Any:
         loc = self._loc()
         if self._check(KIND_PUNCT, '{'):
-            self._advance()
-            row = self._parse_eff_row()
-            self._eat(KIND_PUNCT, '}')
-            ty = self._parse_sum_prod_type()
-            return TyEffect(row, ty, loc)
+            # Distinguish effect row  {IO, State s} T  from record type  {x : T}
+            # Effect entries are PascalCase; record fields are snake/typevar/rowvar.
+            # Use backtracking: if parsing as eff row fails, fall through to
+            # _parse_sum_prod_type which reaches _parse_atom_type handling { as record.
+            saved = self.pos
+            try:
+                self._advance()
+                row = self._parse_eff_row()
+                self._eat(KIND_PUNCT, '}')
+                ty = self._parse_sum_prod_type()
+                return TyEffect(row, ty, loc)
+            except ParseError:
+                self.pos = saved
         return self._parse_sum_prod_type()
 
     def _parse_eff_row(self) -> EffRow:
@@ -850,8 +864,10 @@ class Parser:
     def _parse_mul_expr(self) -> Any:
         loc = self._loc()
         lhs = self._parse_cons_expr()
-        while self._check(KIND_OP) and self._peek().value in ('*', '÷', '/', '^') \
-                or self._check(KIND_KEYWORD, 'mod'):
+        # Note: 'mod' (modulo) is NOT supported as an infix keyword operator
+        # in the bootstrap — it conflicts with 'mod' module declarations.
+        # Use the prelude function instead: Core.Nat.rem foo bar
+        while self._check(KIND_OP) and self._peek().value in ('*', '÷', '/', '^'):
             op = self._advance().value
             rhs = self._parse_cons_expr()
             lhs = ExprOp(op, lhs, rhs, loc)
@@ -890,7 +906,37 @@ class Parser:
             while self._is_app_arg_start():
                 extra_args.append(self._parse_app_arg())
             return ExprWith(expr, dict_, extra_args, loc)
+        # Record update: expr { field = val, ... }
+        # '{' not in _is_app_arg_start (to protect match/handle braces), but
+        # a name followed by '=' inside { } means record update.
+        if self._check(KIND_PUNCT, '{'):
+            t2 = self._peek2()
+            if t2 is not None and t2.kind in (KIND_SNAKE, KIND_TYPEVAR, KIND_ROWVAR):
+                saved = self.pos
+                try:
+                    self._advance()   # consume '{'
+                    fields = self._parse_record_update_fields()
+                    self._eat(KIND_PUNCT, '}')
+                    return ExprRecordUpdate(expr, fields, loc)
+                except ParseError:
+                    self.pos = saved
         return expr
+
+    def _parse_record_update_fields(self) -> list[tuple[str, Any]]:
+        """Parse  name = expr  pairs (for record update expressions)."""
+        fields = []
+        while not self._check(KIND_PUNCT, '}'):
+            t = self._peek()
+            if t.kind in (KIND_SNAKE, KIND_TYPEVAR, KIND_ROWVAR):
+                f_name = self._advance().value
+            else:
+                f_name = self._eat(KIND_SNAKE).value
+            self._eat(KIND_PUNCT, '=')
+            f_val = self._parse_expr()
+            fields.append((f_name, f_val))
+            if not self._try_eat(KIND_PUNCT, ','):
+                break
+        return fields
 
     def _parse_app_expr(self) -> Any:
         loc = self._loc()
@@ -986,6 +1032,8 @@ class Parser:
         self._eat(KIND_KEYWORD, 'match')
         scrutinee = self._parse_expr()
         self._eat(KIND_PUNCT, '{')
+        if not self._check(KIND_PUNCT, '|'):
+            raise self._error("expected at least one match arm (|)")
         arms = []
         while self._check(KIND_PUNCT, '|'):
             arms.append(self._parse_match_arm())

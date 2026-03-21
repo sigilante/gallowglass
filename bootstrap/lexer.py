@@ -310,6 +310,8 @@ class Lexer:
         if esc == 'x':
             h1 = self._advance()
             h2 = self._advance()
+            if h1 not in HEX_CHARS or h2 not in HEX_CHARS:
+                raise LexError(f"invalid hex escape \\x{h1}{h2}", loc)
             return chr(int(h1 + h2, 16))
         raise LexError(f"unknown escape sequence \\{esc}", loc)
 
@@ -414,7 +416,7 @@ class Lexer:
 
         # Unicode operators and keywords
         UNICODE_KW  = frozenset('λ∀∃')
-        UNICODE_OPS = frozenset('←→·⊕⊗⊤⊥∅≠≤≥∈∉⊆÷')
+        UNICODE_OPS = frozenset('←→·⊕⊗⊤⊥∅≠≤≥∈∉⊆÷¬')
         if ch in UNICODE_KW:
             self._advance()
             return Token(KIND_KEYWORD, ch, loc)

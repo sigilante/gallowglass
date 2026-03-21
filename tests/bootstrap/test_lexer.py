@@ -431,6 +431,154 @@ def test_unicode_lambda_direct():
 
 
 # ============================================================
+# Additional keyword coverage
+# ============================================================
+
+def test_keyword_in():
+    assert kinds('in') == [(KIND_KEYWORD, 'in')]
+
+def test_keyword_eff():
+    assert kinds('eff') == [(KIND_KEYWORD, 'eff')]
+
+def test_keyword_class():
+    assert kinds('class') == [(KIND_KEYWORD, 'class')]
+
+def test_keyword_instance():
+    assert kinds('instance') == [(KIND_KEYWORD, 'instance')]
+
+def test_keyword_handle():
+    assert kinds('handle') == [(KIND_KEYWORD, 'handle')]
+
+def test_keyword_then():
+    assert kinds('then') == [(KIND_KEYWORD, 'then')]
+
+def test_keyword_else():
+    assert kinds('else') == [(KIND_KEYWORD, 'else')]
+
+def test_keyword_as():
+    assert kinds('as') == [(KIND_KEYWORD, 'as')]
+
+def test_keyword_with():
+    assert kinds('with') == [(KIND_KEYWORD, 'with')]
+
+def test_keyword_use():
+    assert kinds('use') == [(KIND_KEYWORD, 'use')]
+
+def test_keyword_unit():
+    assert kinds('Unit') == [(KIND_KEYWORD, 'Unit')]
+
+def test_keyword_never():
+    assert kinds('Never') == [(KIND_KEYWORD, 'Never')]
+
+def test_keyword_not_prefix_class():
+    """'classify' is a snake name, not 'class'."""
+    assert kinds('classify') == [(KIND_SNAKE, 'classify')]
+
+def test_keyword_not_prefix_in():
+    """'info' is a snake name, not 'in'."""
+    assert kinds('info') == [(KIND_SNAKE, 'info')]
+
+
+# ============================================================
+# Additional Unicode operator coverage
+# ============================================================
+
+def test_op_sum():
+    assert kinds('⊕') == [(KIND_OP, '⊕')]
+
+def test_op_product():
+    assert kinds('⊗') == [(KIND_OP, '⊗')]
+
+def test_op_top():
+    assert kinds('⊤') == [(KIND_OP, '⊤')]
+
+def test_op_bottom():
+    assert kinds('⊥') == [(KIND_OP, '⊥')]
+
+def test_op_empty_set():
+    assert kinds('∅') == [(KIND_OP, '∅')]
+
+def test_op_element_of():
+    assert kinds('∈') == [(KIND_OP, '∈')]
+
+def test_op_not_element_of():
+    assert kinds('∉') == [(KIND_OP, '∉')]
+
+def test_op_subset():
+    assert kinds('⊆') == [(KIND_OP, '⊆')]
+
+def test_op_compose():
+    assert kinds('·') == [(KIND_OP, '·')]
+
+
+# ============================================================
+# Escape sequence edge cases
+# ============================================================
+
+def test_text_escape_carriage_return():
+    assert kinds(r'"\r"') == [(KIND_TEXT, '\r')]
+
+def test_text_escape_invalid():
+    """Unknown escape sequence should raise LexError."""
+    try:
+        lex(r'"\q"')
+        assert False, "should have raised"
+    except LexError:
+        pass
+
+def test_text_escape_hex_invalid():
+    """Non-hex digits after \\x should raise LexError."""
+    try:
+        lex(r'"\xZZ"')
+        assert False, "should have raised"
+    except LexError:
+        pass
+
+def test_text_escape_hex_incomplete():
+    """Only one hex digit after \\x should raise LexError."""
+    try:
+        lex(r'"\x4"')
+        assert False, "should have raised"
+    except LexError:
+        pass
+
+def test_hex_bytes_invalid_digit():
+    """Non-hex digit inside x"..." should raise LexError."""
+    try:
+        lex('x"ZZ"')
+        assert False, "should have raised"
+    except LexError:
+        pass
+
+
+# ============================================================
+# Multi-char operator/punctuation boundary cases
+# ============================================================
+
+def test_triple_colon_is_cons_then_colon():
+    """':::' lexes as '::' (cons) then ':' (colon)."""
+    result = kinds(':::')
+    assert result == [(KIND_PUNCT, '::'), (KIND_PUNCT, ':')]
+
+def test_triple_dot_is_dotdot_then_dot():
+    """'...' lexes as '..' then '.'."""
+    result = kinds('...')
+    assert result == [(KIND_PUNCT, '..'), (KIND_PUNCT, '.')]
+
+def test_fat_arrow_not_eq_gt():
+    """'=>' is a single token, not '=' then '>'."""
+    assert kinds('=>') == [(KIND_PUNCT, '=>')]
+
+def test_pipe_gt_is_pipe_op():
+    """|> is KIND_OP, not bar then gt."""
+    assert kinds('|>') == [(KIND_OP, '|>')]
+
+def test_plus_plus_is_concat():
+    """'++' is KIND_OP concat, not two '+'."""
+    assert kinds('++') == [(KIND_OP, '++')]
+
+
+# ============================================================
 # Run as script
 # ============================================================
 
