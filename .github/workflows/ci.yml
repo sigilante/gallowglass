@@ -43,12 +43,17 @@ jobs:
       - name: Run bootstrap codegen tests
         run: python3 tests/bootstrap/test_codegen.py
 
-  # ── xocore PLAN VM (Linux x86-64 only) ─────────────────────────────────
+  # ── xocore PLAN VM seed validation (Linux x86-64 only) ──────────────────
   plan-vm:
-    name: PLAN VM (xocore)
+    name: planvm seed validation (xocore)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Install Nix
         uses: cachix/install-nix-action@v27
@@ -66,28 +71,24 @@ jobs:
 
       - name: Clone xocore-tech/PLAN
         run: |
-          git clone --depth=1 https://github.com/xocore-tech/PLAN.git /tmp/planvm
+          git clone --depth=1 https://github.com/xocore-tech/PLAN.git /tmp/planvm-src
 
       - name: Build PLAN VM
-        working-directory: /tmp/planvm
+        working-directory: /tmp/planvm-src
         run: |
           nix develop --command make all
 
-      - name: Smoke-test VM (runs Sire REPL on empty input)
-        working-directory: /tmp/planvm
+      - name: Install planvm
+        run: |
+          cp /tmp/planvm-src/x/plan /usr/local/bin/planvm
+          planvm --help 2>&1 || true
+          echo "planvm: $(which planvm)"
+
+      - name: Smoke-test VM (Sire REPL on empty input)
+        working-directory: /tmp/planvm-src
         run: |
           echo "" | timeout 10 x/plan xseed/sire.seed || true
 
-      - name: Make VM available for bootstrap tests
+      - name: Validate Python-compiled seeds against planvm
         run: |
-          cp /tmp/planvm/x/plan /usr/local/bin/planvm
-          cp /tmp/planvm/xseed/sire.seed /tmp/sire.seed
-          echo "planvm installed: $(planvm --version 2>/dev/null || echo 'ok')"
-
-      # Bootstrap compiler tests run here once bootstrap/src/ has content.
-      # Placeholder: verify the VM binary exists and is executable.
-      - name: Bootstrap compiler tests (placeholder)
-        run: |
-          echo "Bootstrap tests: not yet implemented"
-          echo "VM at: $(which planvm)"
-          ls -lh /tmp/sire.seed
+          PLANVM=planvm python3 tests/planvm/test_seed_planvm.py
