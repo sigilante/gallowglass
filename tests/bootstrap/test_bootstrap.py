@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Bootstrap compiler tests.
+Bootstrap compiler structural tests.
 
-These tests grow with the compiler milestones defined in bootstrap/BOOTSTRAP.md.
-Currently: structural checks only (Milestone 0 placeholder).
+Verifies that the Python bootstrap compiler modules are present and that
+BOOTSTRAP.md documents the current milestone status.
 
 Run: python3 tests/bootstrap/test_bootstrap.py
 """
@@ -12,57 +12,74 @@ import sys
 import os
 
 REPO_ROOT = os.path.join(os.path.dirname(__file__), '..', '..')
-BOOTSTRAP_SRC = os.path.join(REPO_ROOT, 'bootstrap', 'src')
+BOOTSTRAP_DIR = os.path.join(REPO_ROOT, 'bootstrap')
 
-EXPECTED_SOURCES = [
-    'main.sire',
-    'prelude.sire',
-    'token.sire',
-    'lexer.sire',
-    'ast.sire',
-    'parser.sire',
-    'scope.sire',
-    'typecheck.sire',
-    'lower.sire',
-    'codegen.sire',
-    'emit.sire',
+# The Python bootstrap compiler modules (bootstrap/*.py)
+EXPECTED_PYTHON_MODULES = [
+    'lexer.py',
+    'parser.py',
+    'scope.py',
+    'typecheck.py',
+    'codegen.py',
+    'emit.py',
+    'glass_ir.py',
+    'ast.py',
 ]
 
+# The archived Sire stubs (moved to bootstrap/archive/sire/)
+ARCHIVED_SIRE_STUBS = os.path.join(BOOTSTRAP_DIR, 'archive', 'sire')
+
 
 # ============================================================
-# Milestone 0: Structural checks
+# Structural checks
 # ============================================================
 
-def test_bootstrap_src_exists():
-    """bootstrap/src/ directory exists."""
-    assert os.path.isdir(BOOTSTRAP_SRC), \
-        f"bootstrap/src/ not found at {BOOTSTRAP_SRC}"
-
-
-def test_all_source_stubs_present():
-    """All expected Sire source files are present."""
+def test_bootstrap_python_modules_present():
+    """All Python bootstrap compiler modules exist in bootstrap/."""
     missing = []
-    for name in EXPECTED_SOURCES:
-        path = os.path.join(BOOTSTRAP_SRC, name)
+    for name in EXPECTED_PYTHON_MODULES:
+        path = os.path.join(BOOTSTRAP_DIR, name)
         if not os.path.isfile(path):
             missing.append(name)
-    assert not missing, f"Missing bootstrap sources: {missing}"
+    assert not missing, f"Missing bootstrap Python modules: {missing}"
+
+
+def test_sire_stubs_archived():
+    """Sire stubs are in bootstrap/archive/sire/ (not in bootstrap/src/)."""
+    archive_readme = os.path.join(ARCHIVED_SIRE_STUBS, 'README.md')
+    assert os.path.isfile(archive_readme), \
+        "bootstrap/archive/sire/README.md not found — Sire stubs should be archived there"
 
 
 def test_bootstrap_md_exists():
     """bootstrap/BOOTSTRAP.md exists."""
-    path = os.path.join(REPO_ROOT, 'bootstrap', 'BOOTSTRAP.md')
+    path = os.path.join(BOOTSTRAP_DIR, 'BOOTSTRAP.md')
     assert os.path.isfile(path), "bootstrap/BOOTSTRAP.md not found"
 
 
 def test_bootstrap_md_has_milestones():
-    """BOOTSTRAP.md documents milestones."""
-    path = os.path.join(REPO_ROOT, 'bootstrap', 'BOOTSTRAP.md')
+    """BOOTSTRAP.md documents milestones and the Python-first approach."""
+    path = os.path.join(BOOTSTRAP_DIR, 'BOOTSTRAP.md')
     with open(path) as f:
         content = f.read()
     assert 'Milestone' in content, "BOOTSTRAP.md missing Milestone section"
-    assert 'restricted dialect' in content.lower() or 'Restricted Dialect' in content, \
+    assert 'Restricted Dialect' in content or 'restricted dialect' in content.lower(), \
         "BOOTSTRAP.md missing restricted dialect section"
+    assert 'Python' in content, \
+        "BOOTSTRAP.md should document the Python-first bootstrap approach"
+
+
+def test_bootstrap_md_milestones_complete():
+    """BOOTSTRAP.md marks Milestones 1–5 as complete."""
+    path = os.path.join(BOOTSTRAP_DIR, 'BOOTSTRAP.md')
+    with open(path) as f:
+        content = f.read()
+    for i in range(1, 6):
+        assert f'Milestone {i}' in content, \
+            f"BOOTSTRAP.md missing Milestone {i}"
+    # Milestones 1–5 should be marked complete
+    assert '✅' in content, \
+        "BOOTSTRAP.md should mark completed milestones with ✅"
 
 
 # ============================================================

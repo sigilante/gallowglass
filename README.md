@@ -2,5 +2,5 @@
 
 An LLM-first language for PLAN.
 
-![](./img/hero.png)
+![](./img/hero.jpeg)
 
