@@ -23,6 +23,7 @@ test-seed:
 test-bootstrap:
 	$(PYTHON) tests/bootstrap/test_bootstrap.py
 	$(PYTHON) tests/bootstrap/test_lexer.py
+	$(PYTHON) tests/bootstrap/test_parser.py
 
 ## Run the dev harness CLI
 run:

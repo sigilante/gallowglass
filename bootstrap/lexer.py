@@ -51,7 +51,7 @@ class Loc:
 # fmt: off
 KEYWORDS = frozenset([
     'mod', 'let', 'type', 'eff', 'class', 'instance',
-    'match', 'handle', 'return', 'once', 'fix',
+    'match', 'handle', 'return', 'once', 'fix', 'in',
     'pre', 'post', 'inv', 'law',
     'if', 'then', 'else',
     'forall', 'exists',
