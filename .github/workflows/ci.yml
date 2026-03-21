@@ -28,6 +28,9 @@ jobs:
       - name: Run bootstrap structural tests
         run: python3 tests/bootstrap/test_bootstrap.py
 
+      - name: Run bootstrap lexer tests
+        run: python3 tests/bootstrap/test_lexer.py
+
   # ── xocore PLAN VM (Linux x86-64 only) ─────────────────────────────────
   plan-vm:
     name: PLAN VM (xocore)

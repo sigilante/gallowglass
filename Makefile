@@ -22,6 +22,7 @@ test-seed:
 ## Run bootstrap compiler structural tests
 test-bootstrap:
 	$(PYTHON) tests/bootstrap/test_bootstrap.py
+	$(PYTHON) tests/bootstrap/test_lexer.py
 
 ## Run the dev harness CLI
 run:
