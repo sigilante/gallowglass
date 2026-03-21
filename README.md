@@ -1,3 +1,6 @@
 # ☘️ Ᵹallowᵹlaꞅꞅ 🍀
 
 An LLM-first language for PLAN.
+
+![](./img/hero.png)
+
