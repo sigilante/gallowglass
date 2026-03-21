@@ -26,6 +26,7 @@ test-bootstrap:
 	$(PYTHON) tests/bootstrap/test_parser.py
 	$(PYTHON) tests/bootstrap/test_scope.py
 	$(PYTHON) tests/bootstrap/test_typecheck.py
+	$(PYTHON) tests/bootstrap/test_codegen.py
 
 ## Run the dev harness CLI
 run:

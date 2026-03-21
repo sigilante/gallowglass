@@ -40,6 +40,9 @@ jobs:
       - name: Run bootstrap type checker tests
         run: python3 tests/bootstrap/test_typecheck.py
 
+      - name: Run bootstrap codegen tests
+        run: python3 tests/bootstrap/test_codegen.py
+
   # ── xocore PLAN VM (Linux x86-64 only) ─────────────────────────────────
   plan-vm:
     name: PLAN VM (xocore)

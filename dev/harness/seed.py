@@ -220,10 +220,12 @@ def load_seed(data, holes=None):
 
 # --- Serialization ---
 
-def _intern(val, table, refs):
+def _intern(val, table, refs, _live=None):
     """
     Traverse a PLAN value as a DAG, building a deduplicated table.
     Returns the index of val in the table.
+
+    _live: list to keep intermediate objects alive (prevents CPython address reuse).
     """
     # Use id() for object identity deduplication
     vid = id(val)
@@ -243,7 +245,7 @@ def _intern(val, table, refs):
 
     if is_pin(val):
         # Pins become: (MkPin inner_value)
-        inner_idx = _intern(val.val, table, refs)
+        inner_idx = _intern(val.val, table, refs, _live)
         idx = len(table)
         table.append(('pin_app', inner_idx))
         refs[vid] = idx
@@ -254,12 +256,19 @@ def _intern(val, table, refs):
         # where P(1) is the law-creation opcode pin (op 1 = create law).
         # op 1 takes x = A(A(A(0, arity-1), name), body) and returns L(arity, name, body).
         # P(1) itself needs MkPin, so has_pins must be True for this seed.
+        #
+        # Keep the template object alive in _live to prevent CPython from reusing
+        # its memory address (which would cause false id() cache hits for later objects).
         template = A(P(1), A(A(A(0, val.arity - 1), val.name), val.body))
-        return _intern(template, table, refs)
+        if _live is not None:
+            _live.append(template)
+        idx = _intern(template, table, refs, _live)
+        refs[vid] = idx  # cache law id → template idx so re-interning is O(1)
+        return idx
 
     if is_app(val):
-        fun_idx = _intern(val.fun, table, refs)
-        arg_idx = _intern(val.arg, table, refs)
+        fun_idx = _intern(val.fun, table, refs, _live)
+        arg_idx = _intern(val.arg, table, refs, _live)
         idx = len(table)
         table.append(('app', fun_idx, arg_idx))
         refs[vid] = idx
@@ -278,10 +287,13 @@ def save_seed(val):
     Returns:
         bytes: The seed file content.
     """
-    # Internalize the value (may convert Laws to pin-containing templates)
+    # Internalize the value (may convert Laws to pin-containing templates).
+    # _live keeps intermediate template objects alive so CPython does not reuse
+    # their memory addresses, which would corrupt the id()-based dedup cache.
     table = []
     refs = {}
-    _intern(val, table, refs)
+    _live = []
+    _intern(val, table, refs, _live)
 
     # Determine if we need holes AFTER interning — _intern may introduce
     # pin_app entries (e.g. laws become A(P(1), ...) which needs MkPin)
