@@ -218,4 +218,41 @@ Full pre-deployment verification is the primary gate. But jet mismatches will oc
 
 ### Why is the jet registry versioned?
 
-A jet is identified by the PinId of the law it accelerates. If the law changes, its PinId changes, and the jet registration must be renewed. But the jet implementation can also change (corrected) without the law changing. Versioning the registry separately from the law's PinId records this history. `jet_version` is monotonically increasing; `corrected` records when bugs were fixed. This is a
+A jet is identified by the PinId of the law it accelerates. If the law changes, its PinId changes, and the jet registration must be renewed. But the jet implementation can also change (corrected) without the law changing. Versioning the registry separately from the law's PinId records this history. `jet_version` is monotonically increasing; `corrected` records when bugs were fixed.
+
+### Why does jet matching logic live in the optimizer (written in PLAN), not in the runtime?
+
+Implementing jet matching in the runtime (C/assembly) means every new runtime must independently re-implement the matching logic, creating divergence risk between implementations and making portable jet registries difficult. By implementing the optimizer — including its jet-matching component — in PLAN itself, all runtimes share the same matching logic and the same jet registry format. The optimizer is a PLAN value; its behavior is formally specified by the laws it contains, not by what VM is running it.
+
+This requires a bootstrap: the optimizer cannot use its own jet matching while it is being built. The solution is BPLAN (see below).
+
+---
+
+## Platform Layering (BPLAN / XPLAN / JPLAN)
+
+*These distinctions were clarified in design discussions with the PLAN authors and are not yet reflected in the PLAN specification itself.*
+
+### Why BPLAN as a separate bootstrap environment?
+
+BPLAN (Bootstrap PLAN) is an extended version of PLAN where jets are available as primitive operations — i.e., calling a law that has a jet registered for its hash immediately dispatches to the native implementation without interpretation. This is the environment in which the Gallowglass toolchain is built.
+
+The problem BPLAN solves: the optimizer and jet-matching logic need to be written in PLAN (so all runtimes share them), but the optimizer itself requires jets to run at reasonable speed during development. BPLAN threads this needle: during boot, jets are available as primitives; once the optimizer is built, it can be used to verify jet correctness from axioms and to bootstrap pure-PLAN environments via virtualization.
+
+For Gallowglass: the bootstrap compiler's output (Phase 1) runs in BPLAN. All `external mod` declarations (`external mod Core.Nat { add : ... }`) are BPLAN primitive operations. The `External` effect marks these boundaries. This is why `External` is a separate effect from `IO` — it marks a PLAN/BPLAN boundary, not a platform I/O boundary.
+
+### Why XPLAN and JPLAN rather than baking platform APIs into the runtime?
+
+XPLAN (PLAN + amd64-linux syscalls) and JPLAN (PLAN + JavaScript browser APIs) are effect extensions that expose platform-native capabilities as PLAN-visible primitives. In Gallowglass terms, they are additional effect rows: `{Linux.IO | r}` for XPLAN code, `{Browser.IO | r}` for JPLAN code.
+
+The alternative — baking these into the runtime (as Urbit does with Vere's Behn, Ames, timestamps, etc.) — creates a fat runtime that is platform-specific, hard to port, and independent for each new platform. With XPLAN/JPLAN:
+
+- Platform drivers are implemented as PLAN values (not C code), with only the syscall boundary being platform-specific.
+- All runtimes share the same device driver code above the syscall layer.
+- Compatibility across platforms is expressed as virtualization: XPLAN semantics can be implemented by a PLAN interpreter that handles the platform-specific primitives, enabling cross-platform code to run via virtualization rather than recompilation.
+- Porting to a new platform (WASM, RISC-V bare metal, etc.) requires implementing only the thin PLAN + syscall layer, not re-implementing all device drivers.
+
+For Gallowglass: the effect row `{IO | r}` in a function signature should be read as "performs I/O that will be elaborated at link time to either XPLAN or JPLAN primitives, depending on the target." The open row variable `r` enables effect-polymorphic code that can run on any platform extension without modification.
+
+### Why is virtualization the compatibility mechanism rather than a common ABI?
+
+A common ABI requires coordination across all implementations and must be backward-compatible indefinitely. Virtualization (implementing XPLAN semantics as a PLAN handler) allows each platform to evolve independently while providing formal compatibility: an XPLAN program's observable behavior, when run under a PLAN interpreter that implements XPLAN semantics, is identical to running it on native XPLAN. The compatibility contract is a Gallowglass theorem, not an ABI contract.
