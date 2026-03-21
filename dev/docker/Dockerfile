@@ -14,8 +14,11 @@
 FROM --platform=linux/amd64 nixos/nix:2.18.1
 
 # Enable nix-command and flakes (required for `nix develop`).
-RUN mkdir -p /etc/nix && \
-    echo 'experimental-features = nix-command flakes' >> /etc/nix/nix.conf
+# Disable the Nix build sandbox: Docker already provides isolation, and the
+# sandbox requires seccomp BPF syscalls that are blocked inside Docker on macOS.
+RUN mkdir -p /etc/nix && printf \
+    'experimental-features = nix-command flakes\nsandbox = false\n' \
+    > /etc/nix/nix.conf
 
 # Install git and Python into the Nix environment.
 RUN nix-env -iA nixpkgs.git nixpkgs.python312 nixpkgs.gnumake
