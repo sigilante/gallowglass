@@ -1,8 +1,8 @@
 # Gallowglass dev environment with planvm (xocore-tech/PLAN).
 #
-# Builds the PLAN VM from source using Nix, then provides it alongside
-# the Python bootstrap compiler for local testing on macOS (or any host
-# with Docker).
+# Pinned to linux/amd64: the PLAN VM flake only supports x86_64-linux,
+# matching the CI environment. On Apple Silicon, Docker Desktop handles
+# amd64 emulation via Rosetta 2 (slower but correct).
 #
 # Usage:
 #   docker build -t gallowglass-dev dev/docker/
@@ -11,7 +11,7 @@
 # Or via Makefile:
 #   make test-planvm-docker
 
-FROM nixos/nix:2.18.1
+FROM --platform=linux/amd64 nixos/nix:2.18.1
 
 # Enable nix-command and flakes (required for `nix develop`).
 RUN mkdir -p /etc/nix && \
