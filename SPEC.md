@@ -826,16 +826,16 @@ Exhaustiveness spec
 ✅ Complete
 spec/03-exhaustiveness.md
 PLAN encoding spec
-🔲 Needed
+✅ Complete
 spec/04-plan-encoding.md
 Type system spec
-🔲 Needed
+✅ Complete
 spec/05-type-system.md
 Surface syntax spec
-🔲 Needed
+✅ Complete
 spec/06-surface-syntax.md
 Seed format spec
-🔲 Needed
+✅ Complete
 spec/07-seed-format.md
 Bootstrap compiler
 🔲 In progress
