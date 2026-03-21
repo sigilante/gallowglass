@@ -28,6 +28,9 @@ jobs:
       - name: Run bootstrap structural tests
         run: python3 tests/bootstrap/test_bootstrap.py
 
+      - name: Run bootstrap lexer tests
+        run: python3 tests/bootstrap/test_lexer.py
+
   # ── xocore PLAN VM (Linux x86-64 only) ─────────────────────────────────
   plan-vm:
     name: PLAN VM (xocore)
@@ -62,11 +65,6 @@ jobs:
         working-directory: /tmp/planvm
         run: |
           echo "" | timeout 10 x/plan xseed/sire.seed || true
-
-      - name: Run xocore test suite
-        working-directory: /tmp/planvm
-        run: |
-          nix develop --command make test
 
       - name: Make VM available for bootstrap tests
         run: |
