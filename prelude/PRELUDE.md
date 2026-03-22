@@ -1,6 +1,6 @@
 # Core Prelude
 
-**Phase:** Milestone 7
+**Phase:** Milestone 7.5
 **Dialect:** Restricted Gallowglass (see `bootstrap/BOOTSTRAP.md §2`)
 **Compiler:** Python bootstrap (`bootstrap/`)
 **VM:** xocore-tech/PLAN (`x/plan` / `planvm`)
@@ -23,26 +23,35 @@ inlining the required definitions, not by importing them.
 This is intentional: the prelude is small, and inlining is cleaner than
 implementing a module system just to throw it away.
 
-### 2. No external VM primitives (yet)
+### 2. Core.PLAN primitives
 
-`external mod` declarations compile to opaque sentinel pins
-(`P(N(encode_name(fq)))`).  These are accepted by planvm as valid seeds but
-cannot be *called* at runtime.  Operations that require VM opcodes directly
-(increment, nat-case, reflect) must be expressed via the surface syntax the
-bootstrap already compiles:
+`external mod Core.PLAN { ... }` declarations compile to real PLAN opcode pins.
+The bootstrap codegen maps the known `Core.PLAN` operations directly:
 
-| Surface form              | Compiles to                        |
-|---------------------------|------------------------------------|
-| `if c then t else f`      | opcode 3 (Case_) applied to 6 args |
-| `match n { 0 → e0 \| _ → e1 }` | opcode 2 (nat iteration)     |
-| Nat literals              | `N(k)` or `A(N(0), N(k))` in body |
-| `λ x → body`              | PLAN Law                           |
-| `type T = \| C1 \| C2`   | constructor functions              |
+| Gallowglass declaration        | Compiles to | Harness opcode |
+|-------------------------------|-------------|----------------|
+| `Core.PLAN.pin : a → Pin`     | `P(N(0))`   | opcode 0 (Pin) |
+| `Core.PLAN.mk_law : ...`      | `P(N(1))`   | opcode 1 (Law) |
+| `Core.PLAN.inc : Nat → Nat`   | `P(N(2))`   | opcode 2 (Inc) |
+| `Core.PLAN.reflect : ...`     | `P(N(3))`   | opcode 3 (Case_) |
+| `Core.PLAN.force : a → a`     | `P(N(4))`   | opcode 4 (Force) |
 
-No `external mod` declarations appear in the prelude until the self-hosting
-compiler can resolve them to real BPLAN primitives.
+All other `external mod` declarations produce opaque sentinel pins (valid seeds
+but not callable at runtime).
 
-### 3. Self-contained files
+### 3. Surface syntax the bootstrap compiles
+
+| Surface form                        | Compiles to                        |
+|-------------------------------------|------------------------------------|
+| `if c then t else f`                | opcode 3 (Case_) applied to 6 args |
+| `match n { 0 → e0 \| k → use_k }`  | opcode 3 + predecessor binding     |
+| `match opt { None → e \| Some x → f x }` | opcode 3 App handler (field extraction) |
+| Nat literals                        | `N(k)` or `A(N(0), N(k))` in body |
+| `λ x → body`                        | PLAN Law                           |
+| `type T = \| C1 \| C2 a`           | nullary=bare nat, unary=App(tag,field) |
+| Self-recursion (`let f = λ ... → f ...`) | N(0) in law body              |
+
+### 4. Self-contained files
 
 Each `.gls` file must compile and produce planvm-valid seeds for every exported
 `let` declaration.  The test suite validates this automatically.
@@ -52,15 +61,29 @@ Each `.gls` file must compile and produce planvm-valid seeds for every exported
 ## Module Dependency Order
 
 ```
-Core.Combinators    -- id, const, flip, compose  (no deps)
-Core.Bool           -- Bool, and, or, not         (no extern deps; uses if)
-Core.Nat            -- zero, succ_of, pred_of, add, is_zero  (uses match)
-Core.Option         -- Option, map_option, bind_option, with_default
-Core.List           -- List, map, filter, foldl, foldr, append, reverse, length
+Core.Combinators    -- id, const, flip, compose, apply  (no deps)
+Core.Bool           -- not, and, or, xor, bool_eq, bool_select  (uses if)
+Core.Nat            -- pred, is_zero, nat_eq, nat_lt, add, mul  (uses Core.PLAN.inc)
+Core.Option         -- is_none, is_some, with_default, map_option, bind_option
+Core.List           -- is_nil, is_cons, singleton, head, tail, map, filter, foldl, foldr
 ```
 
 Each module is validated independently.  There are no runtime cross-module
 calls (definitions are inlined when needed).
+
+---
+
+## Module Summary
+
+| Module           | Definitions | Description                              |
+|------------------|-------------|------------------------------------------|
+| Core.Combinators | 5           | id, const, flip, compose, apply          |
+| Core.Bool        | 6           | not, and, or, xor, bool_eq, bool_select  |
+| Core.Nat         | 7           | pred, is_zero, nat_eq, nat_lt, add, mul, is_zero |
+| Core.Option      | 7           | None, Some + 5 functions                 |
+| Core.List        | 11          | Nil, Cons + 9 functions                  |
+
+Total: **36 definitions**, all planvm-valid.
 
 ---
 
@@ -72,8 +95,8 @@ prelude/
   src/Core/
     Combinators.gls        ← pure combinators
     Bool.gls               ← Bool type and logical operations
-    Nat.gls                ← Nat utilities built on pattern match
-    Option.gls             ← Option (Maybe) type
+    Nat.gls                ← Nat utilities (inc via Core.PLAN.inc)
+    Option.gls             ← Option (Maybe) type with field extraction
     List.gls               ← List type and higher-order functions
 
 tests/prelude/
@@ -89,8 +112,8 @@ tests/prelude/
 ## Invariants
 
 - Every exported `let` in a prelude module must produce a planvm-valid seed.
-- No module may use `external mod`.
-- No module may use operators (`+`, `-`, `*`, `==`, `<`) — these desugar to
-  `Core.Nat.add` etc., which are unresolved sentinel pins.
+- Only `Core.Nat` uses `external mod Core.PLAN` (for `inc`).
 - Pattern match is the canonical way to dispatch on Nat and algebraic types.
 - `if/then/else` dispatches on Bool (False=0, True=1 nat encoding).
+- Bool globals (`True`, `False`) and nullary constructors compile to bare nats
+  (quote form) inside law bodies — never pinned — so Case_ dispatch is correct.

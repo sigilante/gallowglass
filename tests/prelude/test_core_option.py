@@ -55,6 +55,14 @@ class TestCoreOptionSeeds(unittest.TestCase):
     def test_with_default_seed_loads(self):
         self.assertTrue(seed_loads(make_seed('with_default')))
 
+    @requires_planvm
+    def test_map_option_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('map_option')))
+
+    @requires_planvm
+    def test_bind_option_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('bind_option')))
+
 
 if __name__ == '__main__':
     unittest.main()

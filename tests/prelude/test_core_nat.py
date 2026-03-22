@@ -36,6 +36,10 @@ def make_seed(name):
 class TestCoreNatSeeds(unittest.TestCase):
 
     @requires_planvm
+    def test_pred_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('pred')))
+
+    @requires_planvm
     def test_is_zero_seed_loads(self):
         self.assertTrue(seed_loads(make_seed('is_zero')))
 
@@ -46,6 +50,14 @@ class TestCoreNatSeeds(unittest.TestCase):
     @requires_planvm
     def test_nat_lt_seed_loads(self):
         self.assertTrue(seed_loads(make_seed('nat_lt')))
+
+    @requires_planvm
+    def test_add_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('add')))
+
+    @requires_planvm
+    def test_mul_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('mul')))
 
 
 if __name__ == '__main__':

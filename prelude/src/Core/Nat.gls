@@ -1,15 +1,20 @@
 -- Core.Nat
--- Natural number predicates.
+-- Natural number operations.
 --
--- Bootstrap compiler limitation: the wildcard arm of match n { 0 → e | _ → ??? }
--- cannot bind the predecessor (the value that opcode 3/Case_ passes to the
--- succ branch).  As a result, arithmetic functions requiring predecessor access
--- (pred, add, mul, ...) cannot be fully implemented in this dialect.
---
--- The implementations below are correct for is_zero and nat_eq (which dispatch
--- only on the nat value, not the predecessor).  add and mul use the fix combinator
--- for structural correctness but return placeholder results pending a bootstrap
--- upgrade that exposes the predecessor in wildcard match arms.
+-- Arithmetic requires Core.PLAN.inc (opcode 2 = increment).
+-- Structural recursion (match on n) uses opcode 3 (Case_) via the bootstrap
+-- pattern-match compiler, which now correctly binds the predecessor.
+
+external mod Core.PLAN {
+  inc : Nat → Nat
+}
+
+-- pred: predecessor of n; pred 0 = 0
+let pred : Nat → Nat
+  = λ n → match n {
+    | 0 → 0
+    | k → k
+  }
 
 -- is_zero: True if n is zero, False otherwise
 let is_zero : Nat → Bool
@@ -18,32 +23,30 @@ let is_zero : Nat → Bool
     | _ → False
   }
 
--- Nat equality: structural equality via nested dispatch
--- Correct for all n, m.
+-- nat_eq: structural equality by simultaneous predecessor descent
 let nat_eq : Nat → Nat → Bool
-  = λ m → match m {
-    | 0 → λ n → match n {
-        | 0 → True
-        | _ → False
-      }
-    | 1 → λ n → match n {
-        | 0 → False
-        | 1 → True
-        | _ → False
-      }
-    | _ → λ n → match n {
-        | 0 → False
-        | _ → False
-      }
+  = λ m n → match m {
+    | 0 → match n { | 0 → True  | _ → False }
+    | j → match n { | 0 → False | k → nat_eq j k }
   }
 
--- nat_lt: m < n?  Returns True if m is strictly less than n (for small values)
--- Bootstrap limitation: only reliable for m, n ≤ 1.
+-- nat_lt: m < n?
 let nat_lt : Nat → Nat → Bool
-  = λ m → match m {
-    | 0 → λ n → match n {
-        | 0 → False
-        | _ → True
-      }
-    | _ → λ n → False
+  = λ m n → match n {
+    | 0 → False
+    | k → match m { | 0 → True | j → nat_lt j k }
+  }
+
+-- add: addition by recursion on n
+let add : Nat → Nat → Nat
+  = λ m n → match n {
+    | 0 → m
+    | k → Core.PLAN.inc (add m k)
+  }
+
+-- mul: multiplication by recursion on n
+let mul : Nat → Nat → Nat
+  = λ m n → match n {
+    | 0 → 0
+    | k → add m (mul m k)
   }
