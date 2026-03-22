@@ -306,6 +306,59 @@ compiler.
 The mapping is hardcoded in `Compiler._CORE_PLAN_OPCODES`. Extending it to other
 opcode-backed operations (e.g. `Core.PLAN.force`) follows the same pattern.
 
+### planvm extended opcode calling convention (M8.0 finding)
+
+planvm's `jet.primtab` (plan.s:984) defines 21 pinned-nat dispatchers. Pin 15
+(`P(N(15))`) is the universal **PrimOp gateway**: `(<15> (opcode args...))` where
+`opcode` is the prim.tab number (e.g. 35=add, 36=sub, 37=mul, 40=eq, 44=lt,
+47=div, 48=mod). All pins with index > 4 have arity 1 per `arity.primtab` —
+they receive a single ADT argument `(tag field1 field2 ...)` built as nested
+App nodes.
+
+Other notable dispatchers:
+- Pin 4 (`<4>`): TraceOp — `(<4> (0 msg val))` traces msg and returns val
+- Pin 5 (`<5>`): SyscallOp — raw Linux syscalls
+- Pin 9 (`<9>`): WriteOp — `(<9> (0 fd nat sz offset))` writes bytes to fd
+- Pin 10 (`<10>`): ReadOp — `(<10> (0 fd nat sz offset))` reads bytes from fd
+
+The `repl` function (plan.s:1541) forces the seed value, applies it to an
+argVec (CLI arguments converted to string nats via `push_strnat`), casts the
+result to a nat, and exits with it as the process exit code.
+
+### Why build arithmetic from opcodes 0–4 first?
+
+The self-hosting compiler needs nat arithmetic (add, sub, eq, lt, div, mod) at
+runtime. Two paths exist:
+
+1. **Extended ops via Pin 15**: `(<15> (35 x y))` = add. Efficient O(1) but
+   requires constructing the ADT argument correctly and trusting jet dispatch.
+2. **Pure recursive from opcodes 0–4**: add = recursive inc, sub = recursive
+   Case_ on succ, eq/lt = mutual Case_ on both args. O(n) per operation.
+
+We choose path 2 initially because: (a) the prelude already implements add/mul
+this way, (b) it's testable in the Python harness without planvm, (c) compiler
+inputs are small (~1000 lines, max nat ~10000), and (d) it avoids coupling to
+undocumented jet conventions during bootstrap. Extended ops are an optimization
+for after self-hosting is confirmed.
+
+### Why is the self-hosting compiler a single `.gls` file?
+
+The restricted dialect has no cross-module imports — each `.gls` file compiles
+independently. The compiler needs types and utilities shared across all phases
+(Lexer, Parser, Scope, Codegen, Emit). Rather than duplicating definitions or
+building an import system just to discard it, all phases live in one monolithic
+file: `compiler/src/Compiler.gls`. Estimated ~800–1500 lines. The logical
+phases are sections within this file, not separate modules.
+
+### Why is the compiler core a pure function?
+
+The compiler pipeline (lex → parse → scope → codegen → emit) is a pure
+transformation from source bytes to seed bytes. Making `main : Bytes → Bytes`
+keeps the core testable in the Python harness without planvm. The I/O wrapper
+(reading stdin, writing stdout) is a thin shell around the pure core, handled
+separately depending on the planvm I/O mechanism (CLI arg input / exit-code
+output, or WriteOp/ReadOp for byte streams).
+
 ### Why does CI only validate seed loading, not evaluation? (Temporary)
 
 The Docker CI environment has `planvm` (the cog runner) but not a PLAN REPL
