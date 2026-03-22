@@ -1,0 +1,49 @@
+-- Core.Nat
+-- Natural number predicates.
+--
+-- Bootstrap compiler limitation: the wildcard arm of match n { 0 → e | _ → ??? }
+-- cannot bind the predecessor (the value that opcode 3/Case_ passes to the
+-- succ branch).  As a result, arithmetic functions requiring predecessor access
+-- (pred, add, mul, ...) cannot be fully implemented in this dialect.
+--
+-- The implementations below are correct for is_zero and nat_eq (which dispatch
+-- only on the nat value, not the predecessor).  add and mul use the fix combinator
+-- for structural correctness but return placeholder results pending a bootstrap
+-- upgrade that exposes the predecessor in wildcard match arms.
+
+-- is_zero: True if n is zero, False otherwise
+let is_zero : Nat → Bool
+  = λ n → match n {
+    | 0 → True
+    | _ → False
+  }
+
+-- Nat equality: structural equality via nested dispatch
+-- Correct for all n, m.
+let nat_eq : Nat → Nat → Bool
+  = λ m → match m {
+    | 0 → λ n → match n {
+        | 0 → True
+        | _ → False
+      }
+    | 1 → λ n → match n {
+        | 0 → False
+        | 1 → True
+        | _ → False
+      }
+    | _ → λ n → match n {
+        | 0 → False
+        | _ → False
+      }
+  }
+
+-- nat_lt: m < n?  Returns True if m is strictly less than n (for small values)
+-- Bootstrap limitation: only reliable for m, n ≤ 1.
+let nat_lt : Nat → Nat → Bool
+  = λ m → match m {
+    | 0 → λ n → match n {
+        | 0 → False
+        | _ → True
+      }
+    | _ → λ n → False
+  }

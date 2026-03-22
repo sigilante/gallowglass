@@ -160,9 +160,38 @@ Seeds produced by the Python compiler load and evaluate correctly under `x/plan`
 Tests: `tests/planvm/test_seed_planvm.py`. 7/7 pass.
 CI: `make test-ci` (Docker). Local: `make test`.
 
-### Milestone 7: Core prelude ← **next**
+### ✅ Milestone 7: Core prelude
 Write `prelude/src/Core/` in the restricted Gallowglass dialect; compile and
 validate each module with the Python compiler + `x/plan`.
+Modules: `Core.Combinators` (5), `Core.Bool` (6), `Core.Nat` (3),
+`Core.Option` (5), `Core.List` (5) — 24 definitions, all planvm-valid.
+CI: `make test-prelude-docker`. Local: `make test-prelude`.
+Bootstrap limitation documented in `prelude/PRELUDE.md`: wildcard match arms
+cannot bind the predecessor, so Nat arithmetic and field extraction from
+multi-constructor types are deferred to a bootstrap compiler upgrade.
+
+### Milestone 7.5: Bootstrap compiler upgrade — predecessor binding ← **next**
+Expose the predecessor in wildcard match arms so that Nat arithmetic and
+field extraction from multi-arm constructor matches are expressible in the
+restricted dialect.
+
+**What to fix in `bootstrap/codegen.py`:**
+- In `_build_nat_dispatch`, when `wild_body` uses a `PatVar` pattern (e.g.
+  `| k → use_k`), the succ function must bind `k` to the predecessor instead
+  of using `const2`.  The predecessor is already available as N(1) in
+  `pred_env` (arity=1); the missing step is propagating that binding into
+  the arm's compilation environment.
+- In `_compile_con_body_extraction`, implement actual field extraction using
+  opcode 1 (reflect / Cdr) so that `| Some x → f x` binds `x` to the
+  inner value.  Currently the body is compiled without field bindings,
+  making all multi-arm constructor matches with fields unreachable.
+
+**Unblocks:**
+- `Core.Nat.pred`, `Core.Nat.add`, `Core.Nat.mul` (correct implementations)
+- `Core.Option.map_option`, `Core.Option.bind_option`
+- `Core.List.map`, `Core.List.filter`, `Core.List.foldl`, `Core.List.foldr`
+- Any self-hosting compiler function that recurses on a Nat or deconstructs
+  a non-nullary algebraic type
 
 ### Milestone 8: Self-hosting candidate
 Write the Gallowglass self-hosting compiler in the restricted dialect; compile it

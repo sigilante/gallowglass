@@ -5,7 +5,8 @@ PLANVM ?= planvm
 DOCKER_IMAGE := gallowglass-dev
 
 .PHONY: test test-ci test-harness test-plan test-seed test-bootstrap \
-        test-planvm test-planvm-docker docker-build _docker-ensure clean help
+        test-planvm test-planvm-docker test-prelude test-prelude-docker \
+        docker-build _docker-ensure clean help
 
 ## Run all local tests (Python harness only — no planvm required)
 test: test-harness test-bootstrap
@@ -16,7 +17,12 @@ test: test-harness test-bootstrap
 test-ci: test _docker-ensure
 	@echo "--- planvm seed validation (Docker) ---"
 	docker run --rm -v "$(PWD):/work" $(DOCKER_IMAGE) \
-	    sh -c 'PLANVM=planvm $(PYTHON) tests/planvm/test_seed_planvm.py'
+	    sh -c 'PLANVM=planvm $(PYTHON) tests/planvm/test_seed_planvm.py && \
+	           PLANVM=planvm $(PYTHON) tests/prelude/test_core_combinators.py && \
+	           PLANVM=planvm $(PYTHON) tests/prelude/test_core_bool.py && \
+	           PLANVM=planvm $(PYTHON) tests/prelude/test_core_nat.py && \
+	           PLANVM=planvm $(PYTHON) tests/prelude/test_core_option.py && \
+	           PLANVM=planvm $(PYTHON) tests/prelude/test_core_list.py'
 	@echo "--- All CI checks passed ---"
 
 # Internal: build the Docker image if it doesn't already exist.
@@ -60,6 +66,24 @@ docker-build:
 test-planvm-docker:
 	docker run --rm -v "$(PWD):/work" $(DOCKER_IMAGE) \
 	    sh -c 'PLANVM=planvm $(PYTHON) tests/planvm/test_seed_planvm.py'
+
+## Validate Core prelude seeds against x/plan (requires planvm on PATH or PLANVM=...)
+## On macOS, use `make test-prelude-docker` instead.
+test-prelude:
+	PLANVM=$(PLANVM) $(PYTHON) tests/prelude/test_core_combinators.py
+	PLANVM=$(PLANVM) $(PYTHON) tests/prelude/test_core_bool.py
+	PLANVM=$(PLANVM) $(PYTHON) tests/prelude/test_core_nat.py
+	PLANVM=$(PLANVM) $(PYTHON) tests/prelude/test_core_option.py
+	PLANVM=$(PLANVM) $(PYTHON) tests/prelude/test_core_list.py
+
+## Run Core prelude seed validation inside Docker (macOS-friendly)
+test-prelude-docker:
+	docker run --rm -v "$(PWD):/work" $(DOCKER_IMAGE) \
+	    sh -c 'PLANVM=planvm $(PYTHON) tests/prelude/test_core_combinators.py && \
+	           PLANVM=planvm $(PYTHON) tests/prelude/test_core_bool.py && \
+	           PLANVM=planvm $(PYTHON) tests/prelude/test_core_nat.py && \
+	           PLANVM=planvm $(PYTHON) tests/prelude/test_core_option.py && \
+	           PLANVM=planvm $(PYTHON) tests/prelude/test_core_list.py'
 
 ## Run the dev harness CLI
 run:

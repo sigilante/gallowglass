@@ -1,0 +1,34 @@
+-- Core.List
+-- Singly-linked list type.
+--
+-- Encoding: Nil = 0 (bare nat), Cons x rest = A(A(1, x), rest).
+--
+-- Bootstrap compiler limitation: multi-arm match with fields is not supported.
+-- Higher-order operations (map, filter, fold) require both constructor dispatch
+-- and field extraction, so they cannot be correctly compiled in this dialect.
+--
+-- This module provides the type declaration and tag predicates.  Full list
+-- operations depend on the bootstrap gaining support for multi-arm matches with
+-- field-carrying constructors (planned for a later milestone).
+
+type List a =
+  | Nil
+  | Cons a (List a)
+
+-- is_nil: True if the list is empty
+let is_nil : ∀ a. List a → Bool
+  = λ xs → match xs {
+    | 0 → True
+    | _ → False
+  }
+
+-- is_cons: True if the list has at least one element
+let is_cons : ∀ a. List a → Bool
+  = λ xs → match xs {
+    | 0 → False
+    | _ → True
+  }
+
+-- singleton: wrap a single value in a list
+let singleton : ∀ a. a → List a
+  = λ x → Cons x Nil
