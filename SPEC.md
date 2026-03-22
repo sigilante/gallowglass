@@ -1,7 +1,7 @@
 # Gallowglass Language Specification
 
-**Version:** 0.1 (pre-bootstrap)
-**Status:** Specification complete, implementation in progress
+**Version:** 0.2
+**Status:** Specification complete; bootstrap compiler and core prelude complete; self-hosting compiler in progress
 **VM Target:** PLAN (xocore-tech/PLAN)
 **Hash Algorithm:** BLAKE3-256
 
@@ -19,14 +19,23 @@ It targets the PLAN virtual machine — a minimal graph-reduction system with fo
 Gallowglass is not yet self-hosting. The current implementation path:
 
 ```
-Phase 0: Foundation documents (complete)
-Phase 1: Sire bootstrap compiler → compiles restricted Gallowglass dialect
-Phase 2: Core prelude in Gallowglass
-Phase 3: Self-hosting compiler in Gallowglass  ← 1.0 milestone
-Phase 4: Rust VM (post-1.0)
-Phase 5: Debugger (post-1.0)
+Phase 0: Foundation documents          ✅ complete
+Phase 1: Python bootstrap compiler     ✅ complete (Milestones 1–7.5)
+         → compiles restricted Gallowglass dialect to PLAN seeds
+         → Core prelude: 36 definitions across 5 modules, planvm-valid
+Phase 2: (merged into Phase 1)
+Phase 3: Self-hosting compiler         ← current (Milestone 8)
+         → restricted Gallowglass compiler written in restricted Gallowglass
+         → compiles itself (true self-hosting)
+Phase 4: Rust VM                       post-1.0
+Phase 5: Debugger                      post-1.0
 Phase 6: Hardening and ecosystem
 ```
+
+**Note on bootstrap language:** The bootstrap compiler is implemented in Python
+(not Sire as originally planned). Python was used because it was faster to build
+and fully functional. The Sire outlines are archived in `bootstrap/archive/sire/`.
+See `bootstrap/BOOTSTRAP.md` for the complete rationale.
 
 ---
 
@@ -47,14 +56,24 @@ Laws are the only executable unit. A law `{n a b}` has name `n`, arity `a`, and 
 
 Pins are content-addressed with BLAKE3-256. Two pins with identical content have identical hashes and are deduplicated in the heap. The heap is a Merkle-DAG: pins reference other pins but never the interior of other pins, keeping the reference graph acyclic.
 
-Five opcodes (as nat values 0–4):
-- `0`: Create a law
-- `1`: Reflect — dispatch on constructor (pin/law/app/nat)
-- `2`: Nat iteration — structural recursion on naturals
-- `3`: Increment a nat
-- `4`: Pin a value (normalize and content-address)
+Five core opcodes (as nat values 0–4, accessed as `P(N(k))` — a Pin wrapping the opcode nat):
 
-All other computation is expressed as laws applied to arguments. Jets accelerate specific pinned laws by matching their BLAKE3 hash against a registry of native implementations.
+| Opcode | Name    | Arity | Semantics |
+|--------|---------|-------|-----------|
+| `0`    | Pin     | 1     | `P(x)` — content-address and pin a value |
+| `1`    | MkLaw   | 3     | `L(arity, name, body)` — construct a named law |
+| `2`    | Inc     | 1     | `n + 1` — increment a nat |
+| `3`    | Case_   | 6     | `(p l a z m o)` — dispatch on constructor tag: pin→p, law→l, app→a, nat-zero→z, nat-succ→m(pred), with scrutinee o |
+| `4`    | Force   | 1     | evaluate to weak head normal form |
+
+The actual planvm (`vendor/PLAN/planvm-amd64/plan.s`) defines additional opcodes
+(5–30+) for extended operations (seq, apply-n, is-pin/law/app/nat, unpin, name,
+arity, body, nat-ops, etc.). These are BPLAN primitives exposed via
+`external mod Core.*` declarations. See `spec/00-primitives.md`.
+
+All other computation is expressed as laws applied to arguments. Jets accelerate
+specific pinned laws by matching their BLAKE3 hash against a registry of native
+implementations.
 
 ### 2.2 Execution Semantics
 
@@ -785,7 +804,15 @@ Canary evaluation: a configurable fraction of jetted computations are also evalu
 13. Prelude Scope
 The prelude is a package whose PinId is part of the Gallowglass spec. Prelude functions are primary jet candidates.
 13.1 Core.Primitives
-~101 operations across 11 external modules implemented in Sire:
+~101 operations across 11 external modules backed by BPLAN primitive opcodes
+(planvm opcodes 5–30+ plus the five core opcodes). In the Python bootstrap,
+`external mod Core.PLAN { ... }` declarations compile to real opcode pins;
+all other `external mod` declarations compile to opaque sentinel pins pending
+the self-hosting compiler. See `spec/00-primitives.md` for full declarations.
+
+**Note on spec/00-primitives.md opcode numbering:** that document uses a
+historical numbering (inc=3, pin=4) that does not match the actual planvm.
+The canonical mapping is in `SPEC.md §2.1` above.
 Core.PLAN — 5 opcodes, direct PLAN access
 Core.Nat — 18 arithmetic/comparison/bit operations
 Core.Int — 17 operations including fixed-width bounds checking
@@ -807,51 +834,37 @@ Numeric: Nat, Int, Rational, Fixed n with full instances
 Text: Text, Bytes with three-level indexing
 Combinators: id, const, flip, fix, ·, |>, fst, snd, absurd
 14. Implementation Status
-Component
-Status
-Location
-Foundation documents
-✅ Complete
-spec/
-Core.Primitives spec
-✅ Complete
-spec/00-primitives.md
-Glass IR grammar
-✅ Complete
-spec/01-glass-ir.md
-Mutual recursion spec
-✅ Complete
-spec/02-mutual-recursion.md
-Exhaustiveness spec
-✅ Complete
-spec/03-exhaustiveness.md
-PLAN encoding spec
-✅ Complete
-spec/04-plan-encoding.md
-Type system spec
-✅ Complete
-spec/05-type-system.md
-Surface syntax spec
-✅ Complete
-spec/06-surface-syntax.md
-Seed format spec
-✅ Complete
-spec/07-seed-format.md
-Bootstrap compiler
-🔲 In progress
-bootstrap/src/
-Core prelude
-🔲 Not started
-prelude/src/
-Self-hosting compiler
-🔲 Not started
-compiler/src/
-Rust VM
-🔲 Post-1.0
-vm/src/
-Debugger
-🔲 Post-1.0
-—
+
+| Component | Status | Location |
+|---|---|---|
+| Foundation documents | ✅ Complete | `spec/` |
+| Core.Primitives spec | ✅ Complete | `spec/00-primitives.md` |
+| Glass IR grammar | ✅ Complete | `spec/01-glass-ir.md` |
+| Mutual recursion spec | ✅ Complete | `spec/02-mutual-recursion.md` |
+| Exhaustiveness spec | ✅ Complete | `spec/03-exhaustiveness.md` |
+| PLAN encoding spec | ✅ Complete | `spec/04-plan-encoding.md` |
+| Type system spec | ✅ Complete | `spec/05-type-system.md` |
+| Surface syntax spec | ✅ Complete | `spec/06-surface-syntax.md` |
+| Seed format spec | ✅ Complete | `spec/07-seed-format.md` |
+| Python bootstrap compiler | ✅ Complete (M1–M7.5) | `bootstrap/` |
+| Core prelude (36 definitions) | ✅ Complete (M7–M7.5) | `prelude/src/Core/` |
+| Self-hosting compiler | 🔲 In progress (M8) | `compiler/src/` |
+| Rust VM | 🔲 Post-1.0 | `vm/src/` |
+| Debugger | 🔲 Post-1.0 | — |
+
+### CI Test Coverage
+
+| Layer | What is tested | Tool |
+|---|---|---|
+| Python harness | Semantic correctness of compiled PLAN | `dev/harness/plan.py` |
+| planvm seed loading | Seed format validity; `x/plan` accepts the file | Docker `planvm` |
+| planvm evaluation | **Not yet tested** — format valid ≠ computation correct | Pending Reaver CLI |
+
+The evaluation gap closes in Milestone 8: the self-hosting compiler's output
+can be compared byte-for-byte against the Python compiler's output, providing
+a functional equivalence check without requiring a REPL evaluator.
+Reaver (`sol-plunder/reaver`) is the planned CLI eval solution for full
+evaluation-based CI once available.
 15. Key References
 DECISIONS.md — design rationale for all non-obvious choices
 spec/00-primitives.md — Core.Primitives complete declarations

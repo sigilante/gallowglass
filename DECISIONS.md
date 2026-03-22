@@ -261,36 +261,61 @@ A common ABI requires coordination across all implementations and must be backwa
 
 ## Bootstrap Compiler
 
-### Why does the bootstrap codegen not bind the predecessor in wildcard match arms?
+### Why did the bootstrap codegen initially not bind the predecessor in wildcard match arms? (Milestone 7.5)
 
-The bootstrap's `_build_nat_dispatch` compiles `match n { 0 → e₀ | _ → e₁ }` by
-building a Case_ (opcode 3) dispatch where the succ branch is `const2(e₁)`.
-`const2` is `L(2, 0, N(1))` — a 2-arg law returning its first argument — so
-when Case_ calls the succ branch with the predecessor `k`, `const2(e₁)` ignores
-`k` and returns `e₁` unevaluated in the outer scope.
+*Fixed in Milestone 7.5. This entry is retained as rationale for the phased approach.*
 
-This is intentional for the first pass: the majority of the early restricted
-dialect (Combinators, Bool, nullary enum dispatch) doesn't need the predecessor.
-Implementing predecessor binding correctly requires coordinating three things:
+The bootstrap's initial `_build_nat_dispatch` compiled `match n { 0 → e₀ | _ → e₁ }`
+using `const2(e₁)` for the succ branch — ignoring the predecessor entirely.
+This was intentional for the first pass (Milestones 1–7): Combinators, Bool,
+and nullary enum dispatch don't need the predecessor.
 
-1. **PatVar detection** in `_build_nat_dispatch`: when `wild_arm` has a `PatVar`
-   pattern (e.g. `| k → body`), the succ function must be the identity law
-   (or a 1-arg lifted law), not `const2`.
-2. **Environment extension**: the arm's body must be compiled in a fresh `pred_env`
-   (arity=1) where `N(1)` refers to the predecessor, not the outer lambda
-   parameter with the same de Bruijn index.
-3. **Lambda lifting**: if `body` uses both the predecessor AND an outer captured
-   variable, the succ law must be lambda-lifted to carry the captured variable
-   as an extra leading parameter — otherwise the outer scope is invisible inside
-   the succ law's closed body.
+Implementing predecessor binding correctly requires three coordinated changes:
 
-Deferring this until Milestone 7.5 keeps the initial bootstrap compiler simple
-and ensures the fix is made with concrete usage patterns (from the Core prelude)
-as test cases, rather than speculatively.
+1. **PatVar detection**: when the wildcard arm is `| k → body`, the succ function
+   must be a 1-arg lifted law, not `const2`.
+2. **Environment extension**: the body must be compiled in a fresh `pred_env`
+   (arity=1) where `N(1)` is the predecessor, not the same de Bruijn index as
+   an outer lambda parameter.
+3. **Lambda lifting**: if the body uses both the predecessor and outer captured
+   variables, the succ law must carry captures as extra leading parameters.
 
-The same issue, at a higher level, affects field extraction from multi-arm
-constructor matches (opcode 1 / Reflect). `_compile_con_body_extraction` currently
-compiles the arm body without binding field patterns, returning the wrong value
-for all matches on non-nullary constructors. This is fixable at the same time:
-use Cdr (opcode 1 applied to extract the inner App structure) to thread field
-values into the arm environment.
+Deferring to Milestone 7.5 ensured the fix had concrete usage patterns from the
+Core prelude as test cases (Core.Nat.pred, Core.Nat.add, etc.).
+
+The same fix also addressed multi-constructor field extraction: `_compile_con_match_case3`
+now uses Case_ (opcode 3) App handler `(fun=tag, arg=field)` to extract fields,
+enabling `| Some x → f x` in the restricted dialect.
+
+A related bug found during Milestone 7.5: **nat globals inside law bodies must
+use the quote form `A(N(0), N(k))` rather than being pinned.** Pinning `True=1`
+as `P(1)` causes Case_ dispatch to route to the Pin branch (returning the inner
+nat via `id`) rather than the Nat-succ branch. The quote form evaluates via
+`kal`'s special case `(0 x) = x` and produces a bare nat, which Case_ dispatches
+correctly.
+
+### Why does `Core.PLAN` external mod compile to real opcode pins?
+
+All other `external mod` declarations produce opaque sentinel pins (acceptable
+by planvm as seeds but not callable). `Core.PLAN` is special: its five operations
+map one-to-one to planvm opcodes 0–4, so the codegen emits `P(N(opcode))` directly.
+This makes `Core.PLAN.inc` callable in the Python harness and in planvm, enabling
+arithmetic (add, mul) in the Core prelude without waiting for the self-hosting
+compiler.
+
+The mapping is hardcoded in `Compiler._CORE_PLAN_OPCODES`. Extending it to other
+opcode-backed operations (e.g. `Core.PLAN.force`) follows the same pattern.
+
+### Why does CI only validate seed loading, not evaluation? (Temporary)
+
+The Docker CI environment has `planvm` (the cog runner) but not a PLAN REPL
+evaluator. `planvm <seed>` runs a seed as an interactive cog — it has no
+"apply this function to these arguments and check the result" mode. The Sire
+pill (`x/plan xseed/sire.seed <<< '##8 ...'`) would provide this, but is not
+in the Docker image.
+
+Reaver (`sol-plunder/reaver`) is the planned CLI eval solution. Until it is
+available, semantic correctness is gated by the Python harness tests. The
+evaluation gap closes functionally in Milestone 8: if the Gallowglass-compiled
+compiler produces byte-identical seeds to the Python compiler, that is a strong
+functional equivalence proof not dependent on a REPL.
