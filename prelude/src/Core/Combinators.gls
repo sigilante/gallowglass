@@ -1,0 +1,22 @@
+-- Core.Combinators
+-- Pure combinators.  No external dependencies.
+
+-- Identity function
+let id : ∀ a. a → a
+  = λ x → x
+
+-- Constant function: returns its first argument, ignores the second
+let const : ∀ a b. a → b → a
+  = λ x y → x
+
+-- Flip: swap the arguments of a two-argument function
+let flip : ∀ a b c. (a → b → c) → b → a → c
+  = λ f x y → f y x
+
+-- Function composition: (compose f g) x = f (g x)
+let compose : ∀ a b c. (b → c) → (a → b) → a → c
+  = λ f g x → f (g x)
+
+-- Apply: apply a function to an argument (useful as higher-order combinator)
+let apply : ∀ a b. (a → b) → a → b
+  = λ f x → f x

@@ -1,0 +1,31 @@
+-- Core.Bool
+-- Boolean type and logical operations.
+--
+-- Bool is a builtin type: False = 0, True = 1.
+-- The bootstrap compiler knows True and False as global constructors.
+-- if/then/else dispatches on Bool natively (via opcode 3 / Case_).
+
+-- Logical negation
+let not : Bool → Bool
+  = λ b → if b then False else True
+
+-- Logical conjunction (short-circuit: if a is False, return False)
+let and : Bool → Bool → Bool
+  = λ a b → if a then b else False
+
+-- Logical disjunction (short-circuit: if a is True, return True)
+let or : Bool → Bool → Bool
+  = λ a b → if a then True else b
+
+-- Exclusive or
+let xor : Bool → Bool → Bool
+  = λ a b → if a then (if b then False else True) else b
+
+-- Bool equality
+let bool_eq : Bool → Bool → Bool
+  = λ a b → if a then b else (if b then False else True)
+
+-- Select: if the boolean is True, return the first value, else the second
+-- (Equivalent to if/then/else as a first-class function)
+let bool_select : ∀ a. Bool → a → a → a
+  = λ b t f → if b then t else f

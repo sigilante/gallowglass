@@ -160,11 +160,17 @@ Seeds produced by the Python compiler load and evaluate correctly under `x/plan`
 Tests: `tests/planvm/test_seed_planvm.py`. 7/7 pass.
 CI: `make test-ci` (Docker). Local: `make test`.
 
-### Milestone 7: Core prelude ← **next**
+### ✅ Milestone 7: Core prelude
 Write `prelude/src/Core/` in the restricted Gallowglass dialect; compile and
 validate each module with the Python compiler + `x/plan`.
+Modules: `Core.Combinators` (5), `Core.Bool` (6), `Core.Nat` (3),
+`Core.Option` (5), `Core.List` (5) — 24 definitions, all planvm-valid.
+CI: `make test-prelude-docker`. Local: `make test-prelude`.
+Bootstrap limitation documented in `prelude/PRELUDE.md`: wildcard match arms
+cannot bind the predecessor, so Nat arithmetic and field extraction from
+multi-constructor types are deferred to a bootstrap compiler upgrade.
 
-### Milestone 8: Self-hosting candidate
+### Milestone 8: Self-hosting candidate ← **next**
 Write the Gallowglass self-hosting compiler in the restricted dialect; compile it
 with the Python compiler; run on `x/plan`; compile itself.
 

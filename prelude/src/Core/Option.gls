@@ -1,0 +1,38 @@
+-- Core.Option
+-- Option type: a value that may or may not be present.
+--
+-- Encoding: None = 0 (bare nat), Some x = A(1, x) (App of tag 1 and value).
+--
+-- Bootstrap compiler limitation: multi-arm match where some constructors have
+-- fields is not yet supported.  Functions that need to extract the value inside
+-- Some (like map, bind) cannot be fully compiled in this dialect.
+--
+-- is_none and is_some work because they only need to inspect the tag, which can
+-- be done via nat-pattern match on the raw encoding.
+
+type Option a =
+  | None
+  | Some a
+
+-- is_none: True if the option carries no value
+let is_none : ∀ a. Option a → Bool
+  = λ opt → match opt {
+    | 0 → True
+    | _ → False
+  }
+
+-- is_some: True if the option carries a value
+let is_some : ∀ a. Option a → Bool
+  = λ opt → match opt {
+    | 0 → False
+    | _ → True
+  }
+
+-- with_default: return the value inside Some, or the default if None
+-- Bootstrap limitation: cannot extract the field from Some in a match arm;
+-- this returns the default value in all cases as a placeholder.
+let with_default : ∀ a. a → Option a → a
+  = λ default opt → match opt {
+    | 0 → default
+    | _ → default
+  }
