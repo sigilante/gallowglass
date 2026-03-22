@@ -155,13 +155,12 @@ Restricted HM unification. Tests: `tests/bootstrap/test_typecheck.py`.
 Compiles Gallowglass → valid PLAN seeds. 44 tests pass in Python harness.
 Tests: `tests/bootstrap/test_codegen.py`.
 
-### Milestone 6: planvm seed validation ← **next**
+### ✅ Milestone 6: planvm seed validation
 Seeds produced by the Python compiler load and evaluate correctly under `x/plan`.
-Tests: `tests/planvm/test_seed_planvm.py`.
-CI: `plan-vm` job in `.github/workflows/ci.yml`.
-Local: `make test-planvm` (requires Docker on macOS).
+Tests: `tests/planvm/test_seed_planvm.py`. 7/7 pass.
+CI: `make test-ci` (Docker). Local: `make test`.
 
-### Milestone 7: Core prelude
+### Milestone 7: Core prelude ← **next**
 Write `prelude/src/Core/` in the restricted Gallowglass dialect; compile and
 validate each module with the Python compiler + `x/plan`.
 

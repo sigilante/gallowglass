@@ -594,15 +594,11 @@ class Compiler:
         """
         Compile if/then/else using Bool's nat encoding (False=0, True=1).
 
-        Uses opcode 2 (P(N(2))), which is the match/dispatch opcode.
-        Op 2 takes ONE packed argument: a 6-deep App chain:
-          A(A(A(A(A(A(base, p), l), a), z), m), o)
+        Uses opcode 3 (P(N(3))), which is the Case_ dispatch opcode.
+        Op 3 takes 6 separate arguments: (p, l, a, z, m, o)
         where p,l,a handle pin/law/app cases (unused for Bool/Nat),
         z is the zero (False) branch, m is the succ function (receives pred),
         and o is the scrutinee.
-
-        Since op 2 has arity 1 (P(N(2)) applied to the pack), we need to
-        build the full 6-arg pack as a single expression.
 
         In law body context, de Bruijn refs inside plain App nodes are NOT
         resolved by kal.  We use bapp chains to force resolution:
@@ -617,29 +613,21 @@ class Compiler:
         const2_pin = P(self._CONST2_LAW)
 
         if env.arity == 0:
-            # Top-level: build pack directly (no de Bruijn resolution needed)
-            # const_then = partial application of const2 to then_body
-            # When called with predecessor p: const2(then_body, p) = then_body
+            # Top-level: apply P(N(3)) to 6 separate args directly.
             const_then = A(const2_pin, then_body)
-            dummy = N(999)
-            pack = A(A(A(A(A(A(dummy, id_pin), id_pin), id_pin),
+            return A(A(A(A(A(A(P(N(3)), id_pin), id_pin), id_pin),
                         else_body), const_then), cond_body)
-            return A(P(N(2)), pack)
         else:
             # Law body: use bapp chains so de Bruijn refs are resolved by kal.
-            # Use a literal nat > env.arity as dummy (guaranteed not a de Bruijn ref)
-            dummy = N(env.arity + 100)
-            # const_then: bapp(const2_pin, then_body) resolves to A(const2_pin, then_val)
             const_then_body = bapp(const2_pin, then_body)
-            # Build the 6-deep pack step by step using bapp
-            step = dummy
-            step = bapp(step, id_pin)        # p
-            step = bapp(step, id_pin)        # l
-            step = bapp(step, id_pin)        # a
-            step = bapp(step, else_body)     # z (False branch)
+            step = P(N(3))
+            step = bapp(step, id_pin)           # p
+            step = bapp(step, id_pin)           # l
+            step = bapp(step, id_pin)           # a
+            step = bapp(step, else_body)        # z (False branch)
             step = bapp(step, const_then_body)  # m (True branch fn)
-            step = bapp(step, cond_body)     # o (scrutinee)
-            return bapp(P(N(2)), step)
+            step = bapp(step, cond_body)        # o (scrutinee)
+            return step
 
     # -----------------------------------------------------------------------
     # Pattern matching
@@ -759,29 +747,24 @@ class Compiler:
 
     def _make_op2_dispatch(self, zero_val, succ_body, scrutinee_body, env: Env) -> Any:
         """
-        Build an op2 dispatch: if scrutinee==0 return zero_val, else apply succ_body to pred.
+        Build a Case_ dispatch: if scrutinee==0 return zero_val, else apply succ_body to pred.
 
-        This is the shared helper for nat-match and con-match.
-        succ_body must be a PLAN value (or bapp expression) that accepts 1 argument.
-
-        Uses the 6-arg op2 pack — see _compile_if for the rationale.
+        Uses opcode 3 (P(N(3)) = Case_) with 6 separate args: (p, l, a, z, m, o).
+        p/l/a handlers are identity (unused for Nat scrutinee).
         """
         id_pin = P(self._ID_LAW)
         if env.arity == 0:
-            dummy = N(999)
-            pack = A(A(A(A(A(A(dummy, id_pin), id_pin), id_pin),
+            return A(A(A(A(A(A(P(N(3)), id_pin), id_pin), id_pin),
                         zero_val), succ_body), scrutinee_body)
-            return A(P(N(2)), pack)
         else:
-            dummy = N(env.arity + 100)
-            step = dummy
+            step = P(N(3))
             step = bapp(step, id_pin)
             step = bapp(step, id_pin)
             step = bapp(step, id_pin)
             step = bapp(step, zero_val)
             step = bapp(step, succ_body)
             step = bapp(step, scrutinee_body)
-            return bapp(P(N(2)), step)
+            return step
 
     def _build_nat_dispatch(self, arms_sorted, wild_body, scrutinee, env, name_hint):
         """
@@ -1081,17 +1064,14 @@ class Compiler:
             # Negation: not defined for Nat; return 0 as placeholder
             return N(0) if env.arity == 0 else P(N(0))
         if expr.op == '¬':
-            # Boolean not: (if x then False else True)
-            false_val = N(0)
-            true_val = N(1)
-            op2 = P(N(2))
-            succ_fn = self._make_const_law(false_val, name_hint + '_not_succ') \
+            # Boolean not: if x then False else True
+            # Use the same Case_ dispatch helper (opcode 3, 6 args).
+            false_val = N(0) if env.arity == 0 else A(N(0), N(0))
+            true_val = N(1) if (env.arity == 0 or 1 > env.arity) else A(N(0), N(1))
+            succ_fn = self._make_const_law(N(0), name_hint + '_not_succ') \
                 if env.arity == 0 \
                 else self._make_const_law_body(P(N(0)), env, name_hint + '_not_succ')
-            if env.arity == 0:
-                return A(A(A(op2, true_val), succ_fn), operand)
-            else:
-                return bapp(bapp(bapp(op2, true_val), succ_fn), operand)
+            return self._make_op2_dispatch(true_val, succ_fn, operand, env)
         return operand
 
     # -----------------------------------------------------------------------
