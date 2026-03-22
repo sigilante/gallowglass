@@ -55,6 +55,30 @@ class TestCoreListSeeds(unittest.TestCase):
     def test_singleton_seed_loads(self):
         self.assertTrue(seed_loads(make_seed('singleton')))
 
+    @requires_planvm
+    def test_head_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('head')))
+
+    @requires_planvm
+    def test_tail_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('tail')))
+
+    @requires_planvm
+    def test_map_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('map')))
+
+    @requires_planvm
+    def test_filter_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('filter')))
+
+    @requires_planvm
+    def test_foldl_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('foldl')))
+
+    @requires_planvm
+    def test_foldr_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('foldr')))
+
 
 if __name__ == '__main__':
     unittest.main()

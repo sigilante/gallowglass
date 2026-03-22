@@ -1,15 +1,7 @@
 -- Core.List
 -- Singly-linked list type.
 --
--- Encoding: Nil = 0 (bare nat), Cons x rest = A(A(1, x), rest).
---
--- Bootstrap compiler limitation: multi-arm match with fields is not supported.
--- Higher-order operations (map, filter, fold) require both constructor dispatch
--- and field extraction, so they cannot be correctly compiled in this dialect.
---
--- This module provides the type declaration and tag predicates.  Full list
--- operations depend on the bootstrap gaining support for multi-arm matches with
--- field-carrying constructors (planned for a later milestone).
+-- Encoding: Nil = 0 (bare nat tag), Cons x rest = A(A(tag=1, x), rest).
 
 type List a =
   | Nil
@@ -18,17 +10,62 @@ type List a =
 -- is_nil: True if the list is empty
 let is_nil : ∀ a. List a → Bool
   = λ xs → match xs {
-    | 0 → True
-    | _ → False
+    | Nil      → True
+    | Cons _ _ → False
   }
 
 -- is_cons: True if the list has at least one element
 let is_cons : ∀ a. List a → Bool
   = λ xs → match xs {
-    | 0 → False
-    | _ → True
+    | Nil      → False
+    | Cons _ _ → True
   }
 
 -- singleton: wrap a single value in a list
 let singleton : ∀ a. a → List a
   = λ x → Cons x Nil
+
+-- head: return the first element or a default
+let head : ∀ a. a → List a → a
+  = λ default xs → match xs {
+    | Nil       → default
+    | Cons x _  → x
+  }
+
+-- tail: return the rest of the list, or Nil if empty
+let tail : ∀ a. List a → List a
+  = λ xs → match xs {
+    | Nil        → Nil
+    | Cons _ rest → rest
+  }
+
+-- map: apply f to every element
+let map : ∀ a b. (a → b) → List a → List b
+  = λ f xs → match xs {
+    | Nil        → Nil
+    | Cons x rest → Cons (f x) (map f rest)
+  }
+
+-- filter: keep elements satisfying the predicate
+let filter : ∀ a. (a → Bool) → List a → List a
+  = λ pred xs → match xs {
+    | Nil        → Nil
+    | Cons x rest →
+        if pred x
+        then Cons x (filter pred rest)
+        else filter pred rest
+  }
+
+-- foldl: left fold (tail-recursive)
+let foldl : ∀ a b. (b → a → b) → b → List a → b
+  = λ f acc xs → match xs {
+    | Nil        → acc
+    | Cons x rest → foldl f (f acc x) rest
+  }
+
+-- foldr: right fold
+let foldr : ∀ a b. (a → b → b) → b → List a → b
+  = λ f z xs → match xs {
+    | Nil        → z
+    | Cons x rest → f x (foldr f z rest)
+  }
