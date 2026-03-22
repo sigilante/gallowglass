@@ -256,3 +256,41 @@ For Gallowglass: the effect row `{IO | r}` in a function signature should be rea
 ### Why is virtualization the compatibility mechanism rather than a common ABI?
 
 A common ABI requires coordination across all implementations and must be backward-compatible indefinitely. Virtualization (implementing XPLAN semantics as a PLAN handler) allows each platform to evolve independently while providing formal compatibility: an XPLAN program's observable behavior, when run under a PLAN interpreter that implements XPLAN semantics, is identical to running it on native XPLAN. The compatibility contract is a Gallowglass theorem, not an ABI contract.
+
+---
+
+## Bootstrap Compiler
+
+### Why does the bootstrap codegen not bind the predecessor in wildcard match arms?
+
+The bootstrap's `_build_nat_dispatch` compiles `match n { 0 → e₀ | _ → e₁ }` by
+building a Case_ (opcode 3) dispatch where the succ branch is `const2(e₁)`.
+`const2` is `L(2, 0, N(1))` — a 2-arg law returning its first argument — so
+when Case_ calls the succ branch with the predecessor `k`, `const2(e₁)` ignores
+`k` and returns `e₁` unevaluated in the outer scope.
+
+This is intentional for the first pass: the majority of the early restricted
+dialect (Combinators, Bool, nullary enum dispatch) doesn't need the predecessor.
+Implementing predecessor binding correctly requires coordinating three things:
+
+1. **PatVar detection** in `_build_nat_dispatch`: when `wild_arm` has a `PatVar`
+   pattern (e.g. `| k → body`), the succ function must be the identity law
+   (or a 1-arg lifted law), not `const2`.
+2. **Environment extension**: the arm's body must be compiled in a fresh `pred_env`
+   (arity=1) where `N(1)` refers to the predecessor, not the outer lambda
+   parameter with the same de Bruijn index.
+3. **Lambda lifting**: if `body` uses both the predecessor AND an outer captured
+   variable, the succ law must be lambda-lifted to carry the captured variable
+   as an extra leading parameter — otherwise the outer scope is invisible inside
+   the succ law's closed body.
+
+Deferring this until Milestone 7.5 keeps the initial bootstrap compiler simple
+and ensures the fix is made with concrete usage patterns (from the Core prelude)
+as test cases, rather than speculatively.
+
+The same issue, at a higher level, affects field extraction from multi-arm
+constructor matches (opcode 1 / Reflect). `_compile_con_body_extraction` currently
+compiles the arm body without binding field patterns, returning the wrong value
+for all matches on non-nullary constructors. This is fixable at the same time:
+use Cdr (opcode 1 applied to extract the inner App structure) to thread field
+values into the arm environment.
