@@ -68,20 +68,9 @@ def nat(x):
     return x if is_nat(x) else 0
 
 
-def arity(x):
-    """Compute the remaining arity of a PLAN value."""
-    if is_app(x):
-        a = arity(x.fun)
-        return 0 if a == 0 else a - 1
-    if is_pin(x):
-        if is_law(x.val):
-            return x.val.arity
-        return 1
-    if is_law(x):
-        return x.val if is_nat(x.val) else x.arity
-    if is_nat(x):
-        return 0
-    return 0
+# Arity of each primitive opcode when accessed via Pin.
+# P(0)=Pin(1), P(1)=Law(3: name,arity,body), P(2)=Inc(1), P(3)=Case_(6), P(4)=Force(1)
+_OP_ARITY = {0: 1, 1: 3, 2: 1, 3: 6, 4: 1}
 
 
 def arity(x):
@@ -93,6 +82,8 @@ def arity(x):
         inner = x.val
         if is_law(inner):
             return inner.arity
+        if is_nat(inner) and inner in _OP_ARITY:
+            return _OP_ARITY[inner]
         return 1
     if is_law(x):
         return x.arity
@@ -129,7 +120,7 @@ def exec_(f, e):
     if is_pin(f):
         inner = f.val
         if is_nat(inner):
-            return op(inner, e[0])
+            return op(inner, e)
         if is_law(inner):
             return judge(inner.arity, list(reversed([f] + e)), inner.body)
         raise ValueError(f"exec: bad pin content {inner}")
@@ -140,43 +131,26 @@ def exec_(f, e):
     raise ValueError(f"exec: not executable {f}")
 
 
-def op(opcode, x):
-    """Execute a primitive opcode."""
+def op(opcode, args):
+    """Execute a primitive opcode with its accumulated arguments (a list)."""
     opcode = nat(opcode)
     if opcode == 0:
-        # Opcode 0: pin a value
-        return P(x)
+        # Pin: P(args[0])
+        return P(args[0])
     if opcode == 1:
-        # Opcode 1: create a law {name arity body}
-        # (1 arity name body) but arity is passed as (actual_arity - 1)
-        # Actually: op 1 receives (N 0 `A` a `A` m `A` b)
-        # which means x = A(A(A(N(0), a), m), b)
-        if is_app(x) and is_app(x.fun) and is_app(x.fun.fun):
-            b = x.arg
-            m = x.fun.arg
-            a = x.fun.fun.arg
-            return L(nat(a) + 1, m, b)
-        raise ValueError(f"op 1: bad args {x}")
+        # Law: (name, arity, body) -> L(arity, name, body)
+        n, a, b = args[0], args[1], args[2]
+        return L(nat(a), n, b)
     if opcode == 2:
-        # Opcode 2: match/dispatch
-        # x = A(A(A(A(A(A(N(0), p), l), a), z), m), o)
-        if is_app(x) and is_app(x.fun) and is_app(x.fun.fun) \
-                and is_app(x.fun.fun.fun) and is_app(x.fun.fun.fun.fun) \
-                and is_app(x.fun.fun.fun.fun.fun):
-            o = x.arg
-            m = x.fun.arg
-            z = x.fun.fun.arg
-            a_ = x.fun.fun.fun.arg
-            l = x.fun.fun.fun.fun.arg
-            p = x.fun.fun.fun.fun.fun.arg
-            return match(p, l, a_, z, m, o)
-        raise ValueError(f"op 2: bad args {x}")
+        # Inc: nat(args[0]) + 1
+        return nat(args[0]) + 1
     if opcode == 3:
-        # Opcode 3: increment
-        return nat(x) + 1
+        # Case_: dispatch on constructor type (6 args: p, l, a, z, m, o)
+        p, l, a_, z, m, o = args[0], args[1], args[2], args[3], args[4], args[5]
+        return match(p, l, a_, z, m, o)
     if opcode == 4:
-        # Opcode 4: pin (normalize and content-address)
-        return P(x)
+        # Force/pin
+        return P(args[0])
     raise ValueError(f"op: unknown opcode {opcode}")
 
 

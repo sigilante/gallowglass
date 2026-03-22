@@ -183,24 +183,20 @@ def load_seed(data, holes=None):
             ref_width = math.ceil(math.log2(scope_len))
 
         if size == 0:
-            # Leaf: just a reference
-            if ref_width == 0:
-                ref = 0
-            else:
-                ref = reader.read_bits(ref_width)
+            # Leaf fragment: size=0 means just a reference copy
+            ref = 0 if ref_width == 0 else reader.read_bits(ref_width)
             scope.append(scope[ref])
         else:
-            # Application: (f x1 x2 ... xn)
-            refs = []
-            for _ in range(size + 1):
-                if ref_width == 0:
-                    refs.append(0)
-                else:
-                    refs.append(reader.read_bits(ref_width))
-            # Build left-associative application
-            result = scope[refs[0]]
-            for i in range(1, len(refs)):
-                result = A(result, scope[refs[i]])
+            # Application: head ref (flat) then size args each as leaf trees
+            # planvm frag.recur: head is read flat, each arg via recursive frag.recur
+            # For leaf args: 1-bit size=0 prefix (always 1) then ref_width bits
+            head_ref = 0 if ref_width == 0 else reader.read_bits(ref_width)
+            result = scope[head_ref]
+            for _ in range(size):
+                # Consume the 1-bit leaf size prefix (always 1 for leaf args)
+                _leaf_prefix = reader.read_bit()  # noqa: expected to be 1
+                arg_ref = 0 if ref_width == 0 else reader.read_bits(ref_width)
+                result = A(result, scope[arg_ref])
             scope.append(result)
 
     if not scope:
@@ -252,19 +248,24 @@ def _intern(val, table, refs, _live=None):
         return idx
 
     if is_law(val):
-        # Laws encode as the PLAN template: (P(1) (((0 (arity-1)) name) body))
-        # where P(1) is the law-creation opcode pin (op 1 = create law).
-        # op 1 takes x = A(A(A(0, arity-1), name), body) and returns L(arity, name, body).
-        # P(1) itself needs MkPin, so has_pins must be True for this seed.
-        #
-        # Keep the template object alive in _live to prevent CPython from reusing
-        # its memory address (which would cause false id() cache hits for later objects).
-        template = A(P(1), A(A(A(0, val.arity - 1), val.name), val.body))
-        if _live is not None:
-            _live.append(template)
-        idx = _intern(template, table, refs, _live)
-        refs[vid] = idx  # cache law id → template idx so re-interning is O(1)
-        return idx
+        # Laws encode as A(A(A(P(1), name), arity), body) — P(1) applied to
+        # 3 separate args. This matches planvm's Car/Cdr decomposition:
+        #   Car(Law n a b) = A(A(P(1), n), a)
+        #   Cdr(Law n a b) = b
+        # intern() recurses Car/Cdr so the seed tree is exactly the 3-arg form.
+        p1 = P(1)
+        p1_idx    = _intern(p1,        table, refs, _live)
+        name_idx  = _intern(val.name,  table, refs, _live)
+        arity_idx = _intern(val.arity, table, refs, _live)
+        body_idx  = _intern(val.body,  table, refs, _live)
+        a1_idx = len(table)
+        table.append(('app', p1_idx, name_idx))
+        a2_idx = len(table)
+        table.append(('app', a1_idx, arity_idx))
+        a3_idx = len(table)
+        table.append(('app', a2_idx, body_idx))
+        refs[vid] = a3_idx
+        return a3_idx
 
     if is_app(val):
         fun_idx = _intern(val.fun, table, refs, _live)
@@ -380,27 +381,30 @@ def save_seed(val):
 
     for old_idx, entry in cells:
         kind = entry[0]
+        ref_width = max(1, math.ceil(math.log2(current_scope_size))) if current_scope_size > 1 else 0
 
         if kind == 'app':
-            # (f x) — 1 arg
+            # (f x) — 1-arg app: size=1, head ref (flat), arg as leaf tree
             fun_scope = remap[entry[1]]
             arg_scope = remap[entry[2]]
             for b in encode_frag_size(1):
                 writer.write_bit(b)
-            ref_width = max(1, math.ceil(math.log2(current_scope_size))) if current_scope_size > 1 else 0
-            if ref_width > 0:
-                writer.write_bits(fun_scope, ref_width)
-                writer.write_bits(arg_scope, ref_width)
+            # Head ref is flat (no size prefix per planvm frag.head)
+            writer.write_bits(fun_scope, ref_width)
+            # Each arg is a recursive frag.recur leaf: 1-bit size=0 prefix + ref bits
+            writer.write_bit(1)  # leaf size prefix (szsz=0 → single terminator bit)
+            writer.write_bits(arg_scope, ref_width)
 
         elif kind == 'pin_app':
-            # (MkPin inner) — 1 arg, hole 0 applied to inner
+            # (MkPin inner) — 1-arg app with hole 0 as head
             inner_scope = remap[entry[1]]
             for b in encode_frag_size(1):
                 writer.write_bit(b)
-            ref_width = max(1, math.ceil(math.log2(current_scope_size))) if current_scope_size > 1 else 0
-            if ref_width > 0:
-                writer.write_bits(0, ref_width)  # hole 0 = MkPin
-                writer.write_bits(inner_scope, ref_width)
+            # Head: hole 0 = MkPin (flat ref, no size prefix)
+            writer.write_bits(0, ref_width)
+            # Arg: leaf tree (1-bit size=0 prefix + ref bits)
+            writer.write_bit(1)  # leaf size prefix
+            writer.write_bits(inner_scope, ref_width)
 
         current_scope_size += 1
 

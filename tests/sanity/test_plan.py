@@ -39,21 +39,21 @@ def test_opcode_0_pin_law():
 
 
 # ============================================================
-# Opcode 3: Increment
+# Opcode 2: Increment
 # ============================================================
 
-def test_opcode_3_inc_zero():
+def test_opcode_2_inc_zero():
     """inc 0 = 1."""
-    assert apply(P(3), 0) == 1
+    assert apply(P(2), 0) == 1
 
-def test_opcode_3_inc_large():
+def test_opcode_2_inc_large():
     """inc 999 = 1000."""
-    assert apply(P(3), 999) == 1000
+    assert apply(P(2), 999) == 1000
 
-def test_opcode_3_inc_non_nat():
+def test_opcode_2_inc_non_nat():
     """inc on non-nat treats it as 0, returns 1."""
     # nat(x) defaults to 0 for non-nats
-    assert apply(P(3), A(1, 2)) == 1
+    assert apply(P(2), A(1, 2)) == 1
 
 
 # ============================================================
