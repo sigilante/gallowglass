@@ -475,20 +475,22 @@ type Token =
   | TkErr Nat
 
 -- AST types (parser output)
+-- Note: constructors are limited to arity ≤ 2 (bootstrap codegen restriction).
+-- 3-field nodes use a nested Pair for the last two fields.
 type Expr =
   | EVar Nat
   | EApp Expr Expr
   | ELam Nat Expr
-  | ELet Nat Expr Expr
+  | ELet Nat (Pair Expr Expr)       -- name, (rhs, body)
   | ENat Nat
-  | EIf Expr Expr Expr
+  | EIf Expr (Pair Expr Expr)       -- cond, (then_, else_)
   | EMatch Expr (List MatchArm)
-  | EPin Nat Expr Expr
+  | EPin Nat (Pair Expr Expr)       -- name, (rhs, body)
 
 type MatchArm =
   | ArmNat Nat Expr
   | ArmVar Nat Expr
-  | ArmCon Nat (List Nat) Expr
+  | ArmCon Nat (Pair (List Nat) Expr)   -- con_name, (field_names, body)
 
 type Decl =
   | DLet Nat Expr
@@ -499,16 +501,20 @@ type ConDef =
   | MkConDef Nat Nat
 
 -- PLAN value (codegen output)
+-- PLaw: arity ≤ 2 restriction; name_nat and arity are nested in a Pair.
 type PlanVal =
   | PNat Nat
   | PApp PlanVal PlanVal
-  | PLaw Nat Nat PlanVal
+  | PLaw Nat (Pair Nat PlanVal)     -- name_nat, (arity, body)
   | PPin PlanVal
 
--- Compilation environment
+-- Compilation environment (4 fields → nested Pairs)
+-- globals : List (Pair Nat PlanVal)
+-- locals  : List (Pair Nat Nat)
+-- arity   : Nat
+-- self_ref: Option Nat
 type CEnv =
-  | MkCEnv (List (Pair Nat PlanVal)) (List (Pair Nat Nat)) Nat (Option Nat)
-  -- fields: globals, locals, arity, self_ref_name
+  | MkCEnv (Pair (List (Pair Nat PlanVal)) (List (Pair Nat Nat))) (Pair Nat (Option Nat))
 
 -- =====================================================================
 -- End of M8.1: Core Utilities
@@ -1088,4 +1094,638 @@ let lex : Pair Nat Nat → Nat → Nat → Nat → List Token
 
 -- =====================================================================
 -- End of M8.2: Lexer
+-- =====================================================================
+
+
+-- =====================================================================
+-- Section 19: Token Helpers
+-- =====================================================================
+
+-- peek at first token without consuming
+let tok_peek : List Token → Token
+  = λ toks →
+      match toks {
+        | Nil → TkEof
+        | Cons t rest → t
+      }
+
+-- consume first token, return rest
+let tok_tail : List Token → List Token
+  = λ toks →
+      match toks {
+        | Nil → Nil
+        | Cons t rest → rest
+      }
+
+-- tok_is: 1 if head token equals the given nullary token value
+let tok_is : List Token → Token → Nat
+  = λ toks tok → nat_eq (tok_peek toks) tok
+
+-- eat TkIdent; returns Pair name_nat rest (name_nat=0 means not found)
+-- Safe sentinel: all valid ident nats are ≥ 0x30 ('0'), never 0.
+let tok_eat_ident : List Token → Pair Nat (List Token)
+  = λ toks →
+      match (tok_peek toks) {
+        | TkIdent n → MkPair n (tok_tail toks)
+        | _ → MkPair 0 toks
+      }
+
+-- skip tokens until TkEqual is consumed; used to discard type annotations
+let tok_skip_to_equal : List Token → List Token
+  = λ toks →
+      match toks {
+        | Nil → Nil
+        | Cons t rest →
+            match (nat_eq t TkEqual) {
+              | 0 → tok_skip_to_equal rest
+              | k → rest
+            }
+      }
+
+-- skip_ann: skip optional ": Type" annotation and consume the "="
+-- If head is TkColon: skip to and including TkEqual
+-- If head is TkEqual: consume it
+-- Otherwise: return toks unchanged (caller handles)
+let skip_ann : List Token → List Token
+  = λ toks →
+      match (tok_is toks TkColon) {
+        | 0 → tok_tail toks
+        | k → tok_skip_to_equal toks
+      }
+
+-- tok_eat_nat_token: if head is TkNat return MkPair (Some n) rest; else MkPair None toks
+-- Single App arm — avoids the multi-App-arm pred_env bug in the bootstrap codegen.
+let tok_eat_nat_token : List Token → Pair (Option Nat) (List Token)
+  = λ toks →
+      match (tok_peek toks) {
+        | TkNat n → MkPair (Some n) (tok_tail toks)
+        | _ → MkPair None toks
+      }
+
+-- tok_eat_text_token: if head is TkText return MkPair (Some n) rest; else MkPair None toks
+-- Single App arm — avoids the multi-App-arm pred_env bug in the bootstrap codegen.
+let tok_eat_text_token : List Token → Pair (Option Nat) (List Token)
+  = λ toks →
+      match (tok_peek toks) {
+        | TkText n → MkPair (Some n) (tok_tail toks)
+        | _ → MkPair None toks
+      }
+
+-- =====================================================================
+-- Section 20: Qualified Name Building
+-- =====================================================================
+
+-- Count significant bytes in a nat (nat_byte_len 0 = 0)
+let nat_byte_len : Nat → Nat
+  = λ n →
+      match (nat_eq n 0) {
+        | 0 → Core.PLAN.inc (nat_byte_len (shift_right n 8))
+        | k → 0
+      }
+
+-- Append a dot (0x2E) to a (len, content) name pair
+let name_append_dot : Pair Nat Nat → Pair Nat Nat
+  = λ nb →
+      match nb {
+        | MkPair len n →
+            MkPair (Core.PLAN.inc len) (bit_or n (shift_left 0x2E (mul 8 len)))
+      }
+
+-- parse_qual_name_go: consume additional TkDot TkIdent segments
+let parse_qual_name_go : List Token → Pair Nat Nat → Pair Nat (List Token)
+  = λ toks acc →
+      match toks {
+        | Nil → match acc { | MkPair len n → MkPair n Nil }
+        | Cons t1 rest1 →
+            match (nat_eq t1 TkDot) {
+              | 0 → match acc { | MkPair len n → MkPair n toks }
+              | k →
+                  match rest1 {
+                    | Nil → match acc { | MkPair len n → MkPair n toks }
+                    | Cons t2 rest2 →
+                        match t2 {
+                          | TkIdent part_nat →
+                              parse_qual_name_go rest2
+                                (bytes_concat (name_append_dot acc)
+                                              (MkPair (nat_byte_len part_nat) part_nat))
+                          | _ → match acc { | MkPair len n → MkPair n toks }
+                        }
+                  }
+            }
+      }
+
+-- parse_qual_name: parse TkIdent (TkDot TkIdent)*; 0 = not found
+let parse_qual_name : List Token → Pair Nat (List Token)
+  = λ toks →
+      match (tok_eat_ident toks) {
+        | MkPair 0 _ → MkPair 0 toks
+        | MkPair head_nat rest →
+            parse_qual_name_go rest (MkPair (nat_byte_len head_nat) head_nat)
+      }
+
+-- =====================================================================
+-- Section 21: Expression Parser
+-- Rule: NO let bindings inside match arm bodies.
+--       All intermediate values must be passed as direct arguments.
+--       Rationale: let forms in match arm bodies are not evaluated by kal.
+-- =====================================================================
+
+-- is_atom_start: 1 if current token can begin an atom expression
+let is_atom_start : List Token → Nat
+  = λ toks →
+      match (tok_peek toks) {
+        | TkNat _ → 1
+        | TkText _ → 1
+        | TkIdent _ → 1
+        | TkLParen → 1
+        | TkMatch → 1
+        | _ → 0
+      }
+
+-- is_upper_first_byte: 1 if lowest byte of n is uppercase ASCII
+let is_upper_first_byte : Nat → Nat
+  = λ n → is_upper (bit_and n 0xFF)
+
+-- parse_ident_list: collect TkIdent tokens (constructor field names)
+let parse_ident_list : List Token → Pair (List Nat) (List Token)
+  = λ toks →
+      match (tok_eat_ident toks) {
+        | MkPair 0 _ → MkPair Nil toks
+        | MkPair n rest →
+            match (parse_ident_list rest) {
+              | MkPair names rest2 → MkPair (Cons n names) rest2
+            }
+      }
+
+-- =====================================================================
+-- Section 21: Expression Parser (pe = parse_expr passed as parameter)
+-- All helpers take pe : (List Token → Pair Expr (List Token)) as first arg.
+-- This breaks the forward-reference cycle: helpers are defined before
+-- parse_expr, which ties the knot by passing itself (N(0) self-ref) to
+-- parse_expr_dispatch, which threads pe through all recursive calls.
+-- =====================================================================
+
+-- arm_con_upper_pe: build ArmCon after we know con_nat is uppercase
+-- toks is positioned AFTER the constructor name
+let arm_con_upper_pe : (List Token → Pair Expr (List Token)) → Nat → List Token → Pair MatchArm (List Token)
+  = λ pe con_nat toks →
+      match (parse_ident_list toks) {
+        | MkPair fields toks2 →
+            match (pe (tok_tail toks2)) {
+              | MkPair body rest →
+                  MkPair (ArmCon con_nat (MkPair fields body)) rest
+            }
+      }
+
+-- arm_con_lower_pe: build ArmVar after we know name is lowercase
+-- toks is positioned AFTER the variable name (next token should be →)
+let arm_con_lower_pe : (List Token → Pair Expr (List Token)) → Nat → List Token → Pair MatchArm (List Token)
+  = λ pe var_nat toks →
+      match (pe (tok_tail toks)) {
+        | MkPair body rest → MkPair (ArmVar var_nat body) rest
+      }
+
+-- parse_match_arm_pe: parse  | Pat → Expr
+-- Precondition: head is TkBar
+-- Uses tok_eat_nat_token first (1 App arm) so the inner match on TkIdent
+-- has only 1 App arm — avoids the multi-App-arm pred_env bug in bootstrap.
+let parse_match_arm_pe : (List Token → Pair Expr (List Token)) → List Token → Pair MatchArm (List Token)
+  = λ pe toks →
+      match (tok_eat_nat_token (tok_tail toks)) {
+        | MkPair n_opt rest →
+            match n_opt {
+              | Some n →
+                  -- | n → expr: rest is after the nat literal, tok_tail skips →
+                  match (pe (tok_tail rest)) {
+                    | MkPair body rest2 → MkPair (ArmNat n body) rest2
+                  }
+              | None →
+                  -- Only TkIdent is an App arm here (1 App arm only)
+                  match (tok_peek (tok_tail toks)) {
+                    | TkIdent con_nat →
+                        match (is_upper_first_byte con_nat) {
+                          | 0 → arm_con_lower_pe pe con_nat (tok_tail (tok_tail toks))
+                          | k → arm_con_upper_pe pe con_nat (tok_tail (tok_tail toks))
+                        }
+                    | _ →
+                        -- pe is in handler_env via TkIdent arm above
+                        match (tok_is (tok_tail toks) TkUnderscore) {
+                          | 0 → MkPair (ArmVar 0 (EVar 0)) (tok_tail toks)
+                          | k →
+                              -- | _ → expr  (tok_tail x3: skip |, _, →)
+                              match (pe (tok_tail (tok_tail (tok_tail toks)))) {
+                                | MkPair body rest2 → MkPair (ArmVar 0 body) rest2
+                              }
+                        }
+                  }
+            }
+      }
+
+-- parse_match_arms_pe: parse arms while head is TkBar
+let parse_match_arms_pe : (List Token → Pair Expr (List Token)) → List Token → Pair (List MatchArm) (List Token)
+  = λ pe toks →
+      match (tok_is toks TkBar) {
+        | 0 → MkPair Nil toks
+        | k →
+            match (parse_match_arm_pe pe toks) {
+              | MkPair arm rest →
+                  match (parse_match_arms_pe pe rest) {
+                    | MkPair arms rest2 → MkPair (Cons arm arms) rest2
+                  }
+            }
+      }
+
+-- parse_lambda_params: collect TkIdent params until TkArrow
+let parse_lambda_params : List Token → Pair (List Nat) (List Token)
+  = λ toks →
+      match (tok_eat_ident toks) {
+        | MkPair 0 _ → MkPair Nil toks
+        | MkPair n rest →
+            match (tok_is rest TkArrow) {
+              | 0 →
+                  match (parse_lambda_params rest) {
+                    | MkPair ps rest2 → MkPair (Cons n ps) rest2
+                  }
+              | k → MkPair (Cons n Nil) rest
+            }
+      }
+
+-- build_lambda: fold param list into nested ELam nodes
+let build_lambda : List Nat → Expr → Expr
+  = λ params body →
+      match params {
+        | Nil → body
+        | Cons p rest → ELam p (build_lambda rest body)
+      }
+
+-- parse_match_expr_pe: parse  match scrut { arms }
+-- toks is positioned AFTER the 'match' keyword
+let parse_match_expr_pe : (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
+  = λ pe toks →
+      match (pe toks) {
+        | MkPair scrut toks2 →
+            match (parse_match_arms_pe pe (tok_tail toks2)) {
+              | MkPair arms toks3 →
+                  MkPair (EMatch scrut arms) (tok_tail toks3)
+            }
+      }
+
+-- parse_qual_name_pe: wrapper taking pe so pe appears in the TkIdent arm body
+-- of parse_atom_expr_pe. Bootstrap workaround: pe must be referenced in at
+-- least one App arm body to be captured in handler_env for the wildcard arm.
+let parse_qual_name_pe : (List Token → Pair Expr (List Token)) → List Token → Pair Nat (List Token)
+  = λ pe toks → parse_qual_name toks
+
+-- parse_atom_expr_pe: parse a single non-application atom
+-- Uses tok_eat_nat_token and tok_eat_text_token (1 App arm each) to handle
+-- TkNat/TkText before the innermost match, which then has only 1 App arm
+-- (TkIdent via parse_qual_name_pe pe) — avoids the multi-App-arm pred_env bug.
+let parse_atom_expr_pe : (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
+  = λ pe toks →
+      match (tok_eat_nat_token toks) {
+        | MkPair n_opt rest →
+            match n_opt {
+              | Some n → MkPair (ENat n) rest
+              | None →
+                  match (tok_eat_text_token toks) {
+                    | MkPair n_opt2 rest2 →
+                        match n_opt2 {
+                          | Some n → MkPair (ENat n) rest2
+                          | None →
+                              -- Only TkIdent is an App arm here (1 App arm only).
+                              -- pe appears in TkIdent arm body (parse_qual_name_pe pe toks)
+                              -- so pe is captured in handler_env for the wildcard arm.
+                              match (tok_peek toks) {
+                                | TkIdent _ →
+                                    match (parse_qual_name_pe pe toks) {
+                                      | MkPair n rest3 → MkPair (EVar n) rest3
+                                    }
+                                | _ →
+                                    -- pe and toks both in handler_env
+                                    match (tok_is toks TkLParen) {
+                                      | 0 →
+                                          match (tok_is toks TkMatch) {
+                                            | 0 → MkPair (EVar 0) toks
+                                            | k → parse_match_expr_pe pe (tok_tail toks)
+                                          }
+                                      | k →
+                                          match (pe (tok_tail toks)) {
+                                            | MkPair e toks2 → MkPair e (tok_tail toks2)
+                                          }
+                                    }
+                              }
+                        }
+                  }
+            }
+      }
+
+-- parse_app_go_pe: fold additional atoms into application spine
+let parse_app_go_pe : (List Token → Pair Expr (List Token)) → Expr → List Token → Pair Expr (List Token)
+  = λ pe acc toks →
+      match (is_atom_start toks) {
+        | 0 → MkPair acc toks
+        | k →
+            match (parse_atom_expr_pe pe toks) {
+              | MkPair arg rest → parse_app_go_pe pe (EApp acc arg) rest
+            }
+      }
+
+-- parse_app_expr_pe: head atom followed by zero or more atom arguments
+let parse_app_expr_pe : (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
+  = λ pe toks →
+      match (parse_atom_expr_pe pe toks) {
+        | MkPair head rest → parse_app_go_pe pe head rest
+      }
+
+-- parse_lam_body_pe: finish parsing lambda after params are collected
+-- toks is positioned AFTER the last param (next token should be →)
+let parse_lam_body_pe : (List Token → Pair Expr (List Token)) → List Nat → List Token → Pair Expr (List Token)
+  = λ pe params toks →
+      match (pe (tok_tail toks)) {
+        | MkPair body rest → MkPair (build_lambda params body) rest
+      }
+
+-- parse_if_else_pe: finish parsing if/then/else given cond and then_ parsed
+-- toks is positioned on 'else' keyword
+let parse_if_else_pe : (List Token → Pair Expr (List Token)) → Expr → Expr → List Token → Pair Expr (List Token)
+  = λ pe cond then_ toks →
+      match (pe (tok_tail toks)) {
+        | MkPair else_ rest →
+            MkPair (EIf cond (MkPair then_ else_)) rest
+      }
+
+-- parse_if_then_pe: finish parsing if after cond is parsed
+-- toks is positioned on 'then' keyword
+let parse_if_then_pe : (List Token → Pair Expr (List Token)) → Expr → List Token → Pair Expr (List Token)
+  = λ pe cond toks →
+      match (pe (tok_tail toks)) {
+        | MkPair then_ toks2 → parse_if_else_pe pe cond then_ toks2
+      }
+
+-- parse_let_body_pe: finish a let-in expression given name and rhs
+-- toks is positioned on 'in' keyword
+let parse_let_body_pe : (List Token → Pair Expr (List Token)) → Nat → Expr → List Token → Pair Expr (List Token)
+  = λ pe name rhs toks →
+      match (pe (tok_tail toks)) {
+        | MkPair body rest → MkPair (ELet name (MkPair rhs body)) rest
+      }
+
+-- parse_let_rhs_pe: finish a let-in expression after name is parsed
+-- toks is positioned on ':' or '=' (start of annotation-or-equals)
+let parse_let_rhs_pe : (List Token → Pair Expr (List Token)) → Nat → List Token → Pair Expr (List Token)
+  = λ pe name toks →
+      match (pe (skip_ann toks)) {
+        | MkPair rhs toks2 → parse_let_body_pe pe name rhs toks2
+      }
+
+-- parse_pin_body_pe: finish @name = rhs in body
+let parse_pin_body_pe : (List Token → Pair Expr (List Token)) → Nat → Expr → List Token → Pair Expr (List Token)
+  = λ pe name rhs toks →
+      match (pe (tok_tail toks)) {
+        | MkPair body rest → MkPair (EPin name (MkPair rhs body)) rest
+      }
+
+-- parse_pin_rhs_pe: finish @name after name consumed
+let parse_pin_rhs_pe : (List Token → Pair Expr (List Token)) → Nat → List Token → Pair Expr (List Token)
+  = λ pe name toks →
+      match (pe (skip_ann toks)) {
+        | MkPair rhs toks2 → parse_pin_body_pe pe name rhs toks2
+      }
+
+-- parse_expr_dispatch: full expression parser body, parameterised over pe
+-- ALL of TkLambda, TkIf, TkLet, TkAt are nullary with tags > 1.  Matching them
+-- directly as constructor arms compiles their pe-referencing bodies in pred_env
+-- (bootstrap codegen bug).  Using tok_is (nat match) keeps pe in scope everywhere.
+let parse_expr_dispatch : (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
+  = λ pe toks →
+      match (tok_is toks TkLambda) {
+        | 0 →
+            match (tok_is toks TkIf) {
+              | 0 →
+                  match (tok_is toks TkLet) {
+                    | 0 →
+                        match (tok_is toks TkAt) {
+                          | 0 → parse_app_expr_pe pe toks
+                          | k →
+                              match (tok_eat_ident (tok_tail toks)) {
+                                | MkPair 0 _ → MkPair (EVar 0) toks
+                                | MkPair name toks2 → parse_pin_rhs_pe pe name toks2
+                              }
+                        }
+                    | k →
+                        match (tok_eat_ident (tok_tail toks)) {
+                          | MkPair 0 _ → MkPair (EVar 0) toks
+                          | MkPair name toks2 → parse_let_rhs_pe pe name toks2
+                        }
+                  }
+              | k →
+                  match (pe (tok_tail toks)) {
+                    | MkPair cond toks2 → parse_if_then_pe pe cond toks2
+                  }
+            }
+        | k →
+            match (parse_lambda_params (tok_tail toks)) {
+              | MkPair params toks2 → parse_lam_body_pe pe params toks2
+            }
+      }
+
+-- parse_expr: entry point — ties the knot by passing self (N(0)) to dispatch
+let parse_expr : List Token → Pair Expr (List Token)
+  = λ toks → parse_expr_dispatch parse_expr toks
+
+-- =====================================================================
+-- Section 22: Declaration Parser
+-- =====================================================================
+
+-- skip_type_params: skip TkIdent type parameter tokens before =
+let skip_type_params : List Token → List Token
+  = λ toks →
+      match (tok_peek toks) {
+        | TkIdent _ → skip_type_params (tok_tail toks)
+        | _ → toks
+      }
+
+-- is_arity_stop: 1 if token ends a constructor field list (| } EOF let type external)
+-- Uses nat_eq chains (each with 1 named arm) — avoids multi-nat-arm pred_env bug.
+let is_arity_stop : Nat → Nat
+  = λ t →
+      match (nat_eq t TkBar) {
+        | 0 →
+            match (nat_eq t TkRBrace) {
+              | 0 →
+                  match (nat_eq t TkEof) {
+                    | 0 →
+                        match (nat_eq t TkLet) {
+                          | 0 →
+                              match (nat_eq t TkType) {
+                                | 0 → nat_eq t TkExternal
+                                | k → 1
+                              }
+                          | k → 1
+                        }
+                    | k → 1
+                  }
+              | k → 1
+            }
+        | k → 1
+      }
+
+-- parse_con_arity: count tokens before next | } let type external (arity)
+-- Uses is_arity_stop (1 named nat arm) — avoids multi-nat-arm pred_env bug.
+let parse_con_arity : List Token → Nat → Pair Nat (List Token)
+  = λ toks acc →
+      match (is_arity_stop (tok_peek toks)) {
+        | 0 → parse_con_arity (tok_tail toks) (Core.PLAN.inc acc)
+        | k → MkPair acc toks
+      }
+
+-- parse_con_def: parse  | Name fields...
+let parse_con_def : List Token → Pair ConDef (List Token)
+  = λ toks →
+      match (tok_eat_ident (tok_tail toks)) {
+        | MkPair 0 _ → MkPair (MkConDef 0 0) (tok_tail toks)
+        | MkPair name toks2 →
+            match (parse_con_arity toks2 0) {
+              | MkPair arity rest → MkPair (MkConDef name arity) rest
+            }
+      }
+
+-- parse_con_defs: parse | Con ... arms while head = TkBar
+let parse_con_defs : List Token → Pair (List ConDef) (List Token)
+  = λ toks →
+      match (tok_is toks TkBar) {
+        | 0 → MkPair Nil toks
+        | k →
+            match (parse_con_def toks) {
+              | MkPair cd rest →
+                  match (parse_con_defs rest) {
+                    | MkPair cds rest2 → MkPair (Cons cd cds) rest2
+                  }
+            }
+      }
+
+-- is_ext_type_body_stop: 1 if token ends an external mod type annotation
+-- Uses nat_eq chain (1 named arm each) — avoids multi-nat-arm pred_env bug.
+let is_ext_type_body_stop : Nat → Nat
+  = λ t →
+      match (nat_eq t TkRBrace) {
+        | 0 → nat_eq t TkEof
+        | k → 1
+      }
+
+-- tok_skip_ext_type_body: skip past type tokens until next ident or } or EOF
+-- Uses tok_eat_ident (1 App arm) + is_ext_type_body_stop (nat_eq) to avoid
+-- multi-nullary-arm pred_env bug.
+let tok_skip_ext_type_body : List Token → List Token
+  = λ toks →
+      match (tok_eat_ident toks) {
+        | MkPair n _ →
+            match (nat_eq n 0) {
+              | 0 → toks
+              | k →
+                  match (is_ext_type_body_stop (tok_peek toks)) {
+                    | 0 → tok_skip_ext_type_body (tok_tail toks)
+                    | k → toks
+                  }
+            }
+      }
+
+-- tok_skip_ext_type: skip `: Type` annotation in external mod item
+let tok_skip_ext_type : List Token → List Token
+  = λ toks →
+      match (tok_is toks TkColon) {
+        | 0 → toks
+        | k → tok_skip_ext_type_body (tok_tail toks)
+      }
+
+-- parse_ext_items: parse  name : Type  items inside external mod { }
+-- Uses tok_is chain instead of multi-nullary constructor match to avoid pred_env bug.
+let parse_ext_items : List Token → Pair (List Nat) (List Token)
+  = λ toks →
+      match (tok_is toks TkRBrace) {
+        | 0 →
+            match (tok_is toks TkEof) {
+              | 0 → MkPair Nil toks
+              | k →
+                  match (tok_eat_ident toks) {
+                    | MkPair 0 _ → MkPair Nil (tok_tail toks)
+                    | MkPair name toks1 →
+                        match (parse_ext_items (tok_skip_ext_type toks1)) {
+                          | MkPair names rest → MkPair (Cons name names) rest
+                        }
+                  }
+            }
+        | k → MkPair Nil toks
+      }
+
+-- parse_let_decl: finish parsing a top-level let after name
+-- toks is positioned on ':' or '='
+let parse_let_decl : Nat → List Token → Pair Decl (List Token)
+  = λ name toks →
+      match (parse_expr (skip_ann toks)) {
+        | MkPair body rest → MkPair (DLet name body) rest
+      }
+
+-- parse_type_decl: finish parsing type after name
+-- toks is positioned after optional type params, on '='
+let parse_type_decl_body : Nat → List Token → Pair Decl (List Token)
+  = λ name toks →
+      match (parse_con_defs (tok_tail toks)) {
+        | MkPair cdefs rest → MkPair (DType name cdefs) rest
+      }
+
+-- parse_ext_decl: finish parsing external mod after mod name
+-- toks is positioned on '{'
+let parse_ext_decl : Nat → List Token → Pair Decl (List Token)
+  = λ mod_name toks →
+      match (parse_ext_items (tok_tail toks)) {
+        | MkPair names toks2 →
+            MkPair (DExt mod_name names) (tok_tail toks2)
+      }
+
+-- parse_decl: parse one top-level declaration
+-- Uses tok_is chain (1 named nat arm each) — avoids multi-nullary-arm pred_env bug.
+let parse_decl : List Token → Pair Decl (List Token)
+  = λ toks →
+      match (tok_is toks TkLet) {
+        | 0 →
+            match (tok_is toks TkType) {
+              | 0 →
+                  match (tok_is toks TkExternal) {
+                    | 0 → MkPair (DLet 0 (EVar 0)) (tok_tail toks)
+                    | k →
+                        match (parse_qual_name (tok_tail (tok_tail toks))) {
+                          | MkPair mod_name toks2 → parse_ext_decl mod_name toks2
+                        }
+                  }
+              | k →
+                  match (tok_eat_ident (tok_tail toks)) {
+                    | MkPair 0 _ → MkPair (DType 0 Nil) toks
+                    | MkPair name toks2 →
+                        parse_type_decl_body name (skip_type_params toks2)
+                  }
+            }
+        | k →
+            match (tok_eat_ident (tok_tail toks)) {
+              | MkPair 0 _ → MkPair (DLet 0 (EVar 0)) toks
+              | MkPair name toks2 → parse_let_decl name toks2
+            }
+      }
+
+-- =====================================================================
+-- Section 23: parse_program
+-- =====================================================================
+
+let parse_program : List Token → List Decl
+  = λ toks →
+      match (tok_peek toks) {
+        | TkEof → Nil
+        | _ →
+            match (parse_decl toks) {
+              | MkPair decl rest → Cons decl (parse_program rest)
+            }
+      }
+
+-- =====================================================================
+-- End of M8.3: Parser
 -- =====================================================================
