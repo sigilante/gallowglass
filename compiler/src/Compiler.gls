@@ -444,6 +444,7 @@ let name_to_nat : Nat → Nat
 -- Token type (lexer output)
 type Token =
   | TkNat Nat
+  | TkText Nat
   | TkIdent Nat
   | TkLParen
   | TkRParen
@@ -466,6 +467,7 @@ type Token =
   | TkElse
   | TkExternal
   | TkMod
+  | TkIn
   | TkLambda
   | TkForall
   | TkUnderscore
@@ -473,20 +475,22 @@ type Token =
   | TkErr Nat
 
 -- AST types (parser output)
+-- Note: constructors are limited to arity ≤ 2 (bootstrap codegen restriction).
+-- 3-field nodes use a nested Pair for the last two fields.
 type Expr =
   | EVar Nat
   | EApp Expr Expr
   | ELam Nat Expr
-  | ELet Nat Expr Expr
+  | ELet Nat (Pair Expr Expr)       -- name, (rhs, body)
   | ENat Nat
-  | EIf Expr Expr Expr
+  | EIf Expr (Pair Expr Expr)       -- cond, (then_, else_)
   | EMatch Expr (List MatchArm)
-  | EPin Nat Expr Expr
+  | EPin Nat (Pair Expr Expr)       -- name, (rhs, body)
 
 type MatchArm =
   | ArmNat Nat Expr
   | ArmVar Nat Expr
-  | ArmCon Nat (List Nat) Expr
+  | ArmCon Nat (Pair (List Nat) Expr)   -- con_name, (field_names, body)
 
 type Decl =
   | DLet Nat Expr
@@ -497,19 +501,1231 @@ type ConDef =
   | MkConDef Nat Nat
 
 -- PLAN value (codegen output)
+-- PLaw: arity ≤ 2 restriction; name_nat and arity are nested in a Pair.
 type PlanVal =
   | PNat Nat
   | PApp PlanVal PlanVal
-  | PLaw Nat Nat PlanVal
+  | PLaw Nat (Pair Nat PlanVal)     -- name_nat, (arity, body)
   | PPin PlanVal
 
--- Compilation environment
+-- Compilation environment (4 fields → nested Pairs)
+-- globals : List (Pair Nat PlanVal)
+-- locals  : List (Pair Nat Nat)
+-- arity   : Nat
+-- self_ref: Option Nat
 type CEnv =
-  | MkCEnv (List (Pair Nat PlanVal)) (List (Pair Nat Nat)) Nat (Option Nat)
-  -- fields: globals, locals, arity, self_ref_name
+  | MkCEnv (Pair (List (Pair Nat PlanVal)) (List (Pair Nat Nat))) (Pair Nat (Option Nat))
 
 -- =====================================================================
 -- End of M8.1: Core Utilities
--- The lexer, parser, scope, codegen, emit, and main phases follow
--- in subsequent milestones.
+-- =====================================================================
+
+-- =====================================================================
+-- Section 10: Byte Classification Helpers
+-- =====================================================================
+
+-- is_digit: 1 if byte b is ASCII '0'-'9'
+let is_digit : Nat → Nat
+  = λ b →
+      match (lte 0x30 b) {
+        | 0 → 0
+        | k → lte b 0x39
+      }
+
+-- is_upper: 1 if byte b is ASCII 'A'-'Z'
+let is_upper : Nat → Nat
+  = λ b →
+      match (lte 0x41 b) {
+        | 0 → 0
+        | k → lte b 0x5A
+      }
+
+-- is_lower: 1 if byte b is ASCII 'a'-'z'
+let is_lower : Nat → Nat
+  = λ b →
+      match (lte 0x61 b) {
+        | 0 → 0
+        | k → lte b 0x7A
+      }
+
+-- is_alpha: 1 if byte b is ASCII letter
+let is_alpha : Nat → Nat
+  = λ b →
+      match (is_upper b) {
+        | 0 → is_lower b
+        | k → 1
+      }
+
+-- is_alnum_or_under: 1 if byte b is alphanumeric or underscore
+let is_alnum_or_under : Nat → Nat
+  = λ b →
+      match (is_digit b) {
+        | 0 →
+            match (is_alpha b) {
+              | 0 → nat_eq b 95
+              | k → 1
+            }
+        | k → 1
+      }
+
+-- is_hex_digit: 1 if b is 0-9, a-f, A-F
+let is_hex_digit : Nat → Nat
+  = λ b →
+      match (is_digit b) {
+        | 0 →
+            match (lte 0x61 b) {
+              | 0 →
+                  match (lte 0x41 b) {
+                    | 0 → 0
+                    | k → lte b 0x46
+                  }
+              | k → lte b 0x66
+            }
+        | k → 1
+      }
+
+-- hex_digit_val: value of a hex digit byte (0-15)
+let hex_digit_val : Nat → Nat
+  = λ b →
+      match (is_digit b) {
+        | 0 →
+            match (is_lower b) {
+              | 0 → sub b 0x37   -- 'A'=0x41, val = b - 0x41 + 10 = b - 0x37
+              | k → sub b 0x57   -- 'a'=0x61, val = b - 0x61 + 10 = b - 0x57
+            }
+        | k → sub b 0x30
+      }
+
+-- =====================================================================
+-- Section 11: Keyword Nat Constants
+-- Each keyword is its UTF-8 bytes packed little-endian into a Nat.
+-- =====================================================================
+
+-- Each keyword is its UTF-8 bytes packed little-endian into a Nat.
+-- Byte order: first char at bits [7:0], second at [15:8], etc.
+
+let kw_let          : Nat = 0x74656C           -- "let"
+let kw_type         : Nat = 0x65707974         -- "type"
+let kw_match        : Nat = 0x686374616D       -- "match"
+let kw_if           : Nat = 0x6669             -- "if"
+let kw_then         : Nat = 0x6E656874         -- "then"
+let kw_else         : Nat = 0x65736C65         -- "else"
+let kw_external     : Nat = 0x6C616E7265747865  -- "external"
+let kw_mod          : Nat = 0x646F6D           -- "mod"
+let kw_in           : Nat = 0x6E69             -- "in"
+let kw_fn           : Nat = 0x6E66             -- "fn"  (ASCII alt for λ)
+let kw_forall_ascii : Nat = 0x6C6C61726F66     -- "forall"
+let kw_lambda_uni   : Nat = 0xBBCE             -- "λ"  (CE BB)
+let kw_arrow_uni    : Nat = 0x9286E2           -- "→"  (E2 86 92)
+let kw_backarrow_uni: Nat = 0x9086E2           -- "←"  (E2 86 90)
+let kw_forall_uni   : Nat = 0x8088E2           -- "∀"  (E2 88 80)
+let kw_underscore   : Nat = 0x5F               -- "_"
+
+-- =====================================================================
+-- Section 12: LexPos Helpers
+-- =====================================================================
+
+-- LexPos is encoded as Pair Nat (Pair Nat Nat) = MkPair offset (MkPair line col)
+-- This avoids a 3-field constructor which the bootstrap codegen does not support.
+
+let lexpos_offset : Pair Nat (Pair Nat Nat) → Nat
+  = λ pos →
+      match pos {
+        | MkPair offset lc → offset
+      }
+
+let lexpos_line : Pair Nat (Pair Nat Nat) → Nat
+  = λ pos →
+      match pos {
+        | MkPair offset lc →
+            match lc {
+              | MkPair line col → line
+            }
+      }
+
+let lexpos_col : Pair Nat (Pair Nat Nat) → Nat
+  = λ pos →
+      match pos {
+        | MkPair offset lc →
+            match lc {
+              | MkPair line col → col
+            }
+      }
+
+-- Make a LexPos from offset, line, col
+let mk_lexpos : Nat → Nat → Nat → Pair Nat (Pair Nat Nat)
+  = λ offset line col → MkPair offset (MkPair line col)
+
+-- Advance offset by 1 and col by 1
+let lexpos_advance : Pair Nat (Pair Nat Nat) → Pair Nat (Pair Nat Nat)
+  = λ pos →
+      match pos {
+        | MkPair offset lc →
+            match lc {
+              | MkPair line col →
+                  MkPair (Core.PLAN.inc offset) (MkPair line (Core.PLAN.inc col))
+            }
+      }
+
+-- Advance offset by n, col by n
+let lexpos_advance_n : Pair Nat (Pair Nat Nat) → Nat → Pair Nat (Pair Nat Nat)
+  = λ pos n →
+      match pos {
+        | MkPair offset lc →
+            match lc {
+              | MkPair line col →
+                  MkPair (add offset n) (MkPair line (add col n))
+            }
+      }
+
+-- Advance offset by 1, increment line, reset col to 1
+let lexpos_newline : Pair Nat (Pair Nat Nat) → Pair Nat (Pair Nat Nat)
+  = λ pos →
+      match pos {
+        | MkPair offset lc →
+            match lc {
+              | MkPair line col →
+                  MkPair (Core.PLAN.inc offset) (MkPair (Core.PLAN.inc line) 1)
+            }
+      }
+
+-- =====================================================================
+-- Section 13: Whitespace and Comment Skipping
+-- =====================================================================
+
+-- lex_skip_line: advance past bytes until newline (0x0A) or end of source.
+-- The newline itself is consumed.
+let lex_skip_line : Pair Nat Nat → LexPos → LexPos
+  = λ src pos →
+      match (nat_eq (lexpos_offset pos) (bytes_length src)) {
+        | 0 →
+            match (nat_eq (bytes_at src (lexpos_offset pos)) 0x0A) {
+              | 0 →
+                  lex_skip_line src (lexpos_advance pos)
+              | k → lexpos_advance pos
+            }
+        | k → pos
+      }
+
+-- lex_skip_ws: skip whitespace (0x20 space, 0x09 tab, 0x0D CR, 0x0A LF) and
+-- line comments (--).  Returns position after last skipped char.
+-- Uses deep nesting because multiple match cases cannot be flattened
+-- without mutual recursion.
+let lex_skip_ws : Pair Nat Nat → LexPos → LexPos
+  = λ src pos →
+      match (nat_eq (lexpos_offset pos) (bytes_length src)) {
+        | 0 →
+            let b = bytes_at src (lexpos_offset pos) in
+            match (nat_eq b 0x20) {
+              | 0 →
+                  match (nat_eq b 0x09) {
+                    | 0 →
+                        match (nat_eq b 0x0D) {
+                          | 0 →
+                              match (nat_eq b 0x0A) {
+                                | 0 →
+                                    -- Check for "--" comment: b must be 0x2D '-'
+                                    match (nat_eq b 0x2D) {
+                                      | 0 → pos
+                                      | k →
+                                          -- peek at next byte
+                                          match (nat_eq (Core.PLAN.inc (lexpos_offset pos)) (bytes_length src)) {
+                                            | 0 →
+                                                match (nat_eq (bytes_at src (Core.PLAN.inc (lexpos_offset pos))) 0x2D) {
+                                                  | 0 → pos
+                                                  | k →
+                                                      lex_skip_ws src (lex_skip_line src (lexpos_advance_n pos 2))
+                                                }
+                                            | k → pos
+                                          }
+                                    }
+                                | k → lex_skip_ws src (lexpos_newline pos)
+                              }
+                          | k → lex_skip_ws src (lexpos_advance pos)
+                        }
+                    | k → lex_skip_ws src (lexpos_advance pos)
+                  }
+              | k → lex_skip_ws src (lexpos_advance pos)
+            }
+        | k → pos
+      }
+
+-- =====================================================================
+-- Section 14: Identifier and Keyword Scanning
+-- =====================================================================
+
+-- lex_scan_ident_go: accumulate bytes while is_alnum_or_under.
+-- Returns MkPair end_pos (MkPair byte_len ident_nat)
+let lex_scan_ident_go : Pair Nat Nat → LexPos → Nat → Nat → Pair LexPos (Pair Nat Nat)
+  = λ src pos ident_len ident_nat →
+      match (nat_eq (lexpos_offset pos) (bytes_length src)) {
+        | 0 →
+            match (is_alnum_or_under (bytes_at src (lexpos_offset pos))) {
+              | 0 → MkPair pos (MkPair ident_len ident_nat)
+              | k →
+                  let b = bytes_at src (lexpos_offset pos) in
+                  lex_scan_ident_go src (lexpos_advance pos)
+                    (Core.PLAN.inc ident_len)
+                    (bit_or ident_nat (shift_left b (mul 8 ident_len)))
+            }
+        | k → MkPair pos (MkPair ident_len ident_nat)
+      }
+
+-- lex_classify_ident: given (byte_len, ident_nat), return the Token.
+-- Keywords map to their token; leading uppercase → TkIdent (PascalCase);
+-- leading lowercase → TkIdent (snake_case) unless keyword.
+-- "_" alone → TkUnderscore.
+let lex_classify_ident : Nat → Nat → Token
+  = λ ident_len ident_nat →
+      match (nat_eq ident_nat kw_let) {
+        | 0 →
+            match (nat_eq ident_nat kw_type) {
+              | 0 →
+                  match (nat_eq ident_nat kw_match) {
+                    | 0 →
+                        match (nat_eq ident_nat kw_if) {
+                          | 0 →
+                              match (nat_eq ident_nat kw_then) {
+                                | 0 →
+                                    match (nat_eq ident_nat kw_else) {
+                                      | 0 →
+                                          match (nat_eq ident_nat kw_external) {
+                                            | 0 →
+                                                match (nat_eq ident_nat kw_mod) {
+                                                  | 0 →
+                                                      match (nat_eq ident_nat kw_in) {
+                                                        | 0 →
+                                                            match (nat_eq ident_nat kw_fn) {
+                                                              | 0 →
+                                                                  match (nat_eq ident_nat kw_forall_ascii) {
+                                                                    | 0 →
+                                                                        match (nat_eq ident_nat kw_underscore) {
+                                                                          | 0 → TkIdent ident_nat
+                                                                          | k → TkUnderscore
+                                                                        }
+                                                                    | k → TkForall
+                                                                  }
+                                                              | k → TkLambda
+                                                            }
+                                                        | k → TkIn
+                                                      }
+                                                  | k → TkMod
+                                                }
+                                            | k → TkExternal
+                                          }
+                                      | k → TkElse
+                                    }
+                                | k → TkThen
+                              }
+                          | k → TkIf
+                        }
+                    | k → TkMatch
+                  }
+              | k → TkType
+            }
+        | k → TkLet
+      }
+
+-- =====================================================================
+-- Section 15: Nat Literal Scanning
+-- =====================================================================
+
+-- lex_scan_nat_dec_go: accumulate decimal digits, building up the value.
+-- Returns MkPair end_pos accumulated_value
+let lex_scan_nat_dec_go : Pair Nat Nat → LexPos → Nat → Pair LexPos Nat
+  = λ src pos acc →
+      match (nat_eq (lexpos_offset pos) (bytes_length src)) {
+        | 0 →
+            match (is_digit (bytes_at src (lexpos_offset pos))) {
+              | 0 → MkPair pos acc
+              | k →
+                  let d = sub (bytes_at src (lexpos_offset pos)) 0x30 in
+                  lex_scan_nat_dec_go src (lexpos_advance pos) (add (mul acc 10) d)
+            }
+        | k → MkPair pos acc
+      }
+
+-- lex_scan_nat_hex_go: accumulate hex digits after "0x" prefix.
+let lex_scan_nat_hex_go : Pair Nat Nat → LexPos → Nat → Pair LexPos Nat
+  = λ src pos acc →
+      match (nat_eq (lexpos_offset pos) (bytes_length src)) {
+        | 0 →
+            match (is_hex_digit (bytes_at src (lexpos_offset pos))) {
+              | 0 → MkPair pos acc
+              | k →
+                  let d = hex_digit_val (bytes_at src (lexpos_offset pos)) in
+                  lex_scan_nat_hex_go src (lexpos_advance pos) (add (mul acc 16) d)
+            }
+        | k → MkPair pos acc
+      }
+
+-- =====================================================================
+-- Section 16: Text Literal Scanning
+-- =====================================================================
+
+-- lex_scan_text_go: accumulate bytes inside double-quoted string.
+-- Handles \" escape only; other bytes included as-is.
+-- Returns MkPair end_pos (MkPair byte_len content_nat)
+-- Caller must have already consumed the opening '"'.
+let lex_scan_text_go : Pair Nat Nat → LexPos → Nat → Nat → Pair LexPos (Pair Nat Nat)
+  = λ src pos tlen tnat →
+      match (nat_eq (lexpos_offset pos) (bytes_length src)) {
+        | 0 →
+            match (nat_eq (bytes_at src (lexpos_offset pos)) 0x22) {   -- '"'
+              | 0 →
+                  -- Check for backslash escape
+                  match (nat_eq (bytes_at src (lexpos_offset pos)) 0x5C) {  -- '\'
+                    | 0 →
+                        let b = bytes_at src (lexpos_offset pos) in
+                        lex_scan_text_go src (lexpos_advance pos)
+                          (Core.PLAN.inc tlen)
+                          (bit_or tnat (shift_left b (mul 8 tlen)))
+                    | k →
+                        -- backslash: consume next byte literally
+                        match (nat_eq (Core.PLAN.inc (lexpos_offset pos)) (bytes_length src)) {
+                          | 0 →
+                              let b2 = bytes_at src (Core.PLAN.inc (lexpos_offset pos)) in
+                              lex_scan_text_go src (lexpos_advance_n pos 2)
+                                (Core.PLAN.inc tlen)
+                                (bit_or tnat (shift_left b2 (mul 8 tlen)))
+                          | k →
+                              -- backslash at end of file: produce error token
+                              MkPair pos (MkPair tlen tnat)
+                        }
+                  }
+              | k →
+                  -- closing '"': consume it
+                  MkPair (lexpos_advance pos) (MkPair tlen tnat)
+            }
+        | k →
+            -- end of file inside string: return what we have
+            MkPair pos (MkPair tlen tnat)
+      }
+
+-- =====================================================================
+-- Section 17: Single Token Dispatch
+-- =====================================================================
+
+-- lex_one: consume one token starting at pos (after whitespace is skipped).
+-- Returns MkPair token end_pos.
+-- Multi-byte Unicode operators are handled by inspecting the lead byte.
+-- Precondition: pos is within bounds (caller has checked).
+let lex_one : Pair Nat Nat → LexPos → Pair Token LexPos
+  = λ src pos →
+      let b = bytes_at src (lexpos_offset pos) in
+      let pos1 = lexpos_advance pos in
+      -- Digits
+      match (is_digit b) {
+        | 0 →
+            -- Identifiers / keywords
+            match (is_alpha b) {
+              | 0 →
+                  match (nat_eq b 0x5F) {           -- '_'
+                    | 0 →
+                        -- Punctuation and operators
+                        match (nat_eq b 0x28) {           -- '('
+                          | 0 →
+                              match (nat_eq b 0x29) {     -- ')'
+                                | 0 →
+                                    match (nat_eq b 0x7B) {   -- '{'
+                                      | 0 →
+                                          match (nat_eq b 0x7D) {   -- '}'
+                                            | 0 →
+                                                match (nat_eq b 0x7C) {   -- '|'
+                                                  | 0 →
+                                                      match (nat_eq b 0x3D) {   -- '='
+                                                        | 0 →
+                                                            match (nat_eq b 0x3A) {   -- ':'
+                                                              | 0 →
+                                                                  match (nat_eq b 0x2E) {   -- '.'
+                                                                    | 0 →
+                                                                        match (nat_eq b 0x2C) {   -- ','
+                                                                          | 0 →
+                                                                              match (nat_eq b 0x40) {   -- '@'
+                                                                                | 0 →
+                                                                                    match (nat_eq b 0x60) {   -- '`'
+                                                                                      | 0 →
+                                                                                          match (nat_eq b 0x22) {   -- '"'
+                                                                                            | 0 →
+                                                                                                -- 0xE2: lead byte for → ← ∀
+                                                                                                match (nat_eq b 0xE2) {
+                                                                                                  | 0 →
+                                                                                                      -- 0xCE: lead byte for λ
+                                                                                                      match (nat_eq b 0xCE) {
+                                                                                                        | 0 →
+                                                                                                            -- Unknown byte: emit error token
+                                                                                                            MkPair (TkErr b) pos1
+                                                                                                        | k →
+                                                                                                            -- λ = CE BB (2 bytes)
+                                                                                                            MkPair TkLambda (lexpos_advance pos1)
+                                                                                                      }
+                                                                                                  | k →
+                                                                                                      -- E2 xx xx: 3-byte sequence for → ← ∀
+                                                                                                      -- Collect as LE nat: b | (b2 << 8) | (b3 << 16)
+                                                                                                      let b2 = bytes_at src (lexpos_offset pos1) in
+                                                                                                      let b3 = bytes_at src (Core.PLAN.inc (lexpos_offset pos1)) in
+                                                                                                      let seq = bit_or b (bit_or (shift_left b2 8) (shift_left b3 16)) in
+                                                                                                      let pos3 = lexpos_advance_n pos 3 in
+                                                                                                      match (nat_eq seq kw_arrow_uni) {
+                                                                                                        | 0 →
+                                                                                                            match (nat_eq seq kw_backarrow_uni) {
+                                                                                                              | 0 →
+                                                                                                                  match (nat_eq seq kw_forall_uni) {
+                                                                                                                    | 0 → MkPair (TkErr b) pos3
+                                                                                                                    | k → MkPair TkForall pos3
+                                                                                                                  }
+                                                                                                              | k → MkPair TkBackArrow pos3
+                                                                                                            }
+                                                                                                        | k → MkPair TkArrow pos3
+                                                                                                      }
+                                                                                                }
+                                                                                            | k →
+                                                                                                -- Text literal
+                                                                                                let tr = lex_scan_text_go src pos1 0 0 in
+                                                                                                match tr {
+                                                                                                  | MkPair end_pos tpair →
+                                                                                                      match tpair {
+                                                                                                        | MkPair tlen tnat →
+                                                                                                            MkPair (TkText tnat) end_pos
+                                                                                                      }
+                                                                                                }
+                                                                                          }
+                                                                                      | k → MkPair TkBacktick pos1
+                                                                                    }
+                                                                                | k → MkPair TkAt pos1
+                                                                              }
+                                                                          | k → MkPair TkComma pos1
+                                                                        }
+                                                                    | k → MkPair TkDot pos1
+                                                                  }
+                                                              | k → MkPair TkColon pos1
+                                                            }
+                                                        | k → MkPair TkEqual pos1
+                                                      }
+                                                  | k → MkPair TkBar pos1
+                                                }
+                                            | k → MkPair TkRBrace pos1
+                                          }
+                                      | k → MkPair TkLBrace pos1
+                                    }
+                                | k → MkPair TkRParen pos1
+                              }
+                          | k → MkPair TkLParen pos1
+                        }
+                    | k →
+                        -- Leading underscore: start identifier scan
+                        let tr = lex_scan_ident_go src pos 0 0 in
+                        match tr {
+                          | MkPair end_pos ipair →
+                              match ipair {
+                                | MkPair ilen inat →
+                                    MkPair (lex_classify_ident ilen inat) end_pos
+                              }
+                        }
+                  }
+              | k →
+                  -- Leading alpha: start identifier scan
+                  let tr = lex_scan_ident_go src pos 0 0 in
+                  match tr {
+                    | MkPair end_pos ipair →
+                        match ipair {
+                          | MkPair ilen inat →
+                              MkPair (lex_classify_ident ilen inat) end_pos
+                        }
+                  }
+            }
+        | k →
+            -- Digit: check for 0x/0X hex prefix
+            match (nat_eq b 0x30) {           -- '0'
+              | 0 →
+                  -- Non-zero digit: decimal scan starting with value (b - '0')
+                  let tr = lex_scan_nat_dec_go src pos1 (sub b 0x30) in
+                  match tr {
+                    | MkPair end_pos n → MkPair (TkNat n) end_pos
+                  }
+              | k →
+                  -- '0': peek at next byte for 'x'/'X'
+                  match (nat_eq (lexpos_offset pos1) (bytes_length src)) {
+                    | 0 →
+                        match (nat_eq (bytes_at src (lexpos_offset pos1)) 0x78) {   -- 'x'
+                          | 0 →
+                              match (nat_eq (bytes_at src (lexpos_offset pos1)) 0x58) {   -- 'X'
+                                | 0 →
+                                    -- plain '0' (or '0' followed by non-x digit)
+                                    MkPair (TkNat 0) pos1
+                                | k →
+                                    -- '0X': hex literal
+                                    let tr = lex_scan_nat_hex_go src (lexpos_advance pos1) 0 in
+                                    match tr {
+                                      | MkPair end_pos n → MkPair (TkNat n) end_pos
+                                    }
+                              }
+                          | k →
+                              -- '0x': hex literal
+                              let tr = lex_scan_nat_hex_go src (lexpos_advance pos1) 0 in
+                              match tr {
+                                | MkPair end_pos n → MkPair (TkNat n) end_pos
+                              }
+                        }
+                    | k → MkPair (TkNat 0) pos1
+                  }
+            }
+      }
+
+-- =====================================================================
+-- Section 18: Main Lex Loop
+-- =====================================================================
+
+-- lex: tokenize src starting at (offset, line, col).
+-- Returns a List Token ending with TkEof.
+-- The list is built lazily via cons; each call processes one token.
+let lex : Pair Nat Nat → Nat → Nat → Nat → List Token
+  = λ src offset line col →
+      let pos1 = lex_skip_ws src (mk_lexpos offset line col) in
+      match (nat_eq (lexpos_offset pos1) (bytes_length src)) {
+        | 0 →
+            let tr = lex_one src pos1 in
+            match tr {
+              | MkPair tok pos2 →
+                  Cons tok (lex src (lexpos_offset pos2) (lexpos_line pos2) (lexpos_col pos2))
+            }
+        | k → Cons TkEof Nil
+      }
+
+-- =====================================================================
+-- End of M8.2: Lexer
+-- =====================================================================
+
+
+-- =====================================================================
+-- Section 19: Token Helpers
+-- =====================================================================
+
+-- peek at first token without consuming
+let tok_peek : List Token → Token
+  = λ toks →
+      match toks {
+        | Nil → TkEof
+        | Cons t rest → t
+      }
+
+-- consume first token, return rest
+let tok_tail : List Token → List Token
+  = λ toks →
+      match toks {
+        | Nil → Nil
+        | Cons t rest → rest
+      }
+
+-- tok_is: 1 if head token equals the given nullary token value
+let tok_is : List Token → Token → Nat
+  = λ toks tok → nat_eq (tok_peek toks) tok
+
+-- eat TkIdent; returns Pair name_nat rest (name_nat=0 means not found)
+-- Safe sentinel: all valid ident nats are ≥ 0x30 ('0'), never 0.
+let tok_eat_ident : List Token → Pair Nat (List Token)
+  = λ toks →
+      match (tok_peek toks) {
+        | TkIdent n → MkPair n (tok_tail toks)
+        | _ → MkPair 0 toks
+      }
+
+-- skip tokens until TkEqual is consumed; used to discard type annotations
+let tok_skip_to_equal : List Token → List Token
+  = λ toks →
+      match toks {
+        | Nil → Nil
+        | Cons t rest →
+            match (nat_eq t TkEqual) {
+              | 0 → tok_skip_to_equal rest
+              | k → rest
+            }
+      }
+
+-- skip_ann: skip optional ": Type" annotation and consume the "="
+-- If head is TkColon: skip to and including TkEqual
+-- If head is TkEqual: consume it
+-- Otherwise: return toks unchanged (caller handles)
+let skip_ann : List Token → List Token
+  = λ toks →
+      match (tok_is toks TkColon) {
+        | 0 → tok_tail toks
+        | k → tok_skip_to_equal toks
+      }
+
+-- tok_eat_nat_token: if head is TkNat return MkPair (Some n) rest; else MkPair None toks
+-- Single App arm — avoids the multi-App-arm pred_env bug in the bootstrap codegen.
+let tok_eat_nat_token : List Token → Pair (Option Nat) (List Token)
+  = λ toks →
+      match (tok_peek toks) {
+        | TkNat n → MkPair (Some n) (tok_tail toks)
+        | _ → MkPair None toks
+      }
+
+-- tok_eat_text_token: if head is TkText return MkPair (Some n) rest; else MkPair None toks
+-- Single App arm — avoids the multi-App-arm pred_env bug in the bootstrap codegen.
+let tok_eat_text_token : List Token → Pair (Option Nat) (List Token)
+  = λ toks →
+      match (tok_peek toks) {
+        | TkText n → MkPair (Some n) (tok_tail toks)
+        | _ → MkPair None toks
+      }
+
+-- =====================================================================
+-- Section 20: Qualified Name Building
+-- =====================================================================
+
+-- Count significant bytes in a nat (nat_byte_len 0 = 0)
+let nat_byte_len : Nat → Nat
+  = λ n →
+      match (nat_eq n 0) {
+        | 0 → Core.PLAN.inc (nat_byte_len (shift_right n 8))
+        | k → 0
+      }
+
+-- Append a dot (0x2E) to a (len, content) name pair
+let name_append_dot : Pair Nat Nat → Pair Nat Nat
+  = λ nb →
+      match nb {
+        | MkPair len n →
+            MkPair (Core.PLAN.inc len) (bit_or n (shift_left 0x2E (mul 8 len)))
+      }
+
+-- parse_qual_name_go: consume additional TkDot TkIdent segments
+let parse_qual_name_go : List Token → Pair Nat Nat → Pair Nat (List Token)
+  = λ toks acc →
+      match toks {
+        | Nil → match acc { | MkPair len n → MkPair n Nil }
+        | Cons t1 rest1 →
+            match (nat_eq t1 TkDot) {
+              | 0 → match acc { | MkPair len n → MkPair n toks }
+              | k →
+                  match rest1 {
+                    | Nil → match acc { | MkPair len n → MkPair n toks }
+                    | Cons t2 rest2 →
+                        match t2 {
+                          | TkIdent part_nat →
+                              parse_qual_name_go rest2
+                                (bytes_concat (name_append_dot acc)
+                                              (MkPair (nat_byte_len part_nat) part_nat))
+                          | _ → match acc { | MkPair len n → MkPair n toks }
+                        }
+                  }
+            }
+      }
+
+-- parse_qual_name: parse TkIdent (TkDot TkIdent)*; 0 = not found
+let parse_qual_name : List Token → Pair Nat (List Token)
+  = λ toks →
+      match (tok_eat_ident toks) {
+        | MkPair 0 _ → MkPair 0 toks
+        | MkPair head_nat rest →
+            parse_qual_name_go rest (MkPair (nat_byte_len head_nat) head_nat)
+      }
+
+-- =====================================================================
+-- Section 21: Expression Parser
+-- Rule: NO let bindings inside match arm bodies.
+--       All intermediate values must be passed as direct arguments.
+--       Rationale: let forms in match arm bodies are not evaluated by kal.
+-- =====================================================================
+
+-- is_atom_start: 1 if current token can begin an atom expression
+let is_atom_start : List Token → Nat
+  = λ toks →
+      match (tok_peek toks) {
+        | TkNat _ → 1
+        | TkText _ → 1
+        | TkIdent _ → 1
+        | TkLParen → 1
+        | TkMatch → 1
+        | _ → 0
+      }
+
+-- is_upper_first_byte: 1 if lowest byte of n is uppercase ASCII
+let is_upper_first_byte : Nat → Nat
+  = λ n → is_upper (bit_and n 0xFF)
+
+-- parse_ident_list: collect TkIdent tokens (constructor field names)
+let parse_ident_list : List Token → Pair (List Nat) (List Token)
+  = λ toks →
+      match (tok_eat_ident toks) {
+        | MkPair 0 _ → MkPair Nil toks
+        | MkPair n rest →
+            match (parse_ident_list rest) {
+              | MkPair names rest2 → MkPair (Cons n names) rest2
+            }
+      }
+
+-- =====================================================================
+-- Section 21: Expression Parser (pe = parse_expr passed as parameter)
+-- All helpers take pe : (List Token → Pair Expr (List Token)) as first arg.
+-- This breaks the forward-reference cycle: helpers are defined before
+-- parse_expr, which ties the knot by passing itself (N(0) self-ref) to
+-- parse_expr_dispatch, which threads pe through all recursive calls.
+-- =====================================================================
+
+-- arm_con_upper_pe: build ArmCon after we know con_nat is uppercase
+-- toks is positioned AFTER the constructor name
+let arm_con_upper_pe : (List Token → Pair Expr (List Token)) → Nat → List Token → Pair MatchArm (List Token)
+  = λ pe con_nat toks →
+      match (parse_ident_list toks) {
+        | MkPair fields toks2 →
+            match (pe (tok_tail toks2)) {
+              | MkPair body rest →
+                  MkPair (ArmCon con_nat (MkPair fields body)) rest
+            }
+      }
+
+-- arm_con_lower_pe: build ArmVar after we know name is lowercase
+-- toks is positioned AFTER the variable name (next token should be →)
+let arm_con_lower_pe : (List Token → Pair Expr (List Token)) → Nat → List Token → Pair MatchArm (List Token)
+  = λ pe var_nat toks →
+      match (pe (tok_tail toks)) {
+        | MkPair body rest → MkPair (ArmVar var_nat body) rest
+      }
+
+-- parse_match_arm_pe: parse  | Pat → Expr
+-- Precondition: head is TkBar
+-- Uses tok_eat_nat_token first (1 App arm) so the inner match on TkIdent
+-- has only 1 App arm — avoids the multi-App-arm pred_env bug in bootstrap.
+let parse_match_arm_pe : (List Token → Pair Expr (List Token)) → List Token → Pair MatchArm (List Token)
+  = λ pe toks →
+      match (tok_eat_nat_token (tok_tail toks)) {
+        | MkPair n_opt rest →
+            match n_opt {
+              | Some n →
+                  -- | n → expr: rest is after the nat literal, tok_tail skips →
+                  match (pe (tok_tail rest)) {
+                    | MkPair body rest2 → MkPair (ArmNat n body) rest2
+                  }
+              | None →
+                  -- Only TkIdent is an App arm here (1 App arm only)
+                  match (tok_peek (tok_tail toks)) {
+                    | TkIdent con_nat →
+                        match (is_upper_first_byte con_nat) {
+                          | 0 → arm_con_lower_pe pe con_nat (tok_tail (tok_tail toks))
+                          | k → arm_con_upper_pe pe con_nat (tok_tail (tok_tail toks))
+                        }
+                    | _ →
+                        -- pe is in handler_env via TkIdent arm above
+                        match (tok_is (tok_tail toks) TkUnderscore) {
+                          | 0 → MkPair (ArmVar 0 (EVar 0)) (tok_tail toks)
+                          | k →
+                              -- | _ → expr  (tok_tail x3: skip |, _, →)
+                              match (pe (tok_tail (tok_tail (tok_tail toks)))) {
+                                | MkPair body rest2 → MkPair (ArmVar 0 body) rest2
+                              }
+                        }
+                  }
+            }
+      }
+
+-- parse_match_arms_pe: parse arms while head is TkBar
+let parse_match_arms_pe : (List Token → Pair Expr (List Token)) → List Token → Pair (List MatchArm) (List Token)
+  = λ pe toks →
+      match (tok_is toks TkBar) {
+        | 0 → MkPair Nil toks
+        | k →
+            match (parse_match_arm_pe pe toks) {
+              | MkPair arm rest →
+                  match (parse_match_arms_pe pe rest) {
+                    | MkPair arms rest2 → MkPair (Cons arm arms) rest2
+                  }
+            }
+      }
+
+-- parse_lambda_params: collect TkIdent params until TkArrow
+let parse_lambda_params : List Token → Pair (List Nat) (List Token)
+  = λ toks →
+      match (tok_eat_ident toks) {
+        | MkPair 0 _ → MkPair Nil toks
+        | MkPair n rest →
+            match (tok_is rest TkArrow) {
+              | 0 →
+                  match (parse_lambda_params rest) {
+                    | MkPair ps rest2 → MkPair (Cons n ps) rest2
+                  }
+              | k → MkPair (Cons n Nil) rest
+            }
+      }
+
+-- build_lambda: fold param list into nested ELam nodes
+let build_lambda : List Nat → Expr → Expr
+  = λ params body →
+      match params {
+        | Nil → body
+        | Cons p rest → ELam p (build_lambda rest body)
+      }
+
+-- parse_match_expr_pe: parse  match scrut { arms }
+-- toks is positioned AFTER the 'match' keyword
+let parse_match_expr_pe : (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
+  = λ pe toks →
+      match (pe toks) {
+        | MkPair scrut toks2 →
+            match (parse_match_arms_pe pe (tok_tail toks2)) {
+              | MkPair arms toks3 →
+                  MkPair (EMatch scrut arms) (tok_tail toks3)
+            }
+      }
+
+-- parse_qual_name_pe: wrapper taking pe so pe appears in the TkIdent arm body
+-- of parse_atom_expr_pe. Bootstrap workaround: pe must be referenced in at
+-- least one App arm body to be captured in handler_env for the wildcard arm.
+let parse_qual_name_pe : (List Token → Pair Expr (List Token)) → List Token → Pair Nat (List Token)
+  = λ pe toks → parse_qual_name toks
+
+-- parse_atom_expr_pe: parse a single non-application atom
+-- Uses tok_eat_nat_token and tok_eat_text_token (1 App arm each) to handle
+-- TkNat/TkText before the innermost match, which then has only 1 App arm
+-- (TkIdent via parse_qual_name_pe pe) — avoids the multi-App-arm pred_env bug.
+let parse_atom_expr_pe : (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
+  = λ pe toks →
+      match (tok_eat_nat_token toks) {
+        | MkPair n_opt rest →
+            match n_opt {
+              | Some n → MkPair (ENat n) rest
+              | None →
+                  match (tok_eat_text_token toks) {
+                    | MkPair n_opt2 rest2 →
+                        match n_opt2 {
+                          | Some n → MkPair (ENat n) rest2
+                          | None →
+                              -- Only TkIdent is an App arm here (1 App arm only).
+                              -- pe appears in TkIdent arm body (parse_qual_name_pe pe toks)
+                              -- so pe is captured in handler_env for the wildcard arm.
+                              match (tok_peek toks) {
+                                | TkIdent _ →
+                                    match (parse_qual_name_pe pe toks) {
+                                      | MkPair n rest3 → MkPair (EVar n) rest3
+                                    }
+                                | _ →
+                                    -- pe and toks both in handler_env
+                                    match (tok_is toks TkLParen) {
+                                      | 0 →
+                                          match (tok_is toks TkMatch) {
+                                            | 0 → MkPair (EVar 0) toks
+                                            | k → parse_match_expr_pe pe (tok_tail toks)
+                                          }
+                                      | k →
+                                          match (pe (tok_tail toks)) {
+                                            | MkPair e toks2 → MkPair e (tok_tail toks2)
+                                          }
+                                    }
+                              }
+                        }
+                  }
+            }
+      }
+
+-- parse_app_go_pe: fold additional atoms into application spine
+let parse_app_go_pe : (List Token → Pair Expr (List Token)) → Expr → List Token → Pair Expr (List Token)
+  = λ pe acc toks →
+      match (is_atom_start toks) {
+        | 0 → MkPair acc toks
+        | k →
+            match (parse_atom_expr_pe pe toks) {
+              | MkPair arg rest → parse_app_go_pe pe (EApp acc arg) rest
+            }
+      }
+
+-- parse_app_expr_pe: head atom followed by zero or more atom arguments
+let parse_app_expr_pe : (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
+  = λ pe toks →
+      match (parse_atom_expr_pe pe toks) {
+        | MkPair head rest → parse_app_go_pe pe head rest
+      }
+
+-- parse_lam_body_pe: finish parsing lambda after params are collected
+-- toks is positioned AFTER the last param (next token should be →)
+let parse_lam_body_pe : (List Token → Pair Expr (List Token)) → List Nat → List Token → Pair Expr (List Token)
+  = λ pe params toks →
+      match (pe (tok_tail toks)) {
+        | MkPair body rest → MkPair (build_lambda params body) rest
+      }
+
+-- parse_if_else_pe: finish parsing if/then/else given cond and then_ parsed
+-- toks is positioned on 'else' keyword
+let parse_if_else_pe : (List Token → Pair Expr (List Token)) → Expr → Expr → List Token → Pair Expr (List Token)
+  = λ pe cond then_ toks →
+      match (pe (tok_tail toks)) {
+        | MkPair else_ rest →
+            MkPair (EIf cond (MkPair then_ else_)) rest
+      }
+
+-- parse_if_then_pe: finish parsing if after cond is parsed
+-- toks is positioned on 'then' keyword
+let parse_if_then_pe : (List Token → Pair Expr (List Token)) → Expr → List Token → Pair Expr (List Token)
+  = λ pe cond toks →
+      match (pe (tok_tail toks)) {
+        | MkPair then_ toks2 → parse_if_else_pe pe cond then_ toks2
+      }
+
+-- parse_let_body_pe: finish a let-in expression given name and rhs
+-- toks is positioned on 'in' keyword
+let parse_let_body_pe : (List Token → Pair Expr (List Token)) → Nat → Expr → List Token → Pair Expr (List Token)
+  = λ pe name rhs toks →
+      match (pe (tok_tail toks)) {
+        | MkPair body rest → MkPair (ELet name (MkPair rhs body)) rest
+      }
+
+-- parse_let_rhs_pe: finish a let-in expression after name is parsed
+-- toks is positioned on ':' or '=' (start of annotation-or-equals)
+let parse_let_rhs_pe : (List Token → Pair Expr (List Token)) → Nat → List Token → Pair Expr (List Token)
+  = λ pe name toks →
+      match (pe (skip_ann toks)) {
+        | MkPair rhs toks2 → parse_let_body_pe pe name rhs toks2
+      }
+
+-- parse_pin_body_pe: finish @name = rhs in body
+let parse_pin_body_pe : (List Token → Pair Expr (List Token)) → Nat → Expr → List Token → Pair Expr (List Token)
+  = λ pe name rhs toks →
+      match (pe (tok_tail toks)) {
+        | MkPair body rest → MkPair (EPin name (MkPair rhs body)) rest
+      }
+
+-- parse_pin_rhs_pe: finish @name after name consumed
+let parse_pin_rhs_pe : (List Token → Pair Expr (List Token)) → Nat → List Token → Pair Expr (List Token)
+  = λ pe name toks →
+      match (pe (skip_ann toks)) {
+        | MkPair rhs toks2 → parse_pin_body_pe pe name rhs toks2
+      }
+
+-- parse_expr_dispatch: full expression parser body, parameterised over pe
+-- ALL of TkLambda, TkIf, TkLet, TkAt are nullary with tags > 1.  Matching them
+-- directly as constructor arms compiles their pe-referencing bodies in pred_env
+-- (bootstrap codegen bug).  Using tok_is (nat match) keeps pe in scope everywhere.
+let parse_expr_dispatch : (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
+  = λ pe toks →
+      match (tok_is toks TkLambda) {
+        | 0 →
+            match (tok_is toks TkIf) {
+              | 0 →
+                  match (tok_is toks TkLet) {
+                    | 0 →
+                        match (tok_is toks TkAt) {
+                          | 0 → parse_app_expr_pe pe toks
+                          | k →
+                              match (tok_eat_ident (tok_tail toks)) {
+                                | MkPair 0 _ → MkPair (EVar 0) toks
+                                | MkPair name toks2 → parse_pin_rhs_pe pe name toks2
+                              }
+                        }
+                    | k →
+                        match (tok_eat_ident (tok_tail toks)) {
+                          | MkPair 0 _ → MkPair (EVar 0) toks
+                          | MkPair name toks2 → parse_let_rhs_pe pe name toks2
+                        }
+                  }
+              | k →
+                  match (pe (tok_tail toks)) {
+                    | MkPair cond toks2 → parse_if_then_pe pe cond toks2
+                  }
+            }
+        | k →
+            match (parse_lambda_params (tok_tail toks)) {
+              | MkPair params toks2 → parse_lam_body_pe pe params toks2
+            }
+      }
+
+-- parse_expr: entry point — ties the knot by passing self (N(0)) to dispatch
+let parse_expr : List Token → Pair Expr (List Token)
+  = λ toks → parse_expr_dispatch parse_expr toks
+
+-- =====================================================================
+-- Section 22: Declaration Parser
+-- =====================================================================
+
+-- skip_type_params: skip TkIdent type parameter tokens before =
+let skip_type_params : List Token → List Token
+  = λ toks →
+      match (tok_peek toks) {
+        | TkIdent _ → skip_type_params (tok_tail toks)
+        | _ → toks
+      }
+
+-- is_arity_stop: 1 if token ends a constructor field list (| } EOF let type external)
+-- Uses nat_eq chains (each with 1 named arm) — avoids multi-nat-arm pred_env bug.
+let is_arity_stop : Nat → Nat
+  = λ t →
+      match (nat_eq t TkBar) {
+        | 0 →
+            match (nat_eq t TkRBrace) {
+              | 0 →
+                  match (nat_eq t TkEof) {
+                    | 0 →
+                        match (nat_eq t TkLet) {
+                          | 0 →
+                              match (nat_eq t TkType) {
+                                | 0 → nat_eq t TkExternal
+                                | k → 1
+                              }
+                          | k → 1
+                        }
+                    | k → 1
+                  }
+              | k → 1
+            }
+        | k → 1
+      }
+
+-- parse_con_arity: count tokens before next | } let type external (arity)
+-- Uses is_arity_stop (1 named nat arm) — avoids multi-nat-arm pred_env bug.
+let parse_con_arity : List Token → Nat → Pair Nat (List Token)
+  = λ toks acc →
+      match (is_arity_stop (tok_peek toks)) {
+        | 0 → parse_con_arity (tok_tail toks) (Core.PLAN.inc acc)
+        | k → MkPair acc toks
+      }
+
+-- parse_con_def: parse  | Name fields...
+let parse_con_def : List Token → Pair ConDef (List Token)
+  = λ toks →
+      match (tok_eat_ident (tok_tail toks)) {
+        | MkPair 0 _ → MkPair (MkConDef 0 0) (tok_tail toks)
+        | MkPair name toks2 →
+            match (parse_con_arity toks2 0) {
+              | MkPair arity rest → MkPair (MkConDef name arity) rest
+            }
+      }
+
+-- parse_con_defs: parse | Con ... arms while head = TkBar
+let parse_con_defs : List Token → Pair (List ConDef) (List Token)
+  = λ toks →
+      match (tok_is toks TkBar) {
+        | 0 → MkPair Nil toks
+        | k →
+            match (parse_con_def toks) {
+              | MkPair cd rest →
+                  match (parse_con_defs rest) {
+                    | MkPair cds rest2 → MkPair (Cons cd cds) rest2
+                  }
+            }
+      }
+
+-- is_ext_type_body_stop: 1 if token ends an external mod type annotation
+-- Uses nat_eq chain (1 named arm each) — avoids multi-nat-arm pred_env bug.
+let is_ext_type_body_stop : Nat → Nat
+  = λ t →
+      match (nat_eq t TkRBrace) {
+        | 0 → nat_eq t TkEof
+        | k → 1
+      }
+
+-- tok_skip_ext_type_body: skip past type tokens until next ident or } or EOF
+-- Uses tok_eat_ident (1 App arm) + is_ext_type_body_stop (nat_eq) to avoid
+-- multi-nullary-arm pred_env bug.
+let tok_skip_ext_type_body : List Token → List Token
+  = λ toks →
+      match (tok_eat_ident toks) {
+        | MkPair n _ →
+            match (nat_eq n 0) {
+              | 0 → toks
+              | k →
+                  match (is_ext_type_body_stop (tok_peek toks)) {
+                    | 0 → tok_skip_ext_type_body (tok_tail toks)
+                    | k → toks
+                  }
+            }
+      }
+
+-- tok_skip_ext_type: skip `: Type` annotation in external mod item
+let tok_skip_ext_type : List Token → List Token
+  = λ toks →
+      match (tok_is toks TkColon) {
+        | 0 → toks
+        | k → tok_skip_ext_type_body (tok_tail toks)
+      }
+
+-- parse_ext_items: parse  name : Type  items inside external mod { }
+-- Uses tok_is chain instead of multi-nullary constructor match to avoid pred_env bug.
+let parse_ext_items : List Token → Pair (List Nat) (List Token)
+  = λ toks →
+      match (tok_is toks TkRBrace) {
+        | 0 →
+            match (tok_is toks TkEof) {
+              | 0 → MkPair Nil toks
+              | k →
+                  match (tok_eat_ident toks) {
+                    | MkPair 0 _ → MkPair Nil (tok_tail toks)
+                    | MkPair name toks1 →
+                        match (parse_ext_items (tok_skip_ext_type toks1)) {
+                          | MkPair names rest → MkPair (Cons name names) rest
+                        }
+                  }
+            }
+        | k → MkPair Nil toks
+      }
+
+-- parse_let_decl: finish parsing a top-level let after name
+-- toks is positioned on ':' or '='
+let parse_let_decl : Nat → List Token → Pair Decl (List Token)
+  = λ name toks →
+      match (parse_expr (skip_ann toks)) {
+        | MkPair body rest → MkPair (DLet name body) rest
+      }
+
+-- parse_type_decl: finish parsing type after name
+-- toks is positioned after optional type params, on '='
+let parse_type_decl_body : Nat → List Token → Pair Decl (List Token)
+  = λ name toks →
+      match (parse_con_defs (tok_tail toks)) {
+        | MkPair cdefs rest → MkPair (DType name cdefs) rest
+      }
+
+-- parse_ext_decl: finish parsing external mod after mod name
+-- toks is positioned on '{'
+let parse_ext_decl : Nat → List Token → Pair Decl (List Token)
+  = λ mod_name toks →
+      match (parse_ext_items (tok_tail toks)) {
+        | MkPair names toks2 →
+            MkPair (DExt mod_name names) (tok_tail toks2)
+      }
+
+-- parse_decl: parse one top-level declaration
+-- Uses tok_is chain (1 named nat arm each) — avoids multi-nullary-arm pred_env bug.
+let parse_decl : List Token → Pair Decl (List Token)
+  = λ toks →
+      match (tok_is toks TkLet) {
+        | 0 →
+            match (tok_is toks TkType) {
+              | 0 →
+                  match (tok_is toks TkExternal) {
+                    | 0 → MkPair (DLet 0 (EVar 0)) (tok_tail toks)
+                    | k →
+                        match (parse_qual_name (tok_tail (tok_tail toks))) {
+                          | MkPair mod_name toks2 → parse_ext_decl mod_name toks2
+                        }
+                  }
+              | k →
+                  match (tok_eat_ident (tok_tail toks)) {
+                    | MkPair 0 _ → MkPair (DType 0 Nil) toks
+                    | MkPair name toks2 →
+                        parse_type_decl_body name (skip_type_params toks2)
+                  }
+            }
+        | k →
+            match (tok_eat_ident (tok_tail toks)) {
+              | MkPair 0 _ → MkPair (DLet 0 (EVar 0)) toks
+              | MkPair name toks2 → parse_let_decl name toks2
+            }
+      }
+
+-- =====================================================================
+-- Section 23: parse_program
+-- =====================================================================
+
+let parse_program : List Token → List Decl
+  = λ toks →
+      match (tok_peek toks) {
+        | TkEof → Nil
+        | _ →
+            match (parse_decl toks) {
+              | MkPair decl rest → Cons decl (parse_program rest)
+            }
+      }
+
+-- =====================================================================
+-- End of M8.3: Parser
 -- =====================================================================

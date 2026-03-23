@@ -359,6 +359,48 @@ keeps the core testable in the Python harness without planvm. The I/O wrapper
 separately depending on the planvm I/O mechanism (CLI arg input / exit-code
 output, or WriteOp/ReadOp for byte streams).
 
+### Why are hex literals used for byte-encoding constants in the compiler source?
+
+Gallowglass hex literals (`0xFF`, `0x6669`, etc.) are clearer than decimal
+for byte-level values where the encoding matters. The lexer and compiler
+source make heavy use of UTF-8 byte values and LE-packed keyword nats — a
+decimal like `26217` communicates nothing, while `0x6669` immediately shows
+`'i'=0x66`, `'f'=0x69` = the keyword `"if"`.
+
+The hex notation is available in the bootstrap lexer (see `lexer.py`
+`_scan_nat_literal`) and is preserved in the self-hosting compiler's own
+lexer (`lex_scan_nat_hex_go`).
+
+**LE-packed keyword nats in hex:** The byte sequence for a keyword is packed
+little-endian (first byte at LSB). In a hex literal this means the byte pairs
+read right-to-left give the string in order:
+`0x6669` → bytes LSB-first: `0x69`=`'f'`, `0x66`=`'i'`... wait, that gives
+`"fi"` not `"if"`. The correct reading: LSB = `0x69` = `'i'`, next byte = `0x66` = `'f'`
+→ `"if"` ✓. Equivalently, the hex literal reads as the string reversed when
+split into byte pairs. `"else"` → `0x65736C65` (pairs right-to-left: 65=e, 6C=l, 73=s, 65=e).
+
+### Why three parse-result design decisions for M8.3? (Parser)
+
+**1. Concrete pair types per parse function, not a generic `ParseResult a`.**
+The restricted dialect has no parametric polymorphism at the value level.
+Each parse function returns `Pair ConcreteType (List Token)` using the
+concrete result type. No wrapper type is needed — the pair structure is
+self-explanatory and avoids unnecessary constructor wrapping/unwrapping.
+
+**2. Minimal error recovery: consume and continue.**
+On an unexpected token, the parser emits an error node (`EVar 0` for
+expressions, a sentinel `DLet` for declarations) and consumes the offending
+token. This keeps the parse loop alive to catch further errors in one pass,
+without implementing backtracking or synchronization sets. Full error recovery
+is post-1.0.
+
+**3. Type annotations are parsed by skipping to `=`.**
+`let f : Nat → Nat = body` — after parsing the binding name, if the next
+token is `TkColon`, the parser advances past tokens until it sees `TkEqual`,
+then parses the body expression. Type annotations are discarded; the
+self-hosting compiler trusts well-typed input for M8. The type checker is
+added in M9 after self-hosting is confirmed.
+
 ### Why does CI only validate seed loading, not evaluation? (Temporary)
 
 The Docker CI environment has `planvm` (the cog runner) but not a PLAN REPL
