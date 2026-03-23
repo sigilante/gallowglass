@@ -1,0 +1,515 @@
+-- Compiler: Self-hosting Gallowglass compiler
+--
+-- Milestone 8: Compiles restricted Gallowglass to PLAN seeds.
+-- Single monolithic file (no cross-module imports in restricted dialect).
+--
+-- Phases: Utilities → Lexer → Parser → Scope → Codegen → Emit → Main
+--
+-- All arithmetic uses opcodes 0–4 only (pure recursive fallback).
+-- External ops deferred to optimization pass after self-hosting.
+
+external mod Core.PLAN {
+  inc : Nat → Nat
+}
+
+-- =====================================================================
+-- Section 1: Core Types
+-- =====================================================================
+
+-- Pair: generic two-element product
+type Pair a b =
+  | MkPair a b
+
+-- Result: success or failure
+type Result a b =
+  | Ok a
+  | Err b
+
+-- Option: value that may or may not be present
+type Option a =
+  | None
+  | Some a
+
+-- List: singly-linked list
+type List a =
+  | Nil
+  | Cons a (List a)
+
+-- =====================================================================
+-- Section 2: Boolean Operations
+-- =====================================================================
+
+let not : Bool → Bool
+  = λ b → if b then False else True
+
+let and : Bool → Bool → Bool
+  = λ a b → if a then b else False
+
+let or : Bool → Bool → Bool
+  = λ a b → if a then True else b
+
+-- =====================================================================
+-- Section 3: Nat Arithmetic (opcodes 0–4 only)
+-- =====================================================================
+
+-- pred: predecessor; pred 0 = 0
+let pred : Nat → Nat
+  = λ n → match n {
+    | 0 → 0
+    | k → k
+  }
+
+-- is_zero: True if n is zero
+let is_zero : Nat → Bool
+  = λ n → match n {
+    | 0 → True
+    | _ → False
+  }
+
+-- nat_eq: structural equality by simultaneous descent
+let nat_eq : Nat → Nat → Bool
+  = λ m n → match m {
+    | 0 → match n { | 0 → True  | _ → False }
+    | j → match n { | 0 → False | k → nat_eq j k }
+  }
+
+-- nat_lt: m < n?
+let nat_lt : Nat → Nat → Bool
+  = λ m n → match n {
+    | 0 → False
+    | k → match m { | 0 → True | j → nat_lt j k }
+  }
+
+-- lte: m <= n?
+let lte : Nat → Nat → Bool
+  = λ m n → match m {
+    | 0 → True
+    | j → match n { | 0 → False | k → lte j k }
+  }
+
+-- gte: m >= n?
+let gte : Nat → Nat → Bool
+  = λ m n → lte n m
+
+-- add: addition by recursion on second arg
+let add : Nat → Nat → Nat
+  = λ m n → match n {
+    | 0 → m
+    | k → Core.PLAN.inc (add m k)
+  }
+
+-- sub: saturating subtraction
+let sub : Nat → Nat → Nat
+  = λ m n → match n {
+    | 0 → m
+    | k → match m {
+      | 0 → 0
+      | j → sub j k
+    }
+  }
+
+-- mul: multiplication by recursion on second arg
+let mul : Nat → Nat → Nat
+  = λ m n → match n {
+    | 0 → 0
+    | k → add m (mul m k)
+  }
+
+-- div_go: division loop helper
+-- PLAN kal eagerly evaluates the zero handler of Case_, so the recursive
+-- call must be in the succ branch (lazy, wrapped in a law).
+-- lte b a returns 1 when b <= a (continue), 0 when b > a (stop).
+-- Matching on (lte b a): zero branch = base case (safe), succ = recurse (lazy).
+let div_go : Nat → Nat → Nat → Nat
+  = λ a b acc → match (lte b a) {
+    | 0 → acc
+    | k → div_go (sub a b) b (Core.PLAN.inc acc)
+  }
+
+-- div_nat: integer division (repeated subtraction)
+-- div_nat a b = floor(a / b), with div_nat _ 0 = 0
+let div_nat : Nat → Nat → Nat
+  = λ a b → match b {
+    | 0 → 0
+    | bpred → div_go a b 0
+  }
+
+-- mod_go: modulus loop — same strategy as div_go
+let mod_go : Nat → Nat → Nat
+  = λ a b → match (lte b a) {
+    | 0 → a
+    | k → mod_go (sub a b) b
+  }
+
+-- mod_nat: modulus (remainder after division)
+-- mod_nat a b = a mod b, with mod_nat _ 0 = 0
+let mod_nat : Nat → Nat → Nat
+  = λ a b → match b {
+    | 0 → 0
+    | bpred → mod_go a b
+  }
+
+-- max_nat: maximum of two nats
+let max_nat : Nat → Nat → Nat
+  = λ a b → if nat_lt a b then b else a
+
+-- min_nat: minimum of two nats
+let min_nat : Nat → Nat → Nat
+  = λ a b → if nat_lt a b then a else b
+
+-- =====================================================================
+-- Section 4: Bitwise Operations (from div/mod by powers of 2)
+-- =====================================================================
+
+-- pow2: compute 2^n by repeated doubling
+let pow2 : Nat → Nat
+  = λ n → match n {
+    | 0 → 1
+    | k → mul 2 (pow2 k)
+  }
+
+-- bit_and: bitwise AND via decomposition
+-- bit_and 0 _ = 0, bit_and _ 0 = 0
+-- bit_and a b = (a%2 * b%2) + 2 * bit_and(a/2, b/2)
+let bit_and : Nat → Nat → Nat
+  = λ a b → match a {
+    | 0 → 0
+    | ap → match b {
+      | 0 → 0
+      | bp → add (mul (mod_nat a 2) (mod_nat b 2))
+                  (mul 2 (bit_and (div_nat a 2) (div_nat b 2)))
+    }
+  }
+
+-- bit_or: bitwise OR via decomposition
+-- bit_or a b = (a%2 | b%2) + 2 * bit_or(a/2, b/2)
+-- where (x | y) for single bits = if x then 1 else y
+let bit_or : Nat → Nat → Nat
+  = λ a b → match a {
+    | 0 → b
+    | ap → match b {
+      | 0 → a
+      | bp → add (if nat_eq (mod_nat a 2) 1 then 1 else mod_nat b 2)
+                  (mul 2 (bit_or (div_nat a 2) (div_nat b 2)))
+    }
+  }
+
+-- shift_right: arithmetic right shift (= div by 2^k)
+let shift_right : Nat → Nat → Nat
+  = λ n k → div_nat n (pow2 k)
+
+-- shift_left: left shift (= mul by 2^k)
+let shift_left : Nat → Nat → Nat
+  = λ n k → mul n (pow2 k)
+
+-- =====================================================================
+-- Section 5: List Operations
+-- =====================================================================
+
+-- length: count elements
+let length : ∀ a. List a → Nat
+  = λ xs → match xs {
+    | Nil        → 0
+    | Cons _ rest → Core.PLAN.inc (length rest)
+  }
+
+-- map: apply f to every element
+let map : ∀ a b. (a → b) → List a → List b
+  = λ f xs → match xs {
+    | Nil        → Nil
+    | Cons x rest → Cons (f x) (map f rest)
+  }
+
+-- filter: keep elements satisfying predicate
+let filter : ∀ a. (a → Bool) → List a → List a
+  = λ p xs → match xs {
+    | Nil        → Nil
+    | Cons x rest →
+        if p x
+        then Cons x (filter p rest)
+        else filter p rest
+  }
+
+-- foldl: left fold (tail-recursive)
+let foldl : ∀ a b. (b → a → b) → b → List a → b
+  = λ f acc xs → match xs {
+    | Nil        → acc
+    | Cons x rest → foldl f (f acc x) rest
+  }
+
+-- foldr: right fold
+let foldr : ∀ a b. (a → b → b) → b → List a → b
+  = λ f z xs → match xs {
+    | Nil        → z
+    | Cons x rest → f x (foldr f z rest)
+  }
+
+-- reverse: reverse a list
+let reverse : ∀ a. List a → List a
+  = λ xs → foldl (λ acc x → Cons x acc) Nil xs
+
+-- append: concatenate two lists
+let append : ∀ a. List a → List a → List a
+  = λ xs ys → foldr (λ x acc → Cons x acc) ys xs
+
+-- singleton: wrap a single value in a list
+let singleton : ∀ a. a → List a
+  = λ x → Cons x Nil
+
+-- nth: get the nth element (0-indexed), or a default
+let nth : ∀ a. a → Nat → List a → a
+  = λ default n xs → match xs {
+    | Nil → default
+    | Cons x rest → match n {
+      | 0 → x
+      | k → nth default k rest
+    }
+  }
+
+-- take: take the first n elements
+let take : ∀ a. Nat → List a → List a
+  = λ n xs → match n {
+    | 0 → Nil
+    | k → match xs {
+      | Nil → Nil
+      | Cons x rest → Cons x (take k rest)
+    }
+  }
+
+-- drop: drop the first n elements
+let drop : ∀ a. Nat → List a → List a
+  = λ n xs → match n {
+    | 0 → xs
+    | k → match xs {
+      | Nil → Nil
+      | Cons _ rest → drop k rest
+    }
+  }
+
+-- concat_list: flatten a list of lists
+let concat_list : ∀ a. List (List a) → List a
+  = λ xss → foldr append Nil xss
+
+-- zip: pair up elements from two lists
+let zip : ∀ a b. List a → List b → List (Pair a b)
+  = λ xs ys → match xs {
+    | Nil → Nil
+    | Cons x xrest → match ys {
+      | Nil → Nil
+      | Cons y yrest → Cons (MkPair x y) (zip xrest yrest)
+    }
+  }
+
+-- any: True if any element satisfies the predicate
+let any : ∀ a. (a → Bool) → List a → Bool
+  = λ p xs → match xs {
+    | Nil → False
+    | Cons x rest → if p x then True else any p rest
+  }
+
+-- all: True if all elements satisfy the predicate
+let all : ∀ a. (a → Bool) → List a → Bool
+  = λ p xs → match xs {
+    | Nil → True
+    | Cons x rest → if p x then all p rest else False
+  }
+
+-- =====================================================================
+-- Section 6: Association List Operations
+-- =====================================================================
+
+-- assoc_lookup: find a value by key (nat equality)
+let assoc_lookup : ∀ a. Nat → List (Pair Nat a) → Option a
+  = λ key kvs → match kvs {
+    | Nil → None
+    | Cons kv rest → match kv {
+      | MkPair k v → if nat_eq key k then Some v else assoc_lookup key rest
+    }
+  }
+
+-- assoc_remove: remove all entries with a given key
+let assoc_remove : ∀ a. Nat → List (Pair Nat a) → List (Pair Nat a)
+  = λ key kvs → match kvs {
+    | Nil → Nil
+    | Cons kv rest → match kv {
+      | MkPair k v →
+          if nat_eq key k
+          then assoc_remove key rest
+          else Cons kv (assoc_remove key rest)
+    }
+  }
+
+-- assoc_insert: insert or update a key-value pair
+let assoc_insert : ∀ a. Nat → a → List (Pair Nat a) → List (Pair Nat a)
+  = λ key val kvs → Cons (MkPair key val) (assoc_remove key kvs)
+
+-- assoc_keys: extract all keys
+let assoc_keys : ∀ a. List (Pair Nat a) → List Nat
+  = λ kvs → map (λ kv → match kv { | MkPair k _ → k }) kvs
+
+-- assoc_has : check if key exists
+let assoc_has : ∀ a. Nat → List (Pair Nat a) → Bool
+  = λ key kvs → match kvs {
+    | Nil → False
+    | Cons kv rest → match kv {
+      | MkPair k _ → if nat_eq key k then True else assoc_has key rest
+    }
+  }
+
+-- =====================================================================
+-- Section 7: Byte-level Operations (Nat encoding)
+-- =====================================================================
+--
+-- Bytes in PLAN: a nat where byte i is at bits [i*8 .. i*8+7].
+-- byte_at(content, i) = (content >> (i*8)) & 0xFF
+-- We track byte length separately as a Pair: MkPair byte_length content_nat.
+-- This is the representation type "Bytes" in this compiler.
+
+-- byte_at: extract byte at index i from a content nat
+let byte_at : Nat → Nat → Nat
+  = λ content idx → bit_and (shift_right content (mul 8 idx)) 255
+
+-- bytes_length: get the byte length from a Bytes pair
+let bytes_length : Pair Nat Nat → Nat
+  = λ bytes → match bytes { | MkPair len _ → len }
+
+-- bytes_content: get the content nat from a Bytes pair
+let bytes_content : Pair Nat Nat → Nat
+  = λ bytes → match bytes { | MkPair _ content → content }
+
+-- bytes_at: extract byte at index from a Bytes pair
+let bytes_at : Pair Nat Nat → Nat → Nat
+  = λ bytes idx → byte_at (bytes_content bytes) idx
+
+-- bytes_empty: the empty byte string
+let bytes_empty : Pair Nat Nat
+  = MkPair 0 0
+
+-- bytes_singleton: a single byte
+let bytes_singleton : Nat → Pair Nat Nat
+  = λ b → MkPair 1 (bit_and b 255)
+
+-- bytes_concat: concatenate two byte strings
+-- content = b_content | (a_content << (b_len * 8))
+-- Wait — little-endian nat encoding means bytes[0] is the LSB.
+-- So concat(a, b) should produce a||b where a's bytes come first (lower indices).
+-- a = [a0, a1, ...], b = [b0, b1, ...]
+-- result = [a0, a1, ..., b0, b1, ...]
+-- content = a_content | (b_content << (a_len * 8))
+let bytes_concat : Pair Nat Nat → Pair Nat Nat → Pair Nat Nat
+  = λ a b →
+      let a_len = bytes_length a in
+      let a_content = bytes_content a in
+      let b_content = bytes_content b in
+      let new_len = add a_len (bytes_length b) in
+      let new_content = bit_or a_content (shift_left b_content (mul 8 a_len)) in
+      MkPair new_len new_content
+
+-- bytes_slice: extract a sub-range [start, start+len)
+let bytes_slice : Pair Nat Nat → Nat → Nat → Pair Nat Nat
+  = λ bytes start len →
+      let content = bytes_content bytes in
+      let shifted = shift_right content (mul 8 start) in
+      MkPair len shifted
+
+-- bytes_eq: equality of two byte strings
+let bytes_eq : Pair Nat Nat → Pair Nat Nat → Bool
+  = λ a b →
+      if nat_eq (bytes_length a) (bytes_length b)
+      then nat_eq (bytes_content a) (bytes_content b)
+      else False
+
+-- nat_to_u8: truncate a nat to a single byte
+let nat_to_u8 : Nat → Nat
+  = λ n → bit_and n 255
+
+-- u64_le: encode a nat as 8 bytes little-endian (Bytes pair)
+let u64_le : Nat → Pair Nat Nat
+  = λ n → MkPair 8 (bit_and n (sub (pow2 64) 1))
+
+-- =====================================================================
+-- Section 8: Name Encoding
+-- =====================================================================
+
+-- name_to_nat: encode a string (already stored as a content nat) as-is.
+-- In PLAN, text IS a nat with the UTF-8 bytes packed little-endian.
+-- This is the identity function on the content nat representation.
+let name_to_nat : Nat → Nat
+  = λ n → n
+
+-- =====================================================================
+-- Section 9: Compiler-specific Types (for later phases)
+-- =====================================================================
+
+-- Token type (lexer output)
+type Token =
+  | TkNat Nat
+  | TkIdent Nat
+  | TkLParen
+  | TkRParen
+  | TkLBrace
+  | TkRBrace
+  | TkBar
+  | TkArrow
+  | TkBackArrow
+  | TkEqual
+  | TkColon
+  | TkDot
+  | TkComma
+  | TkAt
+  | TkBacktick
+  | TkLet
+  | TkType
+  | TkMatch
+  | TkIf
+  | TkThen
+  | TkElse
+  | TkExternal
+  | TkMod
+  | TkLambda
+  | TkForall
+  | TkUnderscore
+  | TkEof
+  | TkErr Nat
+
+-- AST types (parser output)
+type Expr =
+  | EVar Nat
+  | EApp Expr Expr
+  | ELam Nat Expr
+  | ELet Nat Expr Expr
+  | ENat Nat
+  | EIf Expr Expr Expr
+  | EMatch Expr (List MatchArm)
+  | EPin Nat Expr Expr
+
+type MatchArm =
+  | ArmNat Nat Expr
+  | ArmVar Nat Expr
+  | ArmCon Nat (List Nat) Expr
+
+type Decl =
+  | DLet Nat Expr
+  | DType Nat (List ConDef)
+  | DExt Nat (List Nat)
+
+type ConDef =
+  | MkConDef Nat Nat
+
+-- PLAN value (codegen output)
+type PlanVal =
+  | PNat Nat
+  | PApp PlanVal PlanVal
+  | PLaw Nat Nat PlanVal
+  | PPin PlanVal
+
+-- Compilation environment
+type CEnv =
+  | MkCEnv (List (Pair Nat PlanVal)) (List (Pair Nat Nat)) Nat (Option Nat)
+  -- fields: globals, locals, arity, self_ref_name
+
+-- =====================================================================
+-- End of M8.1: Core Utilities
+-- The lexer, parser, scope, codegen, emit, and main phases follow
+-- in subsequent milestones.
+-- =====================================================================

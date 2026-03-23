@@ -16,12 +16,12 @@ Throughout this document, PLAN values are written using the notation from SPEC.m
 
 Law bodies use de Bruijn-style argument indices: index 0 is the law itself (self-reference), indices 1..a are the arguments left to right.
 
-Five opcodes (nat values 0-4):
-- `0` — create a law: `(0 name arity body)`
-- `1` — reflect (dispatch on constructor): `(1 pin_case law_case app_case nat_case value)`
-- `2` — nat iteration (structural recursion on naturals): `(2 zero_case succ_case n)`
-- `3` — increment a nat: `(3 n)` yields `n + 1`
-- `4` — pin a value (normalize and content-address): `(4 value)` yields `<value>`
+Five opcodes (nat values 0-4), matching `vendor/PLAN/planvm-amd64/plan.s` prim.tab:
+- `0` — pin a value (normalize and content-address): `(0 value)` yields `<value>`
+- `1` — create a law: `(1 name arity body)` yields `{name arity body}`
+- `2` — increment a nat: `(2 n)` yields `n + 1`
+- `3` — Case_ (dispatch on constructor): `(3 pin_case law_case app_case zero_case succ_case scrutinee)` — 6-arity dispatch on the four PLAN constructors, with nat split into zero and successor
+- `4` — force (evaluate to weak head normal form): `(4 value)`
 
 ---
 
@@ -37,14 +37,16 @@ A `let` declaration compiles to a PLAN law. The law's three fields are determine
 
 ```gallowglass
 let add_one : Nat -> Nat
-  = fn x -> (3 x)
+  = fn x -> Core.PLAN.inc x
 ```
 
-The function name `add_one` encodes to a nat (its UTF-8 bytes as a little-endian nat). Call this nat `N_add_one`. Arity is 1 (one parameter `x`). The parameter `x` is index 1. The body applies opcode 3 (increment) to index 1.
+The function name `add_one` encodes to a nat (its UTF-8 bytes as a little-endian nat). Call this nat `N_add_one`. Arity is 1 (one parameter `x`). The parameter `x` is index 1. The body applies opcode 2 (increment) to index 1.
 
 ```
-{N_add_one 1 (3 1)}
+{N_add_one 1 (<2> 1)}
 ```
+
+Note: In law bodies, opcodes are pinned nats — `<2>` is `Pin(Nat(2))`, the increment opcode. Bare nats in law bodies are de Bruijn indices (0 = self, 1..arity = arguments). Throughout this document, `<k>` denotes `Pin(Nat(k))` — the opcode pin.
 
 ### Multi-argument functions
 
@@ -263,16 +265,27 @@ Err e   =  (1 e)
 
 ## 5. Pattern Matching
 
-Pattern matching compiles to a combination of opcode 1 (reflect) and opcode 2 (nat iteration), depending on what is being matched.
+All pattern matching compiles through opcode 3 (Case\_) — the universal 6-arity dispatch that inspects the PLAN constructor of the scrutinee:
+
+```
+(<3> pin_fn law_fn app_fn zero_fn succ_fn scrutinee)
+```
+
+Case\_ dispatches on the four PLAN constructors:
+- **Pin:** calls `pin_fn(inner_value)`
+- **Law:** calls `law_fn(name, arity, body)`
+- **App:** calls `app_fn(head, tail)`
+- **Nat 0:** returns `zero_fn`
+- **Nat n+1:** calls `succ_fn(n)` (passes predecessor)
 
 ### 5.1 Matching on algebraic types
 
 Algebraic type matching dispatches on the constructor tag (a nat), then extracts fields. The compilation proceeds in two steps:
 
-1. **Tag dispatch:** Extract the tag nat and dispatch using opcode 2 (nat iteration) or nested conditionals.
-2. **Field extraction:** Once the constructor is identified, extract fields by position.
+1. **Tag dispatch:** Use Case\_ (opcode 3) to distinguish bare nats (nullary constructors) from App nodes (constructors with fields), then use the nat zero/succ branches to count down the tag.
+2. **Field extraction:** Use Case\_ App branch to walk the application spine and extract fields.
 
-The general strategy uses opcode 1 to inspect the structure: a tagged value like `(tag field1 field2)` is an App node. Opcode 1 dispatches on the four PLAN constructors (pin, law, app, nat). For a tagged sum, the value is either a bare nat (nullary constructor) or an App node.
+A tagged value like `(tag field1 field2)` is an App node. Case\_ dispatches: for a tagged sum, the value is either a bare nat (nullary constructor, routed to zero/succ branches) or an App (routed to app\_fn).
 
 ```gallowglass
 let area : Shape -> Nat
@@ -284,9 +297,9 @@ let area : Shape -> Nat
 ```
 
 The compiler generates code that:
-1. Uses opcode 1 to determine if `s` is a nat (nullary constructor) or an App (constructor with fields).
-2. For the App case, extracts the tag and fields.
-3. Uses opcode 2 on the tag to select the appropriate branch.
+1. Uses Case\_ (opcode 3) to determine if `s` is a nat (nullary constructor) or an App (constructor with fields).
+2. For the App case, extracts the tag and fields via the `app_fn(head, tail)` callback.
+3. Uses nested Case\_ on the tag nat (zero/succ branches) to select the appropriate arm.
 
 The exact PLAN output depends on the compiler's case dispatch strategy. One canonical approach:
 
@@ -296,21 +309,24 @@ The exact PLAN output depends on the compiler's case dispatch strategy. One cano
 -- at the spine of applications.
 --
 -- case_dispatch tag circle_branch square_branch rect_branch
--- uses nat iteration (opcode 2) to count down the tag:
+-- uses Case_ zero/succ branches to count down the tag:
 --   tag 0 -> circle_branch
 --   tag 1 -> square_branch
 --   tag 2 -> rect_branch
 
 {N_area 1
-  (2                          -- opcode 2: nat iteration on tag
-    (circle_body 1)           -- tag 0: Circle
-    {N_step 2                 -- tag n+1: step function
-      (2                      -- iterate again
+  (<3>                        -- opcode 3: Case_ dispatch on tag
+    <id>                      -- pin case (unreachable for tags)
+    <id>                      -- law case (unreachable for tags)
+    <id>                      -- app case (unreachable for tags)
+    (circle_body 1)           -- nat-zero case (tag 0): Circle
+    {N_step 2                 -- nat-succ case (tag n+1): step function
+      (<3> <id> <id> <id>     -- nested Case_ on remaining tag
         (square_body 1)       -- tag 1 (0 after one step): Square
         {N_step2 2
           (rect_body 1)       -- tag 2 (0 after two steps): Rect
         }
-        2                    -- remaining tag
+        2                     -- remaining tag (predecessor)
       )
     }
     (extract_tag 1)           -- the tag from the value
@@ -318,14 +334,14 @@ The exact PLAN output depends on the compiler's case dispatch strategy. One cano
 }
 ```
 
-The field extraction functions use opcode 1 to walk the App spine. For `(tag field1 field2)`, which is `((tag field1) field2)`:
+The field extraction functions use Case\_ App branch to walk the App spine. For `(tag field1 field2)`, which is `((tag field1) field2)`:
 
-- Opcode 1 on the whole value yields the App case with `head = (tag field1)` and `tail = field2`.
-- Opcode 1 on `(tag field1)` yields the App case with `head = tag` and `tail = field1`.
+- Case\_ on the whole value: App branch receives `head = (tag field1)` and `tail = field2`.
+- Case\_ on `(tag field1)`: App branch receives `head = tag` and `tail = field1`.
 
 ### 5.2 Matching on Nat
 
-Nat patterns use opcode 2 (nat iteration) directly.
+Nat patterns use Case\_ (opcode 3) with identity functions for the pin/law/app branches (which are unreachable for nat scrutinees).
 
 ```gallowglass
 let is_zero : Nat -> Bool
@@ -337,15 +353,18 @@ let is_zero : Nat -> Bool
 
 ```
 {N_is_zero 1
-  (2           -- opcode 2: nat iteration
-    1          -- zero case: return True (1)
-    {N_k 2 0}  -- succ case: ignore predecessor, return False (0)
-    1          -- the nat being matched (argument index 1)
+  (<3>         -- opcode 3: Case_ dispatch
+    <id>       -- pin case (unreachable)
+    <id>       -- law case (unreachable)
+    <id>       -- app case (unreachable)
+    1          -- nat-zero case: return True (1)
+    {N_k 2 0}  -- nat-succ case: ignore predecessor, return False (0)
+    1          -- scrutinee: the nat being matched (argument index 1)
   )
 }
 ```
 
-The succ case law takes two arguments (the accumulated/recursive result and the predecessor) but discards them, returning 0.
+The succ case law `{N_k 2 0}` takes two arguments (something unused and the predecessor) and discards both, returning 0.
 
 For matching specific nat literals:
 
@@ -357,11 +376,11 @@ match n {
 }
 ```
 
-This chains nat iteration: first check if `n` is 0, otherwise decrement and check if the predecessor is 0 (meaning `n` was 1), otherwise fall through to the default.
+This chains Case\_ dispatch: first check if `n` is 0 (zero branch), otherwise the succ branch receives the predecessor and applies another Case\_ to check if the predecessor is 0 (meaning `n` was 1), otherwise fall through to the default.
 
 ### 5.3 Matching on nested structures
 
-Nested pattern matching (e.g., `Cons h (Cons _ Nil)`) compiles to nested dispatches. The compiler flattens nested patterns into a decision tree of opcode 1 and opcode 2 applications. See `spec/03-exhaustiveness.md` for the exhaustiveness analysis that validates the decision tree covers all cases.
+Nested pattern matching (e.g., `Cons h (Cons _ Nil)`) compiles to nested dispatches. The compiler flattens nested patterns into a decision tree of Case\_ (opcode 3) applications. See `spec/03-exhaustiveness.md` for the exhaustiveness analysis that validates the decision tree covers all cases.
 
 ---
 
@@ -465,7 +484,7 @@ The `Abort` call uses `Core.Abort.abort`, which is an external operation that ha
 
 ### 8.1 Programmer pins
 
-A programmer pin `@name = expr` compiles to opcode 4 applied to the compiled expression.
+A programmer pin `@name = expr` compiles to opcode 0 (Pin) applied to the compiled expression.
 
 ```gallowglass
 @table = compute_table large_input
@@ -474,16 +493,16 @@ A programmer pin `@name = expr` compiles to opcode 4 applied to the compiled exp
 Compiles to:
 
 ```
-(4 (<P_compute_table> <P_large_input>))
+(<0> (<P_compute_table> <P_large_input>))
 ```
 
-Opcode 4 normalizes the value (forces it to normal form) and content-addresses it, producing a Pin `<value>`. The pinned value is then deduplicated in the heap: if another pin with identical content already exists, they share identity.
+Opcode 0 normalizes the value (forces it to normal form) and content-addresses it, producing a Pin `<value>`. The pinned value is then deduplicated in the heap: if another pin with identical content already exists, they share identity.
 
 Within the scope of the pin binding, `table` refers to the resulting Pin value.
 
 ### 8.2 Compiler pins
 
-The compiler introduces pins during DAG factoring (common subexpression pinning). These appear in Glass IR as `@![pin#hash] name = expr` but are structurally identical to programmer pins at the PLAN level -- both use opcode 4.
+The compiler introduces pins during DAG factoring (common subexpression pinning). These appear in Glass IR as `@![pin#hash] name = expr` but are structurally identical to programmer pins at the PLAN level -- both use opcode 0.
 
 ```
 -- Glass IR
@@ -526,14 +545,14 @@ True  = 1
 False = 0
 ```
 
-This encoding is consistent with opcode 2 (nat iteration), which treats 0 as the base case and non-zero as the inductive case. Boolean operations compile to nat operations:
+This encoding is consistent with Case\_ (opcode 3), which dispatches nats via the zero and succ branches. Boolean operations compile to Case\_ with identity functions for the unreachable pin/law/app branches:
 
 ```gallowglass
-not x       -- compiles to: (2 1 {N_k 2 0} x)
+not x       -- compiles to: (<3> id id id 1 {N_k 2 0} x)
                             -- if x=0 then 1 else 0
-and x y     -- compiles to: (2 0 {N_k 2 y} x)
+and x y     -- compiles to: (<3> id id id 0 {N_k 2 y} x)
                             -- if x=0 then 0 else y
-or  x y     -- compiles to: (2 y {N_k 2 1} x)
+or  x y     -- compiles to: (<3> id id id y {N_k 2 1} x)
                             -- if x=0 then y else 1
 ```
 
@@ -544,8 +563,8 @@ if cond then t else e
 ```
 
 ```
-(2 e {N_k 2 t} cond)
--- nat iteration on cond:
+(<3> id id id e {N_k 2 t} cond)
+-- Case_ dispatch on cond:
 --   cond = 0 (False): return e
 --   cond > 0 (True):  return t (ignoring predecessor)
 ```
@@ -699,22 +718,23 @@ Triples and larger tuples nest left-associatively:
 
 ### 13.2 Accessing tuple elements
 
-Tuple element access compiles to opcode 1 (reflect) to destructure App nodes:
+Tuple element access compiles to Case\_ (opcode 3) to destructure App nodes:
 
 ```gallowglass
 let fst : forall a b. (a, b) -> a
 ```
 
-Uses opcode 1 on the pair `(a b)` to extract the head of the App:
+Uses Case\_ on the pair `(a b)` to extract the head of the App:
 
 ```
 {N_fst 1
-  (1
+  (<3>
     {N_p 1 0}                -- pin case: unreachable for tuples
     {N_l 3 0}                -- law case: unreachable for tuples
     {N_a 2 1}                -- app case: (head tail) -> return head (index 1)
-    {N_n 1 0}                -- nat case: unreachable for tuples
-    1                        -- the tuple value (argument index 1)
+    {N_n 1 0}                -- nat-zero case: unreachable for tuples
+    {N_s 2 0}                -- nat-succ case: unreachable for tuples
+    1                        -- scrutinee: the tuple value (argument index 1)
   )
 }
 ```
@@ -951,11 +971,11 @@ Note: the exact de Bruijn index mapping depends on whether `fix` compiles to a s
 | Sum constructor `C a b` (tag `t`) | `(t a b)` |
 | Nullary constructor `C` (tag `t`) | `t` |
 | Record `{x=a, y=b}` | `(0 a b)` (tag 0, positional) |
-| Pattern match | Opcode 1 (reflect) + opcode 2 (nat iteration) |
+| Pattern match | Case\_ (opcode 3): 6-arity dispatch on pin/law/app/zero/succ |
 | Handler | CPS transformation; `k` is a partially applied law |
 | Proven contract | Erased (no PLAN output) |
 | Deferred contract | Conditional Abort check |
-| Pin `@name = expr` | `(4 expr')` (opcode 4) |
+| Pin `@name = expr` | `(<0> expr')` (opcode 0) |
 | Types, effects, quantifiers | Erased entirely |
 | `True` / `False` | `1` / `0` |
 | Text/Bytes `"hello"` | `(byte_length content_nat)` |
@@ -967,7 +987,7 @@ Note: the exact de Bruijn index mapping depends on whether `fix` compiles to a s
 | Instance declaration | Pinned tuple of method implementations |
 | Mutual recursion (SCC) | Shared pin: `({0 (n+1) 0} law_0 ... law_{n-1})` |
 | `fix fn self -> body` | Law with `self` = index 0 |
-| `if c then t else e` | `(2 e {_ 2 t} c)` |
+| `if c then t else e` | `(<3> id id id e {_ 2 t} c)` |
 
 ---
 
