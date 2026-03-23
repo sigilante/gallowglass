@@ -444,6 +444,7 @@ let name_to_nat : Nat → Nat
 -- Token type (lexer output)
 type Token =
   | TkNat Nat
+  | TkText Nat
   | TkIdent Nat
   | TkLParen
   | TkRParen
@@ -466,6 +467,7 @@ type Token =
   | TkElse
   | TkExternal
   | TkMod
+  | TkIn
   | TkLambda
   | TkForall
   | TkUnderscore
@@ -510,6 +512,580 @@ type CEnv =
 
 -- =====================================================================
 -- End of M8.1: Core Utilities
--- The lexer, parser, scope, codegen, emit, and main phases follow
--- in subsequent milestones.
+-- =====================================================================
+
+-- =====================================================================
+-- Section 10: Byte Classification Helpers
+-- =====================================================================
+
+-- is_digit: 1 if byte b is ASCII '0'-'9'
+let is_digit : Nat → Nat
+  = λ b →
+      match (lte 0x30 b) {
+        | 0 → 0
+        | k → lte b 0x39
+      }
+
+-- is_upper: 1 if byte b is ASCII 'A'-'Z'
+let is_upper : Nat → Nat
+  = λ b →
+      match (lte 0x41 b) {
+        | 0 → 0
+        | k → lte b 0x5A
+      }
+
+-- is_lower: 1 if byte b is ASCII 'a'-'z'
+let is_lower : Nat → Nat
+  = λ b →
+      match (lte 0x61 b) {
+        | 0 → 0
+        | k → lte b 0x7A
+      }
+
+-- is_alpha: 1 if byte b is ASCII letter
+let is_alpha : Nat → Nat
+  = λ b →
+      match (is_upper b) {
+        | 0 → is_lower b
+        | k → 1
+      }
+
+-- is_alnum_or_under: 1 if byte b is alphanumeric or underscore
+let is_alnum_or_under : Nat → Nat
+  = λ b →
+      match (is_digit b) {
+        | 0 →
+            match (is_alpha b) {
+              | 0 → nat_eq b 95
+              | k → 1
+            }
+        | k → 1
+      }
+
+-- is_hex_digit: 1 if b is 0-9, a-f, A-F
+let is_hex_digit : Nat → Nat
+  = λ b →
+      match (is_digit b) {
+        | 0 →
+            match (lte 0x61 b) {
+              | 0 →
+                  match (lte 0x41 b) {
+                    | 0 → 0
+                    | k → lte b 0x46
+                  }
+              | k → lte b 0x66
+            }
+        | k → 1
+      }
+
+-- hex_digit_val: value of a hex digit byte (0-15)
+let hex_digit_val : Nat → Nat
+  = λ b →
+      match (is_digit b) {
+        | 0 →
+            match (is_lower b) {
+              | 0 → sub b 0x37   -- 'A'=0x41, val = b - 0x41 + 10 = b - 0x37
+              | k → sub b 0x57   -- 'a'=0x61, val = b - 0x61 + 10 = b - 0x57
+            }
+        | k → sub b 0x30
+      }
+
+-- =====================================================================
+-- Section 11: Keyword Nat Constants
+-- Each keyword is its UTF-8 bytes packed little-endian into a Nat.
+-- =====================================================================
+
+-- Each keyword is its UTF-8 bytes packed little-endian into a Nat.
+-- Byte order: first char at bits [7:0], second at [15:8], etc.
+
+let kw_let          : Nat = 0x74656C           -- "let"
+let kw_type         : Nat = 0x65707974         -- "type"
+let kw_match        : Nat = 0x686374616D       -- "match"
+let kw_if           : Nat = 0x6669             -- "if"
+let kw_then         : Nat = 0x6E656874         -- "then"
+let kw_else         : Nat = 0x65736C65         -- "else"
+let kw_external     : Nat = 0x6C616E7265747865  -- "external"
+let kw_mod          : Nat = 0x646F6D           -- "mod"
+let kw_in           : Nat = 0x6E69             -- "in"
+let kw_fn           : Nat = 0x6E66             -- "fn"  (ASCII alt for λ)
+let kw_forall_ascii : Nat = 0x6C6C61726F66     -- "forall"
+let kw_lambda_uni   : Nat = 0xBBCE             -- "λ"  (CE BB)
+let kw_arrow_uni    : Nat = 0x9286E2           -- "→"  (E2 86 92)
+let kw_backarrow_uni: Nat = 0x9086E2           -- "←"  (E2 86 90)
+let kw_forall_uni   : Nat = 0x8088E2           -- "∀"  (E2 88 80)
+let kw_underscore   : Nat = 0x5F               -- "_"
+
+-- =====================================================================
+-- Section 12: LexPos Helpers
+-- =====================================================================
+
+-- LexPos is encoded as Pair Nat (Pair Nat Nat) = MkPair offset (MkPair line col)
+-- This avoids a 3-field constructor which the bootstrap codegen does not support.
+
+let lexpos_offset : Pair Nat (Pair Nat Nat) → Nat
+  = λ pos →
+      match pos {
+        | MkPair offset lc → offset
+      }
+
+let lexpos_line : Pair Nat (Pair Nat Nat) → Nat
+  = λ pos →
+      match pos {
+        | MkPair offset lc →
+            match lc {
+              | MkPair line col → line
+            }
+      }
+
+let lexpos_col : Pair Nat (Pair Nat Nat) → Nat
+  = λ pos →
+      match pos {
+        | MkPair offset lc →
+            match lc {
+              | MkPair line col → col
+            }
+      }
+
+-- Make a LexPos from offset, line, col
+let mk_lexpos : Nat → Nat → Nat → Pair Nat (Pair Nat Nat)
+  = λ offset line col → MkPair offset (MkPair line col)
+
+-- Advance offset by 1 and col by 1
+let lexpos_advance : Pair Nat (Pair Nat Nat) → Pair Nat (Pair Nat Nat)
+  = λ pos →
+      match pos {
+        | MkPair offset lc →
+            match lc {
+              | MkPair line col →
+                  MkPair (Core.PLAN.inc offset) (MkPair line (Core.PLAN.inc col))
+            }
+      }
+
+-- Advance offset by n, col by n
+let lexpos_advance_n : Pair Nat (Pair Nat Nat) → Nat → Pair Nat (Pair Nat Nat)
+  = λ pos n →
+      match pos {
+        | MkPair offset lc →
+            match lc {
+              | MkPair line col →
+                  MkPair (add offset n) (MkPair line (add col n))
+            }
+      }
+
+-- Advance offset by 1, increment line, reset col to 1
+let lexpos_newline : Pair Nat (Pair Nat Nat) → Pair Nat (Pair Nat Nat)
+  = λ pos →
+      match pos {
+        | MkPair offset lc →
+            match lc {
+              | MkPair line col →
+                  MkPair (Core.PLAN.inc offset) (MkPair (Core.PLAN.inc line) 1)
+            }
+      }
+
+-- =====================================================================
+-- Section 13: Whitespace and Comment Skipping
+-- =====================================================================
+
+-- lex_skip_line: advance past bytes until newline (0x0A) or end of source.
+-- The newline itself is consumed.
+let lex_skip_line : Pair Nat Nat → LexPos → LexPos
+  = λ src pos →
+      match (nat_eq (lexpos_offset pos) (bytes_length src)) {
+        | 0 →
+            match (nat_eq (bytes_at src (lexpos_offset pos)) 0x0A) {
+              | 0 →
+                  lex_skip_line src (lexpos_advance pos)
+              | k → lexpos_advance pos
+            }
+        | k → pos
+      }
+
+-- lex_skip_ws: skip whitespace (0x20 space, 0x09 tab, 0x0D CR, 0x0A LF) and
+-- line comments (--).  Returns position after last skipped char.
+-- Uses deep nesting because multiple match cases cannot be flattened
+-- without mutual recursion.
+let lex_skip_ws : Pair Nat Nat → LexPos → LexPos
+  = λ src pos →
+      match (nat_eq (lexpos_offset pos) (bytes_length src)) {
+        | 0 →
+            let b = bytes_at src (lexpos_offset pos) in
+            match (nat_eq b 0x20) {
+              | 0 →
+                  match (nat_eq b 0x09) {
+                    | 0 →
+                        match (nat_eq b 0x0D) {
+                          | 0 →
+                              match (nat_eq b 0x0A) {
+                                | 0 →
+                                    -- Check for "--" comment: b must be 0x2D '-'
+                                    match (nat_eq b 0x2D) {
+                                      | 0 → pos
+                                      | k →
+                                          -- peek at next byte
+                                          match (nat_eq (Core.PLAN.inc (lexpos_offset pos)) (bytes_length src)) {
+                                            | 0 →
+                                                match (nat_eq (bytes_at src (Core.PLAN.inc (lexpos_offset pos))) 0x2D) {
+                                                  | 0 → pos
+                                                  | k →
+                                                      lex_skip_ws src (lex_skip_line src (lexpos_advance_n pos 2))
+                                                }
+                                            | k → pos
+                                          }
+                                    }
+                                | k → lex_skip_ws src (lexpos_newline pos)
+                              }
+                          | k → lex_skip_ws src (lexpos_advance pos)
+                        }
+                    | k → lex_skip_ws src (lexpos_advance pos)
+                  }
+              | k → lex_skip_ws src (lexpos_advance pos)
+            }
+        | k → pos
+      }
+
+-- =====================================================================
+-- Section 14: Identifier and Keyword Scanning
+-- =====================================================================
+
+-- lex_scan_ident_go: accumulate bytes while is_alnum_or_under.
+-- Returns MkPair end_pos (MkPair byte_len ident_nat)
+let lex_scan_ident_go : Pair Nat Nat → LexPos → Nat → Nat → Pair LexPos (Pair Nat Nat)
+  = λ src pos ident_len ident_nat →
+      match (nat_eq (lexpos_offset pos) (bytes_length src)) {
+        | 0 →
+            match (is_alnum_or_under (bytes_at src (lexpos_offset pos))) {
+              | 0 → MkPair pos (MkPair ident_len ident_nat)
+              | k →
+                  let b = bytes_at src (lexpos_offset pos) in
+                  lex_scan_ident_go src (lexpos_advance pos)
+                    (Core.PLAN.inc ident_len)
+                    (bit_or ident_nat (shift_left b (mul 8 ident_len)))
+            }
+        | k → MkPair pos (MkPair ident_len ident_nat)
+      }
+
+-- lex_classify_ident: given (byte_len, ident_nat), return the Token.
+-- Keywords map to their token; leading uppercase → TkIdent (PascalCase);
+-- leading lowercase → TkIdent (snake_case) unless keyword.
+-- "_" alone → TkUnderscore.
+let lex_classify_ident : Nat → Nat → Token
+  = λ ident_len ident_nat →
+      match (nat_eq ident_nat kw_let) {
+        | 0 →
+            match (nat_eq ident_nat kw_type) {
+              | 0 →
+                  match (nat_eq ident_nat kw_match) {
+                    | 0 →
+                        match (nat_eq ident_nat kw_if) {
+                          | 0 →
+                              match (nat_eq ident_nat kw_then) {
+                                | 0 →
+                                    match (nat_eq ident_nat kw_else) {
+                                      | 0 →
+                                          match (nat_eq ident_nat kw_external) {
+                                            | 0 →
+                                                match (nat_eq ident_nat kw_mod) {
+                                                  | 0 →
+                                                      match (nat_eq ident_nat kw_in) {
+                                                        | 0 →
+                                                            match (nat_eq ident_nat kw_fn) {
+                                                              | 0 →
+                                                                  match (nat_eq ident_nat kw_forall_ascii) {
+                                                                    | 0 →
+                                                                        match (nat_eq ident_nat kw_underscore) {
+                                                                          | 0 → TkIdent ident_nat
+                                                                          | k → TkUnderscore
+                                                                        }
+                                                                    | k → TkForall
+                                                                  }
+                                                              | k → TkLambda
+                                                            }
+                                                        | k → TkIn
+                                                      }
+                                                  | k → TkMod
+                                                }
+                                            | k → TkExternal
+                                          }
+                                      | k → TkElse
+                                    }
+                                | k → TkThen
+                              }
+                          | k → TkIf
+                        }
+                    | k → TkMatch
+                  }
+              | k → TkType
+            }
+        | k → TkLet
+      }
+
+-- =====================================================================
+-- Section 15: Nat Literal Scanning
+-- =====================================================================
+
+-- lex_scan_nat_dec_go: accumulate decimal digits, building up the value.
+-- Returns MkPair end_pos accumulated_value
+let lex_scan_nat_dec_go : Pair Nat Nat → LexPos → Nat → Pair LexPos Nat
+  = λ src pos acc →
+      match (nat_eq (lexpos_offset pos) (bytes_length src)) {
+        | 0 →
+            match (is_digit (bytes_at src (lexpos_offset pos))) {
+              | 0 → MkPair pos acc
+              | k →
+                  let d = sub (bytes_at src (lexpos_offset pos)) 0x30 in
+                  lex_scan_nat_dec_go src (lexpos_advance pos) (add (mul acc 10) d)
+            }
+        | k → MkPair pos acc
+      }
+
+-- lex_scan_nat_hex_go: accumulate hex digits after "0x" prefix.
+let lex_scan_nat_hex_go : Pair Nat Nat → LexPos → Nat → Pair LexPos Nat
+  = λ src pos acc →
+      match (nat_eq (lexpos_offset pos) (bytes_length src)) {
+        | 0 →
+            match (is_hex_digit (bytes_at src (lexpos_offset pos))) {
+              | 0 → MkPair pos acc
+              | k →
+                  let d = hex_digit_val (bytes_at src (lexpos_offset pos)) in
+                  lex_scan_nat_hex_go src (lexpos_advance pos) (add (mul acc 16) d)
+            }
+        | k → MkPair pos acc
+      }
+
+-- =====================================================================
+-- Section 16: Text Literal Scanning
+-- =====================================================================
+
+-- lex_scan_text_go: accumulate bytes inside double-quoted string.
+-- Handles \" escape only; other bytes included as-is.
+-- Returns MkPair end_pos (MkPair byte_len content_nat)
+-- Caller must have already consumed the opening '"'.
+let lex_scan_text_go : Pair Nat Nat → LexPos → Nat → Nat → Pair LexPos (Pair Nat Nat)
+  = λ src pos tlen tnat →
+      match (nat_eq (lexpos_offset pos) (bytes_length src)) {
+        | 0 →
+            match (nat_eq (bytes_at src (lexpos_offset pos)) 0x22) {   -- '"'
+              | 0 →
+                  -- Check for backslash escape
+                  match (nat_eq (bytes_at src (lexpos_offset pos)) 0x5C) {  -- '\'
+                    | 0 →
+                        let b = bytes_at src (lexpos_offset pos) in
+                        lex_scan_text_go src (lexpos_advance pos)
+                          (Core.PLAN.inc tlen)
+                          (bit_or tnat (shift_left b (mul 8 tlen)))
+                    | k →
+                        -- backslash: consume next byte literally
+                        match (nat_eq (Core.PLAN.inc (lexpos_offset pos)) (bytes_length src)) {
+                          | 0 →
+                              let b2 = bytes_at src (Core.PLAN.inc (lexpos_offset pos)) in
+                              lex_scan_text_go src (lexpos_advance_n pos 2)
+                                (Core.PLAN.inc tlen)
+                                (bit_or tnat (shift_left b2 (mul 8 tlen)))
+                          | k →
+                              -- backslash at end of file: produce error token
+                              MkPair pos (MkPair tlen tnat)
+                        }
+                  }
+              | k →
+                  -- closing '"': consume it
+                  MkPair (lexpos_advance pos) (MkPair tlen tnat)
+            }
+        | k →
+            -- end of file inside string: return what we have
+            MkPair pos (MkPair tlen tnat)
+      }
+
+-- =====================================================================
+-- Section 17: Single Token Dispatch
+-- =====================================================================
+
+-- lex_one: consume one token starting at pos (after whitespace is skipped).
+-- Returns MkPair token end_pos.
+-- Multi-byte Unicode operators are handled by inspecting the lead byte.
+-- Precondition: pos is within bounds (caller has checked).
+let lex_one : Pair Nat Nat → LexPos → Pair Token LexPos
+  = λ src pos →
+      let b = bytes_at src (lexpos_offset pos) in
+      let pos1 = lexpos_advance pos in
+      -- Digits
+      match (is_digit b) {
+        | 0 →
+            -- Identifiers / keywords
+            match (is_alpha b) {
+              | 0 →
+                  match (nat_eq b 0x5F) {           -- '_'
+                    | 0 →
+                        -- Punctuation and operators
+                        match (nat_eq b 0x28) {           -- '('
+                          | 0 →
+                              match (nat_eq b 0x29) {     -- ')'
+                                | 0 →
+                                    match (nat_eq b 0x7B) {   -- '{'
+                                      | 0 →
+                                          match (nat_eq b 0x7D) {   -- '}'
+                                            | 0 →
+                                                match (nat_eq b 0x7C) {   -- '|'
+                                                  | 0 →
+                                                      match (nat_eq b 0x3D) {   -- '='
+                                                        | 0 →
+                                                            match (nat_eq b 0x3A) {   -- ':'
+                                                              | 0 →
+                                                                  match (nat_eq b 0x2E) {   -- '.'
+                                                                    | 0 →
+                                                                        match (nat_eq b 0x2C) {   -- ','
+                                                                          | 0 →
+                                                                              match (nat_eq b 0x40) {   -- '@'
+                                                                                | 0 →
+                                                                                    match (nat_eq b 0x60) {   -- '`'
+                                                                                      | 0 →
+                                                                                          match (nat_eq b 0x22) {   -- '"'
+                                                                                            | 0 →
+                                                                                                -- 0xE2: lead byte for → ← ∀
+                                                                                                match (nat_eq b 0xE2) {
+                                                                                                  | 0 →
+                                                                                                      -- 0xCE: lead byte for λ
+                                                                                                      match (nat_eq b 0xCE) {
+                                                                                                        | 0 →
+                                                                                                            -- Unknown byte: emit error token
+                                                                                                            MkPair (TkErr b) pos1
+                                                                                                        | k →
+                                                                                                            -- λ = CE BB (2 bytes)
+                                                                                                            MkPair TkLambda (lexpos_advance pos1)
+                                                                                                      }
+                                                                                                  | k →
+                                                                                                      -- E2 xx xx: 3-byte sequence for → ← ∀
+                                                                                                      -- Collect as LE nat: b | (b2 << 8) | (b3 << 16)
+                                                                                                      let b2 = bytes_at src (lexpos_offset pos1) in
+                                                                                                      let b3 = bytes_at src (Core.PLAN.inc (lexpos_offset pos1)) in
+                                                                                                      let seq = bit_or b (bit_or (shift_left b2 8) (shift_left b3 16)) in
+                                                                                                      let pos3 = lexpos_advance_n pos 3 in
+                                                                                                      match (nat_eq seq kw_arrow_uni) {
+                                                                                                        | 0 →
+                                                                                                            match (nat_eq seq kw_backarrow_uni) {
+                                                                                                              | 0 →
+                                                                                                                  match (nat_eq seq kw_forall_uni) {
+                                                                                                                    | 0 → MkPair (TkErr b) pos3
+                                                                                                                    | k → MkPair TkForall pos3
+                                                                                                                  }
+                                                                                                              | k → MkPair TkBackArrow pos3
+                                                                                                            }
+                                                                                                        | k → MkPair TkArrow pos3
+                                                                                                      }
+                                                                                                }
+                                                                                            | k →
+                                                                                                -- Text literal
+                                                                                                let tr = lex_scan_text_go src pos1 0 0 in
+                                                                                                match tr {
+                                                                                                  | MkPair end_pos tpair →
+                                                                                                      match tpair {
+                                                                                                        | MkPair tlen tnat →
+                                                                                                            MkPair (TkText tnat) end_pos
+                                                                                                      }
+                                                                                                }
+                                                                                          }
+                                                                                      | k → MkPair TkBacktick pos1
+                                                                                    }
+                                                                                | k → MkPair TkAt pos1
+                                                                              }
+                                                                          | k → MkPair TkComma pos1
+                                                                        }
+                                                                    | k → MkPair TkDot pos1
+                                                                  }
+                                                              | k → MkPair TkColon pos1
+                                                            }
+                                                        | k → MkPair TkEqual pos1
+                                                      }
+                                                  | k → MkPair TkBar pos1
+                                                }
+                                            | k → MkPair TkRBrace pos1
+                                          }
+                                      | k → MkPair TkLBrace pos1
+                                    }
+                                | k → MkPair TkRParen pos1
+                              }
+                          | k → MkPair TkLParen pos1
+                        }
+                    | k →
+                        -- Leading underscore: start identifier scan
+                        let tr = lex_scan_ident_go src pos 0 0 in
+                        match tr {
+                          | MkPair end_pos ipair →
+                              match ipair {
+                                | MkPair ilen inat →
+                                    MkPair (lex_classify_ident ilen inat) end_pos
+                              }
+                        }
+                  }
+              | k →
+                  -- Leading alpha: start identifier scan
+                  let tr = lex_scan_ident_go src pos 0 0 in
+                  match tr {
+                    | MkPair end_pos ipair →
+                        match ipair {
+                          | MkPair ilen inat →
+                              MkPair (lex_classify_ident ilen inat) end_pos
+                        }
+                  }
+            }
+        | k →
+            -- Digit: check for 0x/0X hex prefix
+            match (nat_eq b 0x30) {           -- '0'
+              | 0 →
+                  -- Non-zero digit: decimal scan starting with value (b - '0')
+                  let tr = lex_scan_nat_dec_go src pos1 (sub b 0x30) in
+                  match tr {
+                    | MkPair end_pos n → MkPair (TkNat n) end_pos
+                  }
+              | k →
+                  -- '0': peek at next byte for 'x'/'X'
+                  match (nat_eq (lexpos_offset pos1) (bytes_length src)) {
+                    | 0 →
+                        match (nat_eq (bytes_at src (lexpos_offset pos1)) 0x78) {   -- 'x'
+                          | 0 →
+                              match (nat_eq (bytes_at src (lexpos_offset pos1)) 0x58) {   -- 'X'
+                                | 0 →
+                                    -- plain '0' (or '0' followed by non-x digit)
+                                    MkPair (TkNat 0) pos1
+                                | k →
+                                    -- '0X': hex literal
+                                    let tr = lex_scan_nat_hex_go src (lexpos_advance pos1) 0 in
+                                    match tr {
+                                      | MkPair end_pos n → MkPair (TkNat n) end_pos
+                                    }
+                              }
+                          | k →
+                              -- '0x': hex literal
+                              let tr = lex_scan_nat_hex_go src (lexpos_advance pos1) 0 in
+                              match tr {
+                                | MkPair end_pos n → MkPair (TkNat n) end_pos
+                              }
+                        }
+                    | k → MkPair (TkNat 0) pos1
+                  }
+            }
+      }
+
+-- =====================================================================
+-- Section 18: Main Lex Loop
+-- =====================================================================
+
+-- lex: tokenize src starting at (offset, line, col).
+-- Returns a List Token ending with TkEof.
+-- The list is built lazily via cons; each call processes one token.
+let lex : Pair Nat Nat → Nat → Nat → Nat → List Token
+  = λ src offset line col →
+      let pos1 = lex_skip_ws src (mk_lexpos offset line col) in
+      match (nat_eq (lexpos_offset pos1) (bytes_length src)) {
+        | 0 →
+            let tr = lex_one src pos1 in
+            match tr {
+              | MkPair tok pos2 →
+                  Cons tok (lex src (lexpos_offset pos2) (lexpos_line pos2) (lexpos_col pos2))
+            }
+        | k → Cons TkEof Nil
+      }
+
+-- =====================================================================
+-- End of M8.2: Lexer
 -- =====================================================================
