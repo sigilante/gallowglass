@@ -1729,3 +1729,1790 @@ let parse_program : List Token → List Decl
 -- =====================================================================
 -- End of M8.3: Parser
 -- =====================================================================
+
+-- =====================================================================
+-- Section 24: M8.5 Codegen
+-- =====================================================================
+--
+-- Compiles AST (Decl list) to PLAN values.
+-- Reference: bootstrap/codegen.py
+-- All match expressions follow the pred_env workaround pattern:
+-- at most one App arm per match when outer lambda params are referenced.
+
+-- -------------------------------------------------------------------
+-- Layer 1a: CEnv accessors
+-- -------------------------------------------------------------------
+
+let cenv_globals : CEnv → List (Pair Nat PlanVal)
+  = λ env →
+      match env {
+        | MkCEnv p _ →
+            match p { | MkPair g _ → g }
+      }
+
+let cenv_locals : CEnv → List (Pair Nat Nat)
+  = λ env →
+      match env {
+        | MkCEnv p _ →
+            match p { | MkPair _ l → l }
+      }
+
+let cenv_arity : CEnv → Nat
+  = λ env →
+      match env {
+        | MkCEnv _ q →
+            match q { | MkPair a _ → a }
+      }
+
+let cenv_self : CEnv → Option Nat
+  = λ env →
+      match env {
+        | MkCEnv _ q →
+            match q { | MkPair _ s → s }
+      }
+
+let cenv_empty : CEnv
+  = MkCEnv (MkPair Nil Nil) (MkPair 0 None)
+
+let cenv_make : List (Pair Nat PlanVal) → List (Pair Nat Nat) → Nat → Option Nat → CEnv
+  = λ g l a s → MkCEnv (MkPair g l) (MkPair a s)
+
+let cenv_set_arity : CEnv → Nat → CEnv
+  = λ env a → cenv_make (cenv_globals env) (cenv_locals env) a (cenv_self env)
+
+let cenv_set_self : CEnv → Option Nat → CEnv
+  = λ env s → cenv_make (cenv_globals env) (cenv_locals env) (cenv_arity env) s
+
+let cenv_bind_local : CEnv → Nat → Nat → CEnv
+  = λ env name idx →
+      cenv_make (cenv_globals env)
+                (assoc_insert name idx (cenv_locals env))
+                (cenv_arity env)
+                (cenv_self env)
+
+let cenv_bind_global : CEnv → Nat → PlanVal → CEnv
+  = λ env name val →
+      cenv_make (assoc_insert name val (cenv_globals env))
+                (cenv_locals env)
+                (cenv_arity env)
+                (cenv_self env)
+
+let cenv_local_lookup : CEnv → Nat → Option Nat
+  = λ env name → assoc_lookup name (cenv_locals env)
+
+let cenv_global_lookup : CEnv → Nat → Option PlanVal
+  = λ env name → assoc_lookup name (cenv_globals env)
+
+-- cenv_new_param: add name at index arity+1, increment arity
+let cenv_new_param : CEnv → Nat → CEnv
+  = λ env name →
+      let a = cenv_arity env in
+      let new_a = add a 1 in
+      cenv_bind_local (cenv_set_arity env new_a) name new_a
+
+-- -------------------------------------------------------------------
+-- Layer 1b: ConTable (fq_name_nat → (tag, arity))
+-- -------------------------------------------------------------------
+
+let contab_empty : List (Pair Nat (Pair Nat Nat))
+  = Nil
+
+let contab_lookup : List (Pair Nat (Pair Nat Nat)) → Nat → Option (Pair Nat Nat)
+  = λ tab name → assoc_lookup name tab
+
+let contab_insert : List (Pair Nat (Pair Nat Nat)) → Nat → Pair Nat Nat
+                  → List (Pair Nat (Pair Nat Nat))
+  = λ tab name info → assoc_insert name info tab
+
+-- contab_tag: extract tag from contab entry
+let contab_tag : Pair Nat Nat → Nat
+  = λ p → match p { | MkPair t _ → t }
+
+-- contab_arity: extract arity from contab entry
+let contab_arity_of : Pair Nat Nat → Nat
+  = λ p → match p { | MkPair _ a → a }
+
+-- -------------------------------------------------------------------
+-- Layer 1c: PlanVal constants and helpers
+-- -------------------------------------------------------------------
+
+-- id_law: L(1, 0, N(1)) — identity function
+let id_law : PlanVal
+  = PLaw 0 (MkPair 1 (PNat 1))
+
+-- const2_law: L(2, 0, N(1)) — takes 2 args, returns first
+let const2_law : PlanVal
+  = PLaw 0 (MkPair 2 (PNat 1))
+
+-- planval_is_nat: 1 if PNat (single App arm + wildcard — safe)
+let planval_is_nat : PlanVal → Nat
+  = λ v → match v { | PNat _ → 1 | _ → 0 }
+
+let planval_get_nat : PlanVal → Nat
+  = λ v → match v { | PNat n → n | _ → 0 }
+
+let planval_is_pin : PlanVal → Nat
+  = λ v → match v { | PPin _ → 1 | _ → 0 }
+
+let planval_is_app : PlanVal → Nat
+  = λ v → match v { | PApp _ _ → 1 | _ → 0 }
+
+let planval_is_law : PlanVal → Nat
+  = λ v → match v { | PLaw _ _ → 1 | _ → 0 }
+
+let planval_get_pin_inner : PlanVal → PlanVal
+  = λ v → match v { | PPin inner → inner | _ → v }
+
+-- -------------------------------------------------------------------
+-- Layer 2: PLAN value builders
+-- -------------------------------------------------------------------
+
+-- cg_quote_nat: literal k inside law body with given arity
+-- k <= arity → quote form PApp(PNat 0)(PNat k); else PNat k
+let cg_quote_nat : Nat → Nat → PlanVal
+  = λ k arity →
+      match (nat_eq arity 0) {
+        | 0 →
+            match (lte k arity) {
+              | 0 → PNat k
+              | _ → PApp (PNat 0) (PNat k)
+            }
+        | _ → PNat k
+      }
+
+-- cg_bapp: A(A(N(0), f), x) — application inside a law body
+let cg_bapp : PlanVal → PlanVal → PlanVal
+  = λ f x → PApp (PApp (PNat 0) f) x
+
+-- cg_apply: bapp in law body, direct PApp at top level
+let cg_apply : PlanVal → PlanVal → Nat → PlanVal
+  = λ f x arity →
+      match (nat_eq arity 0) {
+        | 0 → cg_bapp f x
+        | _ → PApp f x
+      }
+
+-- cg_ensure_pin: wrap in PPin if not already pinned
+let cg_ensure_pin : PlanVal → PlanVal
+  = λ v → match v { | PPin _ → v | _ → PPin v }
+
+-- cg_build_op2: Case_(id, id, id, z, m, scr) — nat dispatch
+-- arity=0 → top-level (direct Apps); arity>0 → law body (bapp)
+let cg_build_op2 : PlanVal → PlanVal → PlanVal → Nat → PlanVal
+  = λ z m scr arity →
+      let op3 = PPin (PNat 3) in
+      let id_pin = PPin id_law in
+      match (nat_eq arity 0) {
+        | 0 →
+            cg_bapp (cg_bapp (cg_bapp (cg_bapp (cg_bapp (cg_bapp op3 id_pin) id_pin) id_pin) z) m) scr
+        | _ →
+            PApp (PApp (PApp (PApp (PApp (PApp op3 id_pin) id_pin) id_pin) z) m) scr
+      }
+
+-- cg_build_reflect_dispatch: Case_(id, id, app_fn, z, m, scr)
+let cg_build_reflect_dispatch : PlanVal → PlanVal → PlanVal → PlanVal → Nat → PlanVal
+  = λ app_fn z m scr arity →
+      let op3 = PPin (PNat 3) in
+      let id_pin = PPin id_law in
+      match (nat_eq arity 0) {
+        | 0 →
+            cg_bapp (cg_bapp (cg_bapp (cg_bapp (cg_bapp (cg_bapp op3 id_pin) id_pin) app_fn) z) m) scr
+        | _ →
+            PApp (PApp (PApp (PApp (PApp (PApp op3 id_pin) id_pin) app_fn) z) m) scr
+      }
+
+-- cg_build_reflect_app: Case_(id, id, app_fn, z, const2(0), scr)
+-- used when App branch is the real handler and Nat cases are trivial
+let cg_build_reflect_app : PlanVal → PlanVal → PlanVal → Nat → PlanVal
+  = λ app_fn z scr arity →
+      let const2_pin = PPin const2_law in
+      let m = match (nat_eq arity 0) {
+                | 0 → cg_bapp const2_pin (PPin (PNat 0))
+                | _ → PApp const2_pin (PNat 0)
+              } in
+      cg_build_reflect_dispatch app_fn z m scr arity
+
+-- cg_apply_params: bapp acc to N(idx), N(idx+1), ..., N(max)
+let cg_apply_params : PlanVal → Nat → Nat → PlanVal
+  = λ acc idx max →
+      match (lte idx max) {
+        | 0 → acc
+        | _ → cg_apply_params (cg_bapp acc (PNat idx)) (add idx 1) max
+      }
+
+-- cg_build_constructor_body: law body for constructor (tag, n_fields)
+-- Always uses quote form for tag since tag <= n_fields in any sane type
+let cg_build_constructor_body : Nat → Nat → PlanVal
+  = λ tag n_fields →
+      cg_apply_params (PApp (PNat 0) (PNat tag)) 1 n_fields
+
+-- -------------------------------------------------------------------
+-- Layer 3a: Expr tag extractors and single-arm helpers
+-- -------------------------------------------------------------------
+
+-- expr_tag: 0=EVar 1=EApp 2=ELam 3=ELet 4=ENat 5=EIf 6=EMatch 7=EPin
+-- SAFE: all arms return constant nats (no outer param refs in bodies)
+let expr_tag : Expr → Nat
+  = λ e →
+      match e {
+        | EVar _    → 0
+        | EApp _ _  → 1
+        | ELam _ _  → 2
+        | ELet _ _  → 3
+        | ENat _    → 4
+        | EIf _ _   → 5
+        | EMatch _ _ → 6
+        | EPin _ _  → 7
+      }
+
+-- Per-constructor accessors (each: single App arm + wildcard — safe)
+let cg_is_lam : Expr → Nat
+  = λ e → match e { | ELam _ _ → 1 | _ → 0 }
+
+let cg_lam_param : Expr → Nat
+  = λ e → match e { | ELam p _ → p | _ → 0 }
+
+let cg_lam_body : Expr → Expr
+  = λ e → match e { | ELam _ b → b | _ → e }
+
+let cg_evar_name : Expr → Nat
+  = λ e → match e { | EVar n → n | _ → 0 }
+
+let cg_app_fun : Expr → Expr
+  = λ e → match e { | EApp f _ → f | _ → e }
+
+let cg_app_arg : Expr → Expr
+  = λ e → match e { | EApp _ a → a | _ → e }
+
+let cg_enat_val : Expr → Nat
+  = λ e → match e { | ENat n → n | _ → 0 }
+
+let cg_eif_cond : Expr → Expr
+  = λ e → match e { | EIf c _ → c | _ → e }
+
+let cg_eif_pair : Expr → Pair Expr Expr
+  = λ e → match e { | EIf _ p → p | _ → MkPair e e }
+
+let cg_elet_name : Expr → Nat
+  = λ e → match e { | ELet n _ → n | _ → 0 }
+
+let cg_elet_pair : Expr → Pair Expr Expr
+  = λ e → match e { | ELet _ p → p | _ → MkPair e e }
+
+let cg_ematch_scrutinee : Expr → Expr
+  = λ e → match e { | EMatch s _ → s | _ → e }
+
+let cg_ematch_arms : Expr → List MatchArm
+  = λ e → match e { | EMatch _ arms → arms | _ → Nil }
+
+let cg_epin_name : Expr → Nat
+  = λ e → match e { | EPin n _ → n | _ → 0 }
+
+let cg_epin_pair : Expr → Pair Expr Expr
+  = λ e → match e { | EPin _ p → p | _ → MkPair e e }
+
+-- -------------------------------------------------------------------
+-- Layer 3b: MatchArm single-arm helpers
+-- -------------------------------------------------------------------
+
+let arm_tag : MatchArm → Nat
+  = λ a → match a { | ArmNat _ _ → 0 | ArmVar _ _ → 1 | ArmCon _ _ → 2 }
+
+let arm_is_nat : MatchArm → Nat
+  = λ a → match a { | ArmNat _ _ → 1 | _ → 0 }
+
+let arm_is_var : MatchArm → Nat
+  = λ a → match a { | ArmVar _ _ → 1 | _ → 0 }
+
+let arm_is_con : MatchArm → Nat
+  = λ a → match a { | ArmCon _ _ → 1 | _ → 0 }
+
+let arm_get_nat_tag : MatchArm → Nat
+  = λ a → match a { | ArmNat t _ → t | _ → 0 }
+
+let arm_get_nat_body : MatchArm → Expr
+  = λ a → match a { | ArmNat _ b → b | _ → EVar 0 }
+
+let arm_get_var_name : MatchArm → Nat
+  = λ a → match a { | ArmVar n _ → n | _ → 0 }
+
+let arm_get_var_body : MatchArm → Expr
+  = λ a → match a { | ArmVar _ b → b | _ → EVar 0 }
+
+let arm_get_con_name : MatchArm → Nat
+  = λ a → match a { | ArmCon n _ → n | _ → 0 }
+
+let arm_get_con_fields : MatchArm → List Nat
+  = λ a →
+      match a {
+        | ArmCon _ p → match p { | MkPair fs _ → fs }
+        | _ → Nil
+      }
+
+let arm_get_con_body : MatchArm → Expr
+  = λ a →
+      match a {
+        | ArmCon _ p → match p { | MkPair _ b → b }
+        | _ → EVar 0
+      }
+
+-- -------------------------------------------------------------------
+-- Layer 3c: Decl single-arm helpers
+-- -------------------------------------------------------------------
+
+let decl_is_let : Decl → Nat
+  = λ d → match d { | DLet _ _ → 1 | _ → 0 }
+
+let decl_is_type : Decl → Nat
+  = λ d → match d { | DType _ _ → 1 | _ → 0 }
+
+let decl_is_ext : Decl → Nat
+  = λ d → match d { | DExt _ _ → 1 | _ → 0 }
+
+let decl_get_let_name : Decl → Nat
+  = λ d → match d { | DLet n _ → n | _ → 0 }
+
+let decl_get_let_body : Decl → Expr
+  = λ d → match d { | DLet _ b → b | _ → EVar 0 }
+
+let decl_get_type_name : Decl → Nat
+  = λ d → match d { | DType n _ → n | _ → 0 }
+
+let decl_get_type_cdefs : Decl → List ConDef
+  = λ d → match d { | DType _ cs → cs | _ → Nil }
+
+let decl_get_ext_mod : Decl → Nat
+  = λ d → match d { | DExt m _ → m | _ → 0 }
+
+let decl_get_ext_items : Decl → List Nat
+  = λ d → match d { | DExt _ items → items | _ → Nil }
+
+
+-- -------------------------------------------------------------------
+-- Layer 4: Recursive AST traversal (free variable collection)
+-- Pass-self pattern breaks mutual recursion between collect_free and
+-- collect_free_arms (which would otherwise form a cycle via cfree_match).
+-- -------------------------------------------------------------------
+
+-- cg_name_in_list: 1 if name appears in list
+let cg_name_in_list : Nat → List Nat → Nat
+  = λ name lst →
+      match lst {
+        | Nil → 0
+        | Cons h rest →
+            match (nat_eq name h) {
+              | 0 → cg_name_in_list name rest
+              | _ → 1
+            }
+      }
+
+-- cg_add_name_once: add name to list if not already present
+let cg_add_name_once : Nat → List Nat → List Nat
+  = λ name lst →
+      match (cg_name_in_list name lst) {
+        | 0 → Cons name lst
+        | _ → lst
+      }
+
+-- cg_free_arm_bound: names bound by a match arm (con fields or var name)
+let cg_free_arm_bound : MatchArm → List Nat → List Nat
+  = λ arm bound →
+      match (arm_is_var arm) {
+        | 0 →
+            match (arm_is_con arm) {
+              | 0 → bound
+              | _ → append (arm_get_con_fields arm) bound
+            }
+        | _ → Cons (arm_get_var_name arm) bound
+      }
+
+-- cg_free_arm_body_of: get the body expression from any arm type
+let cg_free_arm_body_of : MatchArm → Expr
+  = λ arm →
+      match (arm_is_nat arm) {
+        | 0 →
+            match (arm_is_var arm) {
+              | 0 → arm_get_con_body arm
+              | _ → arm_get_var_body arm
+            }
+        | _ → arm_get_nat_body arm
+      }
+
+-- cg_cf_arms: iterate arms, calling cf on each body with arm-extended bound
+-- cf: the collect_free function (passed to break mutual recursion)
+let cg_cf_arms : (Expr → List Nat → CEnv → List Nat → List Nat)
+               → List MatchArm → List Nat → CEnv → List Nat → List Nat
+  = λ cf arms bound env acc →
+      match arms {
+        | Nil → acc
+        | Cons arm rest →
+            let ab = cg_free_arm_bound arm bound in
+            let body = cg_free_arm_body_of arm in
+            cg_cf_arms cf rest bound env (cf body ab env acc)
+      }
+
+-- cg_cf_dispatch: dispatch collect_free to the right per-constructor handler
+-- cf: the collect_free function (passed to avoid mutual recursion)
+-- Uses nat_eq chain on expr_tag to route (all safe: 1 named arm + wildcard)
+let cg_cf_dispatch : (Expr → List Nat → CEnv → List Nat → List Nat)
+                   → Expr → List Nat → CEnv → List Nat → List Nat
+  = λ cf expr bound env acc →
+      match (nat_eq (expr_tag expr) 0) {
+        | 0 →
+            match (nat_eq (expr_tag expr) 4) {
+              | 0 →
+                  match (nat_eq (expr_tag expr) 1) {
+                    | 0 →
+                        match (nat_eq (expr_tag expr) 2) {
+                          | 0 →
+                              match (nat_eq (expr_tag expr) 3) {
+                                | 0 →
+                                    match (nat_eq (expr_tag expr) 5) {
+                                      | 0 →
+                                          match (nat_eq (expr_tag expr) 6) {
+                                            | 0 →
+                                                -- EPin: collect from rhs then body (name bound in body)
+                                                match expr {
+                                                  | EPin n pair →
+                                                      match pair {
+                                                        | MkPair rhs body →
+                                                            cf body (Cons n bound) env
+                                                              (cf rhs bound env acc)
+                                                      }
+                                                  | _ → acc
+                                                }
+                                            | _ →
+                                                -- EMatch: collect from scrutinee + all arms
+                                                match expr {
+                                                  | EMatch scr arms →
+                                                      cg_cf_arms cf arms bound env
+                                                        (cf scr bound env acc)
+                                                  | _ → acc
+                                                }
+                                          }
+                                      | _ →
+                                          -- EIf: collect from cond, then, else
+                                          match expr {
+                                            | EIf cond pair →
+                                                match pair {
+                                                  | MkPair then_ else_ →
+                                                      cf else_ bound env
+                                                        (cf then_ bound env
+                                                          (cf cond bound env acc))
+                                                }
+                                            | _ → acc
+                                          }
+                                    }
+                                | _ →
+                                    -- ELet: collect from rhs then body (name bound in body)
+                                    match expr {
+                                      | ELet n pair →
+                                          match pair {
+                                            | MkPair rhs body →
+                                                cf body (Cons n bound) env
+                                                  (cf rhs bound env acc)
+                                          }
+                                      | _ → acc
+                                    }
+                              }
+                          | _ →
+                              -- ELam: collect from body (param bound)
+                              match expr {
+                                | ELam p b → cf b (Cons p bound) env acc
+                                | _ → acc
+                              }
+                        }
+                    | _ →
+                        -- EApp: collect from fun and arg
+                        match expr {
+                          | EApp f a →
+                              cf a bound env (cf f bound env acc)
+                          | _ → acc
+                        }
+                  }
+              | _ → acc  -- ENat: no free vars
+            }
+        | _ →
+            -- EVar: check if name is free (in env.locals, not in bound)
+            match expr {
+              | EVar n →
+                  match (cg_name_in_list n bound) {
+                    | 0 →
+                        match (assoc_has n (cenv_locals env)) {
+                          | 0 → acc
+                          | _ → cg_add_name_once n acc
+                        }
+                    | _ → acc
+                  }
+              | _ → acc
+            }
+      }
+
+-- cg_collect_free: main free-var collector (self-recursive, passes itself to dispatch)
+let cg_collect_free : Expr → List Nat → CEnv → List Nat → List Nat
+  = λ expr bound env acc →
+      cg_cf_dispatch cg_collect_free expr bound env acc
+
+-- cg_keep_free_locals: filter locals to keep only those in found and not in bound
+let cg_keep_free_locals : List (Pair Nat Nat) → List Nat → List Nat → List Nat
+  = λ locals found bound →
+      match locals {
+        | Nil → Nil
+        | Cons kv rest →
+            match kv {
+              | MkPair name _ →
+                  let rest_result = cg_keep_free_locals rest found bound in
+                  match (cg_name_in_list name bound) {
+                    | 0 →
+                        match (cg_name_in_list name found) {
+                          | 0 → rest_result
+                          | _ → Cons name rest_result
+                        }
+                    | _ → rest_result
+                  }
+            }
+      }
+
+-- cg_free_vars: names in cenv_locals order that appear free in expr (not in bound)
+let cg_free_vars : Expr → List Nat → CEnv → List Nat
+  = λ expr bound env →
+      let found = cg_collect_free expr bound env Nil in
+      cg_keep_free_locals (cenv_locals env) found bound
+
+-- cg_free_vars_bodies: free locals across multiple bodies (union)
+let cg_free_vars_bodies : List Expr → List Nat → CEnv → List Nat
+  = λ bodies bound env →
+      let all_found = foldl (λ acc body → cg_collect_free body bound env acc) Nil bodies in
+      cg_keep_free_locals (cenv_locals env) all_found bound
+
+-- -------------------------------------------------------------------
+-- Layer 4b: Self-reference detection (same pass-self pattern)
+-- -------------------------------------------------------------------
+
+-- cg_hv_arms must be defined before cg_hv_dispatch (forward reference fix)
+let cg_hv_arms : (Expr → Nat → Nat) → List MatchArm → Nat → Nat
+  = λ hv arms name →
+      match arms {
+        | Nil → 0
+        | Cons arm rest →
+            match (hv (cg_free_arm_body_of arm) name) {
+              | 0 → cg_hv_arms hv rest name
+              | _ → 1
+            }
+      }
+
+-- cg_hv_dispatch: dispatch has_var to the right handler
+-- hv: the has_var function (passed to avoid mutual recursion)
+let cg_hv_dispatch : (Expr → Nat → Nat) → Expr → Nat → Nat
+  = λ hv expr name →
+      match (nat_eq (expr_tag expr) 0) {
+        | 0 →
+            match (nat_eq (expr_tag expr) 4) {
+              | 0 →
+                  match (nat_eq (expr_tag expr) 1) {
+                    | 0 →
+                        match (nat_eq (expr_tag expr) 2) {
+                          | 0 →
+                              match (nat_eq (expr_tag expr) 3) {
+                                | 0 →
+                                    match (nat_eq (expr_tag expr) 5) {
+                                      | 0 →
+                                          match (nat_eq (expr_tag expr) 6) {
+                                            | 0 →
+                                                match expr {
+                                                  | EPin _ pair →
+                                                      match pair {
+                                                        | MkPair r b →
+                                                            match (hv r name) {
+                                                              | 0 → hv b name
+                                                              | _ → 1
+                                                            }
+                                                      }
+                                                  | _ → 0
+                                                }
+                                            | _ →
+                                                match expr {
+                                                  | EMatch s arms →
+                                                      match (hv s name) {
+                                                        | 0 → cg_hv_arms hv arms name
+                                                        | _ → 1
+                                                      }
+                                                  | _ → 0
+                                                }
+                                          }
+                                      | _ →
+                                          match expr {
+                                            | EIf c pair →
+                                                match pair {
+                                                  | MkPair t el →
+                                                      match (hv c name) {
+                                                        | 0 →
+                                                            match (hv t name) {
+                                                              | 0 → hv el name
+                                                              | _ → 1
+                                                            }
+                                                        | _ → 1
+                                                      }
+                                                }
+                                            | _ → 0
+                                          }
+                                    }
+                                | _ →
+                                    match expr {
+                                      | ELet _ pair →
+                                          match pair {
+                                            | MkPair r b →
+                                                match (hv r name) {
+                                                  | 0 → hv b name
+                                                  | _ → 1
+                                                }
+                                          }
+                                      | _ → 0
+                                    }
+                              }
+                          | _ →
+                              match expr {
+                                | ELam _ b → hv b name
+                                | _ → 0
+                              }
+                        }
+                    | _ →
+                        match expr {
+                          | EApp f a →
+                              match (hv f name) {
+                                | 0 → hv a name
+                                | _ → 1
+                              }
+                          | _ → 0
+                        }
+                  }
+              | _ → 0  -- ENat
+            }
+        | _ →
+            match expr {
+              | EVar n → nat_eq n name
+              | _ → 0
+            }
+      }
+
+let cg_has_var : Expr → Nat → Nat
+  = λ expr name → cg_hv_dispatch cg_has_var expr name
+
+-- cg_body_uses_self: does expr reference env's self_ref?
+let cg_body_uses_self : Expr → CEnv → Nat
+  = λ expr env →
+      match (cenv_self env) {
+        | None → 0
+        | Some fq_nat → cg_has_var expr fq_nat
+      }
+
+-- cg_flatten_lam: collect params and find body (workaround: no multi-arm match)
+let cg_flatten_lam_go : Expr → List Nat → Pair (List Nat) Expr
+  = λ e acc →
+      match (cg_is_lam e) {
+        | 0 → MkPair (reverse acc) e
+        | _ → cg_flatten_lam_go (cg_lam_body e) (Cons (cg_lam_param e) acc)
+      }
+
+let cg_flatten_lam : Expr → Pair (List Nat) Expr
+  = λ e → cg_flatten_lam_go e Nil
+
+-- -------------------------------------------------------------------
+-- Layer 5: Sorting utilities and arm extraction
+-- -------------------------------------------------------------------
+
+-- cg_insert_sorted_pair: insertion sort on (Nat, Expr) by nat key
+let cg_insert_sorted_pair : Pair Nat Expr → List (Pair Nat Expr) → List (Pair Nat Expr)
+  = λ p lst →
+      match p {
+        | MkPair k _ →
+            match lst {
+              | Nil → Cons p Nil
+              | Cons h rest →
+                  match h {
+                    | MkPair hk _ →
+                        match (lte k hk) {
+                          | 0 → Cons h (cg_insert_sorted_pair p rest)
+                          | _ → Cons p lst
+                        }
+                  }
+            }
+      }
+
+let cg_sort_nat_pairs : List (Pair Nat Expr) → List (Pair Nat Expr)
+  = λ lst →
+      match lst {
+        | Nil → Nil
+        | Cons h rest → cg_insert_sorted_pair h (cg_sort_nat_pairs rest)
+      }
+
+-- cg_insert_sorted_pv: insertion sort on (Nat, PlanVal) by nat key
+let cg_insert_sorted_pv : Pair Nat PlanVal → List (Pair Nat PlanVal) → List (Pair Nat PlanVal)
+  = λ p lst →
+      match p {
+        | MkPair k _ →
+            match lst {
+              | Nil → Cons p Nil
+              | Cons h rest →
+                  match h {
+                    | MkPair hk _ →
+                        match (lte k hk) {
+                          | 0 → Cons h (cg_insert_sorted_pv p rest)
+                          | _ → Cons p lst
+                        }
+                  }
+            }
+      }
+
+let cg_sort_pv_pairs : List (Pair Nat PlanVal) → List (Pair Nat PlanVal)
+  = λ lst →
+      match lst {
+        | Nil → Nil
+        | Cons h rest → cg_insert_sorted_pv h (cg_sort_pv_pairs rest)
+      }
+
+-- cg_extract_nat_arms: collect ArmNat arms as sorted (tag, body) pairs
+let cg_extract_nat_arms : List MatchArm → List (Pair Nat Expr)
+  = λ arms →
+      cg_sort_nat_pairs
+        (foldr (λ arm acc →
+            match (arm_is_nat arm) {
+              | 0 → acc
+              | _ → Cons (MkPair (arm_get_nat_tag arm) (arm_get_nat_body arm)) acc
+            }) Nil arms)
+
+-- cg_extract_wild_arm: find first ArmVar
+-- Returns Some (MkPair (Some name) body) for variable, Some (MkPair None body) for wildcard
+let cg_extract_wild_arm : List MatchArm → Option (Pair (Option Nat) Expr)
+  = λ arms →
+      match arms {
+        | Nil → None
+        | Cons arm rest →
+            match (arm_is_var arm) {
+              | 0 → cg_extract_wild_arm rest
+              | _ →
+                  let name = arm_get_var_name arm in
+                  let body = arm_get_var_body arm in
+                  match (nat_eq name 0) {
+                    | 0 → Some (MkPair (Some name) body)
+                    | _ → Some (MkPair None body)
+                  }
+            }
+      }
+
+-- -------------------------------------------------------------------
+-- Layer 6: Nat match compilation
+-- -------------------------------------------------------------------
+
+-- cg_bind_params: fold cenv_new_param over a list of names
+let cg_bind_params : List Nat → CEnv → CEnv
+  = λ names env →
+      match names {
+        | Nil → env
+        | Cons name rest → cg_bind_params rest (cenv_new_param env name)
+      }
+
+-- cg_apply_free_locals: partially apply v to free vars via de Bruijn indices
+let cg_apply_free_locals : PlanVal → List Nat → CEnv → PlanVal
+  = λ v names env →
+      match names {
+        | Nil → v
+        | Cons name rest →
+            match (cenv_local_lookup env name) {
+              | None → cg_apply_free_locals v rest env
+              | Some idx →
+                  let applied = match (nat_eq (cenv_arity env) 0) {
+                                   | 0 → cg_bapp v (PNat idx)
+                                   | _ → PApp v (PNat idx)
+                                 } in
+                  cg_apply_free_locals applied rest env
+            }
+      }
+
+-- cg_make_pred_succ_law: 1-arg succ function binding wild_var to predecessor
+-- Captures free locals and self_ref via lambda lifting
+let cg_make_pred_succ_law : Expr → Nat → CEnv
+                           → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                           → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ wild_body wild_var env ce ctab hint →
+      let free_vars = cg_free_vars wild_body (Cons wild_var Nil) env in
+      let uses_self = cg_body_uses_self wild_body env in
+      let g = cenv_globals env in
+      let env0 = cenv_make g Nil 0 None in
+      let env1 = match (nat_eq uses_self 0) {
+                   | 0 →
+                       match (cenv_self env) {
+                         | None → env0
+                         | Some fq → cenv_new_param env0 fq
+                       }
+                   | _ → env0
+                 } in
+      let env2 = cg_bind_params free_vars env1 in
+      let env3 = cenv_new_param env2 wild_var in
+      let body_val = ce wild_body env3 ctab 0 in
+      let arity = cenv_arity env3 in
+      let lifted_law = PPin (PLaw 0 (MkPair arity body_val)) in
+      let result0 = match (nat_eq uses_self 0) {
+                      | 0 →
+                          match (nat_eq (cenv_arity env) 0) {
+                            | 0 → cg_bapp lifted_law (PNat 0)
+                            | _ → PApp lifted_law (PNat 0)
+                          }
+                      | _ → lifted_law
+                    } in
+      cg_apply_free_locals result0 free_vars env
+
+-- cg_make_wild_succ: build succ function for the wild arm (no more named arms)
+let cg_make_wild_succ : Option (Pair (Option Nat) Expr) → CEnv
+                       → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                       → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ wild env ce ctab hint →
+      let const2_pin = PPin const2_law in
+      match wild {
+        | None →
+            let fallback = cg_quote_nat 0 (cenv_arity env) in
+            match (nat_eq (cenv_arity env) 0) {
+              | 0 → cg_bapp const2_pin fallback
+              | _ → PApp const2_pin fallback
+            }
+        | Some p →
+            match p {
+              | MkPair wild_name_opt wild_body →
+                  match wild_name_opt {
+                    | None →
+                        let wv = ce wild_body env ctab hint in
+                        match (nat_eq (cenv_arity env) 0) {
+                          | 0 → cg_bapp const2_pin wv
+                          | _ → PApp const2_pin wv
+                        }
+                    | Some wild_var →
+                        cg_make_pred_succ_law wild_body wild_var env ce ctab hint
+                  }
+            }
+      }
+
+-- cg_build_nat_dispatch: build nat dispatch using Case_ (opcode 3)
+-- Self-recursive on the arm list; uses fresh pred_env for arms[1+]
+let cg_build_nat_dispatch : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr)
+                           → PlanVal → CEnv
+                           → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                           → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ arms wild scr env ce ctab hint →
+      match arms {
+        | Nil →
+            match wild {
+              | None → cg_quote_nat 0 (cenv_arity env)
+              | Some p →
+                  match p { | MkPair _ wb → ce wb env ctab hint }
+            }
+        | Cons arm0 rest →
+            match arm0 {
+              | MkPair _ body0 →
+                  let zero_val = ce body0 env ctab hint in
+                  let succ = match rest {
+                                | Nil →
+                                    cg_make_wild_succ wild env ce ctab hint
+                                | Cons _ _ →
+                                    let g = cenv_globals env in
+                                    let pred_env = cenv_make g Nil 1 None in
+                                    let inner = cg_build_nat_dispatch rest wild (PNat 1) pred_env ce ctab hint in
+                                    PPin (PLaw 0 (MkPair 1 inner))
+                              } in
+                  cg_build_op2 zero_val succ scr (cenv_arity env)
+            }
+      }
+
+-- cg_normalize_pv_tags: subtract (base+1) from tags in a (Nat, PlanVal) list
+let cg_normalize_pv_tags : List (Pair Nat PlanVal) → Nat → List (Pair Nat PlanVal)
+  = λ lst base →
+      match lst {
+        | Nil → Nil
+        | Cons p rest →
+            match p {
+              | MkPair t v →
+                  Cons (MkPair (sub t (add base 1)) v)
+                       (cg_normalize_pv_tags rest base)
+            }
+      }
+
+-- cg_build_precompiled_nat_dispatch: dispatch on already-compiled (tag, PlanVal) pairs
+let cg_build_precompiled_nat_dispatch : List (Pair Nat PlanVal) → Option (Pair (Option Nat) Expr)
+                                       → PlanVal → CEnv
+                                       → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                                       → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ tag_val_pairs wild scr env ce ctab hint →
+      match tag_val_pairs {
+        | Nil →
+            match wild {
+              | None → cg_quote_nat 0 (cenv_arity env)
+              | Some p → match p { | MkPair _ wb → ce wb env ctab hint }
+            }
+        | Cons pair0 rest →
+            match pair0 {
+              | MkPair tag0 zero_val →
+                  let succ = match rest {
+                                | Nil →
+                                    cg_make_wild_succ wild env ce ctab hint
+                                | Cons _ _ →
+                                    let g = cenv_globals env in
+                                    let pred_env = cenv_make g Nil 1 None in
+                                    let normalized = cg_normalize_pv_tags rest tag0 in
+                                    let inner = cg_build_precompiled_nat_dispatch normalized wild (PNat 1) pred_env ce ctab hint in
+                                    PPin (PLaw 0 (MkPair 1 inner))
+                              } in
+                  cg_build_op2 zero_val succ scr (cenv_arity env)
+            }
+      }
+
+-- cg_compile_nat_match: compile a nat/bool match
+let cg_compile_nat_match : PlanVal → List MatchArm → CEnv
+                          → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                          → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ scr arms env ce ctab hint →
+      let nat_arms = cg_extract_nat_arms arms in
+      let wild = cg_extract_wild_arm arms in
+      cg_build_nat_dispatch nat_arms wild scr env ce ctab hint
+
+
+-- -------------------------------------------------------------------
+
+-- -------------------------------------------------------------------
+-- Layer 7: Constructor match compilation
+-- -------------------------------------------------------------------
+
+-- cg_arm_con_arity: arity of a con arm (number of field names)
+let cg_arm_con_arity : MatchArm → Nat
+  = λ arm → length (arm_get_con_fields arm)
+
+-- cg_max_con_arity: maximum field count across con arms
+let cg_max_con_arity : List MatchArm → Nat
+  = λ arms →
+      foldl (λ acc arm →
+               let a = cg_arm_con_arity arm in
+               match (lte acc a) {
+                 | 0 → acc
+                 | _ → a
+               }) 0 arms
+
+-- cg_filter_nullary_arms: keep ArmCon arms with 0 fields
+let cg_filter_nullary_arms : List MatchArm → List MatchArm
+  = λ arms →
+      filter (λ arm → nat_eq (cg_arm_con_arity arm) 0) arms
+
+-- cg_filter_field_arms: keep ArmCon arms with > 0 fields
+let cg_filter_field_arms : List MatchArm → List MatchArm
+  = λ arms →
+      filter (λ arm →
+                match (nat_eq (cg_arm_con_arity arm) 0) {
+                  | 0 → 1
+                  | _ → 0
+                }) arms
+
+-- cg_arms_to_tag_expr: convert con arms to (tag, body) pairs using ctab
+let cg_arms_to_tag_expr : List MatchArm → List (Pair Nat (Pair Nat Nat)) → List (Pair Nat Expr)
+  = λ arms ctab →
+      map (λ arm →
+             let con_name = arm_get_con_name arm in
+             let tag = match (contab_lookup ctab con_name) {
+                         | None → 0
+                         | Some p → contab_tag p
+                       } in
+             MkPair tag (arm_get_con_body arm)) arms
+
+-- cg_all_field_names: collect all field names across con arms
+let cg_all_field_names : List MatchArm → List Nat
+  = λ arms →
+      foldl (λ acc arm → append acc (arm_get_con_fields arm)) Nil arms
+
+-- cg_build_z_body: value for z (scrutinee = Nat 0) in reflect dispatch
+let cg_build_z_body : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr) → CEnv
+                     → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                     → List (Pair Nat (Pair Nat Nat)) → PlanVal
+  = λ nullary_nat_arms wild env ce ctab →
+      match (assoc_lookup 0 nullary_nat_arms) {
+        | Some z_expr → ce z_expr env ctab 0
+        | None →
+            match wild {
+              | None → cg_quote_nat 0 (cenv_arity env)
+              | Some p → match p { | MkPair _ wb → ce wb env ctab 0 }
+            }
+      }
+
+-- cg_build_nullary_remaining: (tag-1, body) pairs for nullary arms with tag > 0
+let cg_build_nullary_remaining : List (Pair Nat Expr) → List (Pair Nat Expr)
+  = λ nat_arms →
+      foldr (λ p acc →
+               match p {
+                 | MkPair tag body →
+                     match (nat_eq tag 0) {
+                       | 0 → Cons (MkPair (sub tag 1) body) acc
+                       | _ → acc
+                     }
+               }) Nil nat_arms
+
+-- cg_build_m_body: m (succ fn) for remaining nullary constructors with tag > 0
+let cg_build_m_body : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr) → CEnv
+                     → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                     → List (Pair Nat (Pair Nat Nat)) → PlanVal
+  = λ remaining wild env ce ctab →
+      let const2_pin = PPin const2_law in
+      match remaining {
+        | Nil →
+            match wild {
+              | None →
+                  match (nat_eq (cenv_arity env) 0) {
+                    | 0 → cg_bapp const2_pin (PPin (PNat 0))
+                    | _ → PApp const2_pin (PNat 0)
+                  }
+              | Some p →
+                  match p {
+                    | MkPair _ wb →
+                        let wv = ce wb env ctab 0 in
+                        match (nat_eq (cenv_arity env) 0) {
+                          | 0 → cg_bapp const2_pin wv
+                          | _ → PApp const2_pin wv
+                        }
+                  }
+            }
+        | Cons _ _ →
+            let g = cenv_globals env in
+            let pred_env = cenv_make g Nil 1 None in
+            let m_inner = cg_build_nat_dispatch remaining wild (PNat 1) pred_env ce ctab 0 in
+            PPin (PLaw 0 (MkPair 1 m_inner))
+      }
+
+-- cg_arm_find_by_tag: find a con arm whose ctab tag equals the given tag
+let cg_arm_find_by_tag : List MatchArm → Nat → List (Pair Nat (Pair Nat Nat)) → MatchArm
+  = λ arms tag ctab →
+      match arms {
+        | Nil →
+            -- Return sentinel arm with empty body
+            ArmCon 0 (MkPair Nil (EVar 0))
+        | Cons arm rest →
+            let con_tag = match (contab_lookup ctab (arm_get_con_name arm)) {
+                            | None → 0
+                            | Some p → contab_tag p
+                          } in
+            match (nat_eq con_tag tag) {
+              | 0 → cg_arm_find_by_tag rest tag ctab
+              | _ → arm
+            }
+      }
+
+-- cg_build_unary_handler_body: handler body for arity-1 field arms
+-- henv has [self?]+[free_locals]+[fun]+[arg] (arity = arg_idx)
+-- fun_idx = arg_idx - 1, arg_idx = arg_idx
+let cg_build_unary_handler_body : List MatchArm → Option (Pair (Option Nat) Expr)
+                                  → CEnv → Nat → Nat
+                                  → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                                  → List (Pair Nat (Pair Nat Nat)) → PlanVal
+  = λ field_arms wild henv fun_idx arg_idx ce ctab →
+      match field_arms {
+        | Nil → cg_quote_nat 0 (cenv_arity henv)
+        | Cons arm0 rest_arms →
+            match rest_arms {
+              | Nil →
+                  -- Single arm: bind field to arg_idx
+                  let fields = arm_get_con_fields arm0 in
+                  let ae = match fields {
+                             | Nil → henv
+                             | Cons fname _ → cenv_bind_local henv fname arg_idx
+                           } in
+                  ce (arm_get_con_body arm0) ae ctab 0
+              | Cons _ _ →
+                  -- Multiple arms: compile each body, dispatch on fun (tag)
+                  let tag_val_pairs = map (λ arm →
+                                            let fields = arm_get_con_fields arm in
+                                            let ae = match fields {
+                                                       | Nil → henv
+                                                       | Cons fname _ → cenv_bind_local henv fname arg_idx
+                                                     } in
+                                            let tag = match (contab_lookup ctab (arm_get_con_name arm)) {
+                                                        | None → 0
+                                                        | Some p → contab_tag p
+                                                      } in
+                                            MkPair tag (ce (arm_get_con_body arm) ae ctab 0)
+                                          ) field_arms in
+                  cg_build_precompiled_nat_dispatch (cg_sort_pv_pairs tag_val_pairs)
+                    wild (PNat fun_idx) henv ce ctab 0
+            }
+      }
+
+-- cg_build_binary_handler_body: handler body for arity-2 field arms
+-- Receives uses_self and free_locals pre-computed by cg_build_app_handler
+let cg_build_binary_handler_body : List MatchArm → Option (Pair (Option Nat) Expr)
+                                   → CEnv → Nat → Nat → Nat → List Nat
+                                   → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                                   → List (Pair Nat (Pair Nat Nat)) → PlanVal
+  = λ field_arms wild henv fun_idx arg_idx uses_self free_locals ce ctab →
+      let g = cenv_globals henv in
+      let inner_env0 = cenv_make g Nil 0 None in
+      let inner_env1 = match (nat_eq uses_self 0) {
+                         | 0 →
+                             match (cenv_self henv) {
+                               | None → inner_env0
+                               | Some fq → cenv_new_param inner_env0 fq
+                             }
+                         | _ → inner_env0
+                       } in
+      let inner_env2 = cg_bind_params free_locals inner_env1 in
+      -- field2 at (n_cap+1), inner_tag at (n_cap+2), field1 at (n_cap+3)
+      let field2_idx = add (cenv_arity inner_env2) 1 in
+      let inner_env3 = cenv_set_arity inner_env2 field2_idx in
+      let inner_tag_idx = add field2_idx 1 in
+      let field1_idx = add inner_tag_idx 1 in
+      let inner_env4 = cenv_set_arity inner_env3 field1_idx in
+      -- Compile each arm body in inner_env4 with field1 and field2 bound
+      let inner_body = match field_arms {
+                         | Nil → cg_quote_nat 0 (cenv_arity inner_env4)
+                         | Cons arm0 rest_arms →
+                             match rest_arms {
+                               | Nil →
+                                   let fields = arm_get_con_fields arm0 in
+                                   let ae = match fields {
+                                              | Nil → inner_env4
+                                              | Cons f1 rest_fields →
+                                                  let ae1 = cenv_bind_local inner_env4 f1 field1_idx in
+                                                  match rest_fields {
+                                                    | Nil → ae1
+                                                    | Cons f2 _ → cenv_bind_local ae1 f2 field2_idx
+                                                  }
+                                            } in
+                                   ce (arm_get_con_body arm0) ae ctab 0
+                               | Cons _ _ →
+                                   let tag_val_pairs = map (λ arm →
+                                       let fields = arm_get_con_fields arm in
+                                       let ae = match fields {
+                                                  | Nil → inner_env4
+                                                  | Cons f1 rfs →
+                                                      let ae1 = cenv_bind_local inner_env4 f1 field1_idx in
+                                                      match rfs {
+                                                        | Nil → ae1
+                                                        | Cons f2 _ → cenv_bind_local ae1 f2 field2_idx
+                                                      }
+                                                } in
+                                       let tag = match (contab_lookup ctab (arm_get_con_name arm)) {
+                                                   | None → 0
+                                                   | Some p → contab_tag p
+                                                 } in
+                                       MkPair tag (ce (arm_get_con_body arm) ae ctab 0)) field_arms in
+                                   cg_build_precompiled_nat_dispatch (cg_sort_pv_pairs tag_val_pairs)
+                                     wild (PNat inner_tag_idx) inner_env4 ce ctab 0
+                             }
+                       } in
+      let inner_law = PPin (PLaw 0 (MkPair field1_idx inner_body)) in
+      -- Apply inner_law to: [self?]+[free_locals]+outer_arg
+      let n_cap = cenv_arity inner_env2 in
+      let r0 = inner_law in
+      let r1 = match (nat_eq uses_self 0) {
+                 | 0 →
+                     match (nat_eq (cenv_arity henv) 0) {
+                       | 0 → cg_bapp r0 (PNat 0)
+                       | _ → PApp r0 (PNat 0)
+                     }
+                 | _ → r0
+               } in
+      let r2 = cg_apply_free_locals r1 free_locals henv in
+      -- Apply outer_arg (field2) which is at arg_idx in henv
+      let r3 = match (nat_eq (cenv_arity henv) 0) {
+                 | 0 → cg_bapp r2 (PNat arg_idx)
+                 | _ → PApp r2 (PNat arg_idx)
+               } in
+      -- Build outer Case_ on outer_fun (N(fun_idx)) with r3 as app handler
+      cg_build_reflect_app r3 (cg_quote_nat 0 (cenv_arity henv)) (PNat fun_idx) (cenv_arity henv)
+
+-- cg_bodies_use_self: check if any body in list uses self-ref
+let cg_bodies_use_self : List Expr → CEnv → Nat
+  = λ bodies env →
+      foldl (λ acc body →
+               match (nat_eq acc 1) {
+                 | 0 → cg_body_uses_self body env
+                 | _ → 1
+               }) 0 bodies
+
+-- cg_build_app_handler: build the App-handler law for Case_ dispatch
+let cg_build_app_handler : List MatchArm → Option (Pair (Option Nat) Expr) → CEnv
+                          → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                          → List (Pair Nat (Pair Nat Nat)) → PlanVal
+  = λ field_arms wild env ce ctab →
+      let all_bodies = map arm_get_con_body field_arms in
+      let field_names = cg_all_field_names field_arms in
+      let free_locals = cg_free_vars_bodies all_bodies field_names env in
+      let uses_self = cg_bodies_use_self all_bodies env in
+      let max_arity = cg_max_con_arity field_arms in
+      let g = cenv_globals env in
+      let henv0 = cenv_make g Nil 0 None in
+      let henv1 = match (nat_eq uses_self 0) {
+                    | 0 →
+                        match (cenv_self env) {
+                          | None → henv0
+                          | Some fq → cenv_new_param henv0 fq
+                        }
+                    | _ → henv0
+                  } in
+      let henv2 = cg_bind_params free_locals henv1 in
+      let n_cap = cenv_arity henv2 in
+      let fun_idx = add n_cap 1 in
+      let arg_idx = add n_cap 2 in
+      let henv = cenv_set_arity henv2 arg_idx in
+      let handler_body = match (nat_eq max_arity 1) {
+                           | 0 →
+                               cg_build_binary_handler_body field_arms wild henv fun_idx arg_idx uses_self free_locals ce ctab
+                           | _ →
+                               cg_build_unary_handler_body field_arms wild henv fun_idx arg_idx ce ctab
+                         } in
+      let handler_law = PPin (PLaw 0 (MkPair arg_idx handler_body)) in
+      let r0 = handler_law in
+      let r1 = match (nat_eq uses_self 0) {
+                 | 0 →
+                     match (nat_eq (cenv_arity env) 0) {
+                       | 0 → cg_bapp r0 (PNat 0)
+                       | _ → PApp r0 (PNat 0)
+                     }
+                 | _ → r0
+               } in
+      cg_apply_free_locals r1 free_locals env
+
+-- cg_compile_con_match: compile a constructor match expression
+let cg_compile_con_match : PlanVal → List MatchArm → CEnv
+                          → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                          → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ scr arms env ce ctab hint →
+      let con_arms = filter arm_is_con arms in
+      let field_arms = cg_filter_field_arms con_arms in
+      let nullary_arms = cg_filter_nullary_arms con_arms in
+      let wild = cg_extract_wild_arm arms in
+      match (length field_arms) {
+        | 0 →
+            let nat_arms = cg_sort_nat_pairs (cg_arms_to_tag_expr nullary_arms ctab) in
+            cg_build_nat_dispatch nat_arms wild scr env ce ctab hint
+        | _ →
+            let nullary_nat_arms = cg_sort_nat_pairs (cg_arms_to_tag_expr nullary_arms ctab) in
+            let z_body = cg_build_z_body nullary_nat_arms wild env ce ctab in
+            let remaining = cg_build_nullary_remaining nullary_nat_arms in
+            let m_body = cg_build_m_body remaining wild env ce ctab in
+            let app_handler = cg_build_app_handler field_arms wild env ce ctab in
+            cg_build_reflect_dispatch app_handler z_body m_body scr (cenv_arity env)
+      }
+
+-- cg_compile_fallback_match: wildcard/variable match (bind scrutinee if PatVar)
+let cg_compile_fallback_match : PlanVal → List MatchArm → CEnv
+                                → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                                → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ scr arms env ce ctab hint →
+      match arms {
+        | Nil → cg_quote_nat 0 (cenv_arity env)
+        | Cons arm _ →
+            match (arm_is_var arm) {
+              | 0 → ce (cg_free_arm_body_of arm) env ctab hint
+              | _ →
+                  let var_name = arm_get_var_name arm in
+                  let body = arm_get_var_body arm in
+                  match (nat_eq var_name 0) {
+                    | 0 →
+                        -- Variable binding
+                        match (nat_eq (cenv_arity env) 0) {
+                          | 0 →
+                              let new_idx = add (cenv_arity env) 1 in
+                              let arm_env = cenv_bind_local (cenv_set_arity env new_idx) var_name new_idx in
+                              let body_val = ce body arm_env ctab hint in
+                              PApp (PApp (PNat 1) scr) body_val
+                          | _ →
+                              let arm_env = cenv_bind_global env var_name scr in
+                              ce body arm_env ctab hint
+                        }
+                    | _ → ce body env ctab hint
+                  }
+            }
+      }
+
+-- -------------------------------------------------------------------
+-- Layer 8: Lambda lifting
+-- -------------------------------------------------------------------
+
+-- cg_make_lifted_env: build env for lifted lambda (free_vars then params)
+let cg_make_lifted_env : List Nat → List Nat → List (Pair Nat PlanVal) → Option Nat → CEnv
+  = λ free_vars params globals self_ref →
+      let env0 = cenv_make globals Nil 0 self_ref in
+      let env1 = cg_bind_params free_vars env0 in
+      cg_bind_params params env1
+
+-- cg_compile_lam_as_law: compile lambda as a named top-level law (arity == 0 context)
+let cg_compile_lam_as_law : List Nat → Expr → CEnv
+                            → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                            → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ params body_expr env ce ctab hint →
+      let g = cenv_globals env in
+      let self = cenv_self env in
+      let body_env = cg_make_lifted_env Nil params g self in
+      let body_val = ce body_expr body_env ctab 0 in
+      PLaw hint (MkPair (length params) body_val)
+
+-- cg_compile_lam_lifted: lambda-lift a nested lambda (arity > 0 context)
+let cg_compile_lam_lifted : List Nat → Expr → CEnv
+                            → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                            → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ params body_expr env ce ctab hint →
+      let free_vars = cg_free_vars body_expr params env in
+      let g = cenv_globals env in
+      let lifted_env = cg_make_lifted_env free_vars params g None in
+      let body_val = ce body_expr lifted_env ctab 0 in
+      let total_arity = add (length free_vars) (length params) in
+      let lifted_law = PPin (PLaw hint (MkPair total_arity body_val)) in
+      cg_apply_free_locals lifted_law free_vars env
+
+
+-- -------------------------------------------------------------------
+-- Layer 9: Per-expression compilers and main dispatch
+-- -------------------------------------------------------------------
+
+-- cg_is_nat_match: does the arm list contain any ArmNat arms?
+let cg_is_nat_match : List MatchArm → Nat
+  = λ arms → foldl (λ acc arm → if nat_eq acc 1 then 1 else arm_is_nat arm) 0 arms
+
+-- cg_is_con_match: does the arm list contain any ArmCon arms?
+let cg_is_con_match : List MatchArm → Nat
+  = λ arms → foldl (λ acc arm → if nat_eq acc 1 then 1 else arm_is_con arm) 0 arms
+
+-- cg_var_from_env: look up variable name in locals then globals
+-- (must be defined before cg_compile_var)
+let cg_var_from_env : Nat → CEnv → PlanVal
+  = λ n env →
+      match (cenv_local_lookup env n) {
+        | Some idx → PNat idx
+        | None →
+            match (cenv_global_lookup env n) {
+              | Some val →
+                  match (nat_eq (cenv_arity env) 0) {
+                    | 0 →
+                        -- Inside law body: nat globals need quoting
+                        match (planval_is_nat val) {
+                          | 0 →
+                              match (planval_is_pin val) {
+                                | 0 → PPin val
+                                | _ → val
+                              }
+                          | _ → cg_quote_nat (planval_get_nat val) (cenv_arity env)
+                        }
+                    | _ → val
+                  }
+              | None → PNat 0  -- unbound: return 0 (error in source)
+            }
+      }
+
+-- cg_compile_var: compile EVar
+let cg_compile_var : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ expr env ctab hint →
+      match expr {
+        | EVar n →
+            -- 1. Self-reference: inside a law body (arity>0), own FQ name → N(0)
+            match (nat_eq (cenv_arity env) 0) {
+              | 0 →
+                  match (cenv_self env) {
+                    | None → cg_var_from_env n env
+                    | Some fq →
+                        match (nat_eq n fq) {
+                          | 0 → cg_var_from_env n env
+                          | _ → PNat 0
+                        }
+                  }
+              | _ → cg_var_from_env n env
+            }
+        | _ → PNat 0
+      }
+
+-- cg_compile_app: compile EApp
+let cg_compile_app : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                   → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+  = λ expr env ctab hint ce →
+      match expr {
+        | EApp f a →
+            let fv = ce f env ctab hint in
+            let av = ce a env ctab hint in
+            cg_apply fv av (cenv_arity env)
+        | _ → PNat 0
+      }
+
+-- cg_compile_enat: compile ENat
+let cg_compile_enat : Expr → CEnv → Nat → PlanVal
+  = λ expr env hint →
+      match expr {
+        | ENat n → cg_quote_nat n (cenv_arity env)
+        | _ → PNat 0
+      }
+
+-- cg_compile_elet: compile ELet (local let binding)
+let cg_compile_elet : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                    → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+  = λ expr env ctab hint ce →
+      match expr {
+        | ELet name pair →
+            match pair {
+              | MkPair rhs body →
+                  let rhs_val = ce rhs env ctab name in
+                  match (nat_eq (cenv_arity env) 0) {
+                    | 0 →
+                        -- Law body: PLAN let form A(A(N(1), rhs), body)
+                        let new_idx = add (cenv_arity env) 1 in
+                        let body_env = cenv_bind_local (cenv_set_arity env new_idx) name new_idx in
+                        let body_val = ce body body_env ctab hint in
+                        PApp (PApp (PNat 1) rhs_val) body_val
+                    | _ →
+                        -- Top level: add to globals
+                        let body_env = cenv_bind_global env name rhs_val in
+                        ce body body_env ctab hint
+                  }
+            }
+        | _ → PNat 0
+      }
+
+-- cg_compile_if: compile EIf using Case_ (opcode 3)
+let cg_compile_if : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                  → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+  = λ expr env ctab hint ce →
+      match expr {
+        | EIf cond pair →
+            match pair {
+              | MkPair then_ else_ →
+                  let cond_v = ce cond env ctab hint in
+                  let then_v = ce then_ env ctab hint in
+                  let else_v = ce else_ env ctab hint in
+                  let const2_pin = PPin const2_law in
+                  let const_then = cg_apply const2_pin then_v (cenv_arity env) in
+                  cg_build_op2 else_v const_then cond_v (cenv_arity env)
+            }
+        | _ → PNat 0
+      }
+
+-- cg_compile_match: compile EMatch
+let cg_compile_match : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                     → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+  = λ expr env ctab hint ce →
+      match expr {
+        | EMatch scr arms →
+            let scr_v = ce scr env ctab hint in
+            match (cg_is_nat_match arms) {
+              | 0 →
+                  match (cg_is_con_match arms) {
+                    | 0 →
+                        cg_compile_fallback_match scr_v arms env ce ctab hint
+                    | _ →
+                        cg_compile_con_match scr_v arms env ce ctab hint
+                  }
+              | _ →
+                  cg_compile_nat_match scr_v arms env ce ctab hint
+            }
+        | _ → PNat 0
+      }
+
+-- cg_compile_lam: compile ELam (lambda expression)
+let cg_compile_lam : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                   → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+  = λ expr env ctab hint ce →
+      match (cg_flatten_lam expr) {
+        | MkPair params body_expr →
+            match (nat_eq (cenv_arity env) 0) {
+              | 0 →
+                  -- Top-level: compile as named law
+                  cg_compile_lam_lifted params body_expr env ce ctab hint
+              | _ →
+                  -- Top-level (arity=0): compile as named law
+                  cg_compile_lam_as_law params body_expr env ce ctab hint
+            }
+      }
+
+-- cg_compile_pin: compile EPin (@name = rhs; body)
+let cg_compile_pin : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                   → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+  = λ expr env ctab hint ce →
+      match expr {
+        | EPin name pair →
+            match pair {
+              | MkPair rhs body →
+                  let rhs_val = ce rhs env ctab name in
+                  let pinned = cg_ensure_pin rhs_val in
+                  let body_env = cenv_bind_global env name pinned in
+                  ce body body_env ctab hint
+            }
+        | _ → PNat 0
+      }
+
+-- cg_compile_complex: route non-EVar, non-ENat, non-EApp expressions
+-- Uses nat_eq chain on expr_tag (pred_env safe: all bodies take ce as param)
+let cg_compile_complex : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                       → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+  = λ expr env ctab hint ce →
+      match (nat_eq (expr_tag expr) 2) {
+        | 0 →
+            match (nat_eq (expr_tag expr) 3) {
+              | 0 →
+                  match (nat_eq (expr_tag expr) 5) {
+                    | 0 →
+                        match (nat_eq (expr_tag expr) 6) {
+                          | 0 →
+                              -- EPin (tag 7)
+                              cg_compile_pin expr env ctab hint ce
+                          | _ →
+                              -- EMatch (tag 6)
+                              cg_compile_match expr env ctab hint ce
+                        }
+                    | _ →
+                        -- EIf (tag 5)
+                        cg_compile_if expr env ctab hint ce
+                  }
+              | _ →
+                  -- ELet (tag 3)
+                  cg_compile_elet expr env ctab hint ce
+            }
+        | _ →
+            -- ELam (tag 2)
+            cg_compile_lam expr env ctab hint ce
+      }
+
+-- cg_dispatch: main expression dispatch (routes to per-constructor handlers)
+-- ce: the compile_expr function (passed for recursion — ties the knot)
+let cg_dispatch : (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                → Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ ce expr env ctab hint →
+      match (nat_eq (expr_tag expr) 0) {
+        | 0 →
+            match (nat_eq (expr_tag expr) 4) {
+              | 0 →
+                  match (nat_eq (expr_tag expr) 1) {
+                    | 0 →
+                        -- Complex expression (ELam/ELet/EIf/EMatch/EPin)
+                        cg_compile_complex expr env ctab hint ce
+                    | _ →
+                        -- EApp (tag 1)
+                        cg_compile_app expr env ctab hint ce
+                  }
+              | _ →
+                  -- ENat (tag 4)
+                  cg_compile_enat expr env hint
+            }
+        | _ →
+            -- EVar (tag 0)
+            cg_compile_var expr env ctab hint
+      }
+
+-- cg_compile_expr: main compiler entry point (self-recursive via cg_dispatch)
+let cg_compile_expr : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ expr env ctab hint →
+      cg_dispatch cg_compile_expr expr env ctab hint
+
+-- -------------------------------------------------------------------
+-- Layer 10: Program passes
+-- -------------------------------------------------------------------
+
+-- name_concat_dot: "mod" ++ "." ++ "item" as little-endian nat
+let name_concat_dot : Nat → Nat → Nat
+  = λ mod_name item_name →
+      let blen = nat_byte_len mod_name in
+      let dot = shift_left 0x2E (mul 8 blen) in
+      let item_shifted = shift_left item_name (mul 8 (add blen 1)) in
+      bit_or (bit_or mod_name dot) item_shifted
+
+-- Precomputed name nats for Core.PLAN opcodes
+-- These are int.from_bytes(s.encode('utf-8'), 'little') values
+let nn_Core_PLAN : Nat = 1443551261620241067843
+let nn_pin   : Nat = 7235952
+let nn_mk_law : Nat = 131260313725805
+let nn_inc   : Nat = 6516329
+let nn_reflect : Nat = 32760384559932786
+let nn_force  : Nat = 435460140902
+
+-- cg_core_plan_opcodes: list of (fq_name_nat, opcode) for Core.PLAN externals
+let cg_core_plan_opcodes : List (Pair Nat Nat)
+  = Cons (MkPair (name_concat_dot nn_Core_PLAN nn_pin) 0)
+    (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_mk_law) 1)
+    (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_inc) 2)
+    (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_reflect) 3)
+    (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_force) 4)
+    Nil))))
+
+-- Builtin name nats
+let nn_False : Nat = 435728179526
+let nn_True  : Nat = 1702195796
+let nn_Unit  : Nat = 1953066581
+
+-- cg_register_builtins: add False, True, Unit to env globals
+let cg_register_builtins : CEnv → CEnv
+  = λ env →
+      cenv_bind_global
+        (cenv_bind_global
+          (cenv_bind_global env nn_False (PNat 0))
+          nn_True (PNat 1))
+        nn_Unit (PNat 0)
+
+-- cg_register_builtin_contab: add False, True, Unit to contab
+let cg_register_builtin_contab : List (Pair Nat (Pair Nat Nat)) → List (Pair Nat (Pair Nat Nat))
+  = λ ctab →
+      contab_insert
+        (contab_insert
+          (contab_insert ctab nn_False (MkPair 0 0))
+          nn_True (MkPair 1 0))
+        nn_Unit (MkPair 0 0)
+
+-- cg_register_type_one: register one ConDef with given tag and module name
+let cg_register_type_one : ConDef → Nat → Nat → CEnv → List (Pair Nat (Pair Nat Nat))
+                           → List (Pair Nat PlanVal) → Pair CEnv (Pair (List (Pair Nat (Pair Nat Nat))) (List (Pair Nat PlanVal)))
+  = λ cdef tag mod_name env ctab compiled →
+      match cdef {
+        | MkConDef con_name n_fields →
+            let fq_name = name_concat_dot mod_name con_name in
+            let val = match (nat_eq n_fields 0) {
+                        | 0 →
+                            -- Has fields: build constructor law
+                            PLaw con_name (MkPair n_fields (cg_build_constructor_body tag n_fields))
+                        | _ →
+                            -- Nullary: bare nat tag
+                            PNat tag
+                      } in
+            let new_env = cenv_bind_global env fq_name val in
+            let new_ctab = contab_insert ctab fq_name (MkPair tag n_fields) in
+            let new_compiled = Cons (MkPair fq_name val) compiled in
+            MkPair new_env (MkPair new_ctab new_compiled)
+      }
+
+-- cg_register_type_go must be defined before cg_register_type (forward ref fix)
+let cg_register_type_go : List ConDef → Nat → Nat → CEnv → List (Pair Nat (Pair Nat Nat))
+                          → List (Pair Nat PlanVal)
+                          → Pair CEnv (Pair (List (Pair Nat (Pair Nat Nat))) (List (Pair Nat PlanVal)))
+  = λ cdefs tag mod_name env ctab compiled →
+      match cdefs {
+        | Nil → MkPair env (MkPair ctab compiled)
+        | Cons cdef rest →
+            match (cg_register_type_one cdef tag mod_name env ctab compiled) {
+              | MkPair new_env rest_pair →
+                  match rest_pair {
+                    | MkPair new_ctab new_compiled →
+                        cg_register_type_go rest (add tag 1) mod_name new_env new_ctab new_compiled
+                  }
+            }
+      }
+
+-- cg_register_type: register all constructors of a DType decl
+let cg_register_type : List ConDef → Nat → Nat → CEnv → List (Pair Nat (Pair Nat Nat))
+                      → List (Pair Nat PlanVal)
+                      → Pair CEnv (Pair (List (Pair Nat (Pair Nat Nat))) (List (Pair Nat PlanVal)))
+  = λ cdefs mod_name type_name env ctab compiled →
+      cg_register_type_go cdefs 0 mod_name env ctab compiled
+
+-- cg_pass1: process DType declarations
+let cg_pass1 : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat Nat)) → List (Pair Nat PlanVal)
+             → Pair CEnv (Pair (List (Pair Nat (Pair Nat Nat))) (List (Pair Nat PlanVal)))
+  = λ decls mod_name env ctab compiled →
+      match decls {
+        | Nil → MkPair env (MkPair ctab compiled)
+        | Cons decl rest →
+            let result = match (nat_eq (decl_is_type decl) 0) {
+                           | 0 →
+                               let type_name = decl_get_type_name decl in
+                               cg_register_type (decl_get_type_cdefs decl) mod_name type_name env ctab compiled
+                           | _ → MkPair env (MkPair ctab compiled)
+                         } in
+            match result {
+              | MkPair new_env rest_pair →
+                  match rest_pair {
+                    | MkPair new_ctab new_compiled →
+                        cg_pass1 rest mod_name new_env new_ctab new_compiled
+                  }
+            }
+      }
+
+-- cg_register_ext_item: register one external item
+let cg_register_ext_item : Nat → Nat → CEnv → List (Pair Nat PlanVal) → Pair CEnv (List (Pair Nat PlanVal))
+  = λ fq_name opcode_or_sentinel env compiled →
+      let val = PPin (PNat opcode_or_sentinel) in
+      MkPair (cenv_bind_global env fq_name val) (Cons (MkPair fq_name val) compiled)
+
+-- cg_lookup_opcode: look up fq_name in core plan opcodes, returns opcode or encode of name
+let cg_lookup_opcode : Nat → Nat
+  = λ fq_name →
+      match (assoc_lookup fq_name cg_core_plan_opcodes) {
+        | Some op → op
+        | None → fq_name  -- opaque sentinel: pin the name nat itself
+      }
+
+-- cg_register_ext_items: register all items for one ext module
+let cg_register_ext_items : List Nat → Nat → CEnv → List (Pair Nat PlanVal) → Pair CEnv (List (Pair Nat PlanVal))
+  = λ items mod_name env compiled →
+      match items {
+        | Nil → MkPair env compiled
+        | Cons item_name rest →
+            let fq_name = name_concat_dot mod_name item_name in
+            let op = cg_lookup_opcode fq_name in
+            match (cg_register_ext_item fq_name op env compiled) {
+              | MkPair new_env new_compiled →
+                  cg_register_ext_items rest mod_name new_env new_compiled
+            }
+      }
+
+-- cg_pass2: process DExt declarations
+let cg_pass2 : List Decl → Nat → CEnv → List (Pair Nat PlanVal) → Pair CEnv (List (Pair Nat PlanVal))
+  = λ decls mod_name env compiled →
+      match decls {
+        | Nil → MkPair env compiled
+        | Cons decl rest →
+            let result = match (nat_eq (decl_is_ext decl) 0) {
+                           | 0 →
+                               let ext_mod = decl_get_ext_mod decl in
+                               cg_register_ext_items (decl_get_ext_items decl) ext_mod env compiled
+                           | _ → MkPair env compiled
+                         } in
+            match result {
+              | MkPair new_env new_compiled →
+                  cg_pass2 rest mod_name new_env new_compiled
+            }
+      }
+
+-- cg_compile_let_one: compile one DLet declaration
+let cg_compile_let_one : Nat → Expr → Nat → CEnv → List (Pair Nat (Pair Nat Nat)) → List (Pair Nat PlanVal)
+                        → Pair CEnv (List (Pair Nat PlanVal))
+  = λ name body mod_name env ctab compiled →
+      let fq_name = name_concat_dot mod_name name in
+      let fq_env = cenv_set_self (cenv_set_arity env 0) (Some fq_name) in
+      let val = cg_compile_expr body fq_env ctab name in
+      let new_env = cenv_bind_global env fq_name val in
+      MkPair new_env (Cons (MkPair fq_name val) compiled)
+
+-- cg_pass3: process DLet declarations
+let cg_pass3 : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat Nat)) → List (Pair Nat PlanVal)
+             → List (Pair Nat PlanVal)
+  = λ decls mod_name env ctab compiled →
+      match decls {
+        | Nil → compiled
+        | Cons decl rest →
+            let result = match (nat_eq (decl_is_let decl) 0) {
+                           | 0 →
+                               cg_compile_let_one
+                                 (decl_get_let_name decl)
+                                 (decl_get_let_body decl)
+                                 mod_name env ctab compiled
+                           | _ → MkPair env compiled
+                         } in
+            match result {
+              | MkPair new_env new_compiled →
+                  cg_pass3 rest mod_name new_env ctab new_compiled
+            }
+      }
+
+-- compile_program: compile a full program to a list of (fq_name, PlanVal) pairs
+let compile_program : List Decl → Nat → List (Pair Nat PlanVal)
+  = λ decls mod_name →
+      let env0 = cg_register_builtins cenv_empty in
+      let ctab0 = cg_register_builtin_contab contab_empty in
+      match (cg_pass1 decls mod_name env0 ctab0 Nil) {
+        | MkPair env1 rest1 →
+            match rest1 {
+              | MkPair ctab1 compiled1 →
+                  match (cg_pass2 decls mod_name env1 compiled1) {
+                    | MkPair env2 compiled2 →
+                        cg_pass3 decls mod_name env2 ctab1 compiled2
+                  }
+            }
+      }
+
+-- =====================================================================
+-- End of M8.5: Codegen
+-- =====================================================================
