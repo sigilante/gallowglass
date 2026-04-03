@@ -531,6 +531,182 @@ def test_unbound_global_raises():
 
 
 # ---------------------------------------------------------------------------
+# M9.1 — fix (anonymous recursion)
+# ---------------------------------------------------------------------------
+
+def test_fix_simple():
+    """fix (λ f n → match n { 0→0 | k → f k }) applied to 3 should evaluate to 0."""
+    src = '''
+let descend = fix λ f n → match n {
+  | 0 → 0
+  | k → f k
+}
+'''
+    fn = eval_val(src, 'descend')
+    from dev.harness.plan import apply
+    assert evaluate(apply(fn, N(3))) == 0
+    assert evaluate(apply(fn, N(0))) == 0
+
+
+def test_fix_countdown():
+    """fix (λ f n → match n { 0→42 | k → f k }) applied to 5 returns 42."""
+    src = '''
+let countdown = fix λ f n → match n {
+  | 0 → 42
+  | k → f k
+}
+'''
+    fn = eval_val(src, 'countdown')
+    from dev.harness.plan import apply
+    assert evaluate(apply(fn, N(5))) == 42
+    assert evaluate(apply(fn, N(0))) == 42
+
+
+def test_fix_self_ref_is_arity_0():
+    """The self-ref parameter does not count toward user arity; law has arity len(user_params)."""
+    src = '''
+let id_fix = fix λ self x → x
+'''
+    v = val_of(src, 'id_fix')
+    assert is_law(v)
+    assert v.arity == 1  # only 'x'; 'self' is index 0
+
+
+def test_fix_accumulate():
+    """Factorial via fix: fix (λ f n → match n { 0→1 | k → k })
+    with k being the predecessor (n-1)."""
+    src = '''
+let pred_fn = fix λ f n → match n {
+  | 0 → 1
+  | k → k
+}
+'''
+    fn = eval_val(src, 'pred_fn')
+    from dev.harness.plan import apply
+    # f(0) = 1, f(1) = 0 (predecessor of 1), f(3) = 2 (predecessor of 3)
+    assert evaluate(apply(fn, N(0))) == 1
+    assert evaluate(apply(fn, N(1))) == 0
+    assert evaluate(apply(fn, N(3))) == 2
+
+
+# ---------------------------------------------------------------------------
+# M9.2 — Tuple pattern matching
+# ---------------------------------------------------------------------------
+
+def test_tuple_construction():
+    """(3, 7) evaluates to A(A(0, 3), 7)."""
+    v = eval_val('let main = (3, 7)', 'main')
+    assert is_app(v)
+    assert is_app(v.fun)
+    assert v.fun.fun == 0       # tag 0
+    assert v.fun.arg == 3       # first element
+    assert v.arg == 7           # second element
+
+
+def test_tuple_match():
+    """match (3, 7) { (a, b) → a } = 3 and similarly b = 7."""
+    src = '''
+let fst = λ pair → match pair {
+  | (a, b) → a
+}
+let snd = λ pair → match pair {
+  | (a, b) → b
+}
+let main_fst = fst (3, 7)
+let main_snd = snd (3, 7)
+'''
+    compiled = pipeline(src)
+    assert evaluate(compiled['Test.main_fst']) == 3
+    assert evaluate(compiled['Test.main_snd']) == 7
+
+
+def test_tuple_match_add():
+    """match (3, 7) { (a, b) → a } — structural test; a = 3."""
+    src = '''
+let fst_of = λ pair → match pair {
+  | (a, b) → a
+}
+let main = fst_of (10, 20)
+'''
+    v = eval_val(src, 'main')
+    assert v == 10
+
+
+# ---------------------------------------------------------------------------
+# M9.3 — Mutual recursion (SCC)
+# ---------------------------------------------------------------------------
+
+def test_mutual_is_even_odd():
+    """Classic is_even/is_odd mutual recursion."""
+    src = '''
+let is_even = λ n → match n {
+  | 0 → 1
+  | k → is_odd k
+}
+
+let is_odd = λ n → match n {
+  | 0 → 0
+  | k → is_even k
+}
+'''
+    compiled = pipeline(src)
+    from dev.harness.plan import apply
+    is_even = evaluate(compiled['Test.is_even'])
+    is_odd  = evaluate(compiled['Test.is_odd'])
+
+    # is_even
+    assert evaluate(apply(is_even, N(0))) == 1   # 0 is even
+    assert evaluate(apply(is_even, N(1))) == 0   # 1 is not even
+    assert evaluate(apply(is_even, N(2))) == 1   # 2 is even
+    assert evaluate(apply(is_even, N(4))) == 1   # 4 is even
+
+    # is_odd
+    assert evaluate(apply(is_odd, N(0))) == 0    # 0 is not odd
+    assert evaluate(apply(is_odd, N(1))) == 1    # 1 is odd
+    assert evaluate(apply(is_odd, N(3))) == 1    # 3 is odd
+
+
+def test_mutual_three_way():
+    """Three-way mutual recursion: mod3_is_0 / mod3_is_1 / mod3_is_2."""
+    src = '''
+let mod3_is_0 = λ n → match n {
+  | 0 → 1
+  | k → mod3_is_2 k
+}
+
+let mod3_is_1 = λ n → match n {
+  | 0 → 0
+  | k → mod3_is_0 k
+}
+
+let mod3_is_2 = λ n → match n {
+  | 0 → 0
+  | k → mod3_is_1 k
+}
+'''
+    compiled = pipeline(src)
+    from dev.harness.plan import apply
+    f0 = evaluate(compiled['Test.mod3_is_0'])
+    f1 = evaluate(compiled['Test.mod3_is_1'])
+    f2 = evaluate(compiled['Test.mod3_is_2'])
+
+    # mod3_is_0: n mod 3 == 0
+    assert evaluate(apply(f0, N(0))) == 1   # 0 mod 3 = 0
+    assert evaluate(apply(f0, N(3))) == 1   # 3 mod 3 = 0
+    assert evaluate(apply(f0, N(1))) == 0   # 1 mod 3 ≠ 0
+
+    # mod3_is_1: n mod 3 == 1
+    assert evaluate(apply(f1, N(1))) == 1   # 1 mod 3 = 1
+    assert evaluate(apply(f1, N(4))) == 1   # 4 mod 3 = 1
+    assert evaluate(apply(f1, N(0))) == 0   # 0 mod 3 ≠ 1
+
+    # mod3_is_2: n mod 3 == 2
+    assert evaluate(apply(f2, N(2))) == 1   # 2 mod 3 = 2
+    assert evaluate(apply(f2, N(5))) == 1   # 5 mod 3 = 2
+    assert evaluate(apply(f2, N(0))) == 0   # 0 mod 3 ≠ 2
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 

@@ -31,6 +31,17 @@ class CodegenError(Exception):
     pass
 
 
+@dataclass
+class _MutualRef:
+    """
+    Sentinel stored in env.globals for cross-references inside a mutual SCC.
+    During compilation of a mutual recursion group, every SCC member's FQ name
+    (and short name) maps to a _MutualRef so that _compile_var can emit the
+    correct shared-pin extraction + partial application.
+    """
+    index: int  # 0-based index in the shared selector row
+
+
 # ---------------------------------------------------------------------------
 # Name encoding
 # ---------------------------------------------------------------------------
@@ -203,10 +214,24 @@ class Compiler:
             if isinstance(decl, DeclExt):
                 self._register_ext(decl)
 
-        # Pass 3: compile let declarations in order
-        for decl in program.decls:
-            if isinstance(decl, DeclLet):
-                self._compile_let(decl)
+        # Pass 3: compile let declarations in SCC topological order.
+        # Single-definition SCCs (non-recursive or self-recursive) use the
+        # existing _compile_let path.  Multi-definition SCCs use the shared-pin
+        # mutual-recursion encoding from spec/02-mutual-recursion.md.
+        let_decls = [d for d in program.decls if isinstance(d, DeclLet)]
+        if let_decls:
+            dep_graph = self._build_dep_graph(let_decls)
+            sccs = self._tarjan_scc(dep_graph)
+            decl_map = {f'{self.module}.{d.name}': d for d in let_decls}
+            for scc_names in sccs:
+                scc_let_names = [n for n in scc_names if n in decl_map]
+                if not scc_let_names:
+                    continue
+                if len(scc_let_names) == 1:
+                    self._compile_let(decl_map[scc_let_names[0]])
+                else:
+                    scc_decls = [decl_map[n] for n in scc_let_names]
+                    self._compile_mutual_scc(scc_let_names, scc_decls)
 
         return self.compiled
 
@@ -410,6 +435,21 @@ class Compiler:
         # Global reference (top-level let or constructor)
         if fq in env.globals:
             val = env.globals[fq]
+            if isinstance(val, _MutualRef):
+                if env.arity > 0:
+                    # Extract law_j from the shared row and partially apply it
+                    # to the shared row so callers only see the original arity.
+                    # The shared row is at env.locals['__shared__'] (index s_idx).
+                    # j_val is the literal nat j (using quote form to avoid de Bruijn collision)
+                    # bapp(N(s_idx), j_val) = (shared_row j) = law_j
+                    # bapp(law_j, N(s_idx)) = law_j shared_row  (1 arg consumed)
+                    s_idx = env.locals.get('__shared__', 1)
+                    j_val = self._compile_nat_literal(val.index, env)
+                    return bapp(bapp(N(s_idx), j_val), N(s_idx))
+                else:
+                    raise CodegenError(
+                        f'codegen: mutual SCC reference {fq!r} used outside a law body'
+                    )
             if env.arity == 0:
                 # At top level: return the value directly
                 return val
@@ -425,6 +465,15 @@ class Compiler:
         short = fq.split('.')[-1]
         if short in env.globals:
             val = env.globals[short]
+            if isinstance(val, _MutualRef):
+                if env.arity > 0:
+                    s_idx = env.locals.get('__shared__', 1)
+                    j_val = self._compile_nat_literal(val.index, env)
+                    return bapp(bapp(N(s_idx), j_val), N(s_idx))
+                else:
+                    raise CodegenError(
+                        f'codegen: mutual SCC reference {short!r} used outside a law body'
+                    )
             if env.arity == 0:
                 return val
             if is_nat(val):
@@ -549,6 +598,13 @@ class Compiler:
             name = str(expr.name)
             if name in env.locals and name not in bound:
                 found.add(name)
+            # If the name resolves to a _MutualRef in globals, the expression
+            # implicitly uses __shared__ (the shared row).  Mark it as free so
+            # lambda-lifting captures it correctly.
+            fq = name
+            resolved_val = env.globals.get(fq) or env.globals.get(name.split('.')[-1])
+            if isinstance(resolved_val, _MutualRef) and '__shared__' in env.locals and '__shared__' not in bound:
+                found.add('__shared__')
         elif isinstance(expr, ExprApp):
             self._collect_free(expr.fun, bound, env, found)
             self._collect_free(expr.arg, bound, env, found)
@@ -585,6 +641,16 @@ class Compiler:
         elif isinstance(expr, ExprTuple):
             for e in expr.elems:
                 self._collect_free(e, bound, env, found)
+        elif isinstance(expr, ExprFix):
+            lam = expr.lam
+            all_params = self._flatten_params(lam)
+            body = self._lambda_body(lam)
+            new_bound = set(bound)
+            for p in all_params:
+                pn = self._pat_var_name(p)
+                if pn:
+                    new_bound.add(pn)
+            self._collect_free(body, new_bound, env, found)
 
     def _pat_binds(self, pat: Any) -> set:
         """Collect names bound by a pattern."""
@@ -683,6 +749,8 @@ class Compiler:
             return self._compile_nat_match(scrutinee, arms, env, name_hint)
         elif self._is_con_match(arms):
             return self._compile_con_match(scrutinee, arms, env, name_hint)
+        elif self._is_tuple_match(arms):
+            return self._compile_tuple_match(scrutinee, arms, env, name_hint)
         else:
             # Wildcard or variable match: just bind the scrutinee
             return self._compile_fallback_match(scrutinee, arms, env, name_hint)
@@ -1497,6 +1565,8 @@ class Compiler:
         elif isinstance(expr, ExprOp):
             self._collect_all_names(expr.lhs, names)
             self._collect_all_names(expr.rhs, names)
+        elif isinstance(expr, ExprFix):
+            self._collect_all_names(expr.lam.body, names)
 
     def _make_pred_succ_law(self, wild_body_expr: Any, wild_var: str, env: Env, name_hint: str) -> Any:
         """
@@ -1664,19 +1734,53 @@ class Compiler:
             return self._make_op2_dispatch(true_val, succ_fn, operand, env)
         return operand
 
+    def _is_tuple_match(self, arms) -> bool:
+        for pat, _, _ in arms:
+            if isinstance(pat, PatTuple):
+                return True
+        return False
+
+    def _compile_tuple_match(self, scrutinee, arms, env, name_hint):
+        """Compile match on tuple patterns.
+
+        Tuples are encoded as A(A(0, a), b) — a binary tagged value with tag 0.
+        PatTuple([p0, p1]) is treated as a binary constructor with tag=0.
+        """
+        pair_info = ConInfo(tag=0, arity=2, fq_name='__Pair__')
+        con_arms = []
+        wild_arm = None
+        for pat, guard, body in arms:
+            if isinstance(pat, PatTuple):
+                if len(pat.pats) != 2:
+                    raise CodegenError(
+                        f'codegen: only 2-tuples supported in bootstrap, got {len(pat.pats)}-tuple'
+                    )
+                con_arms.append((pair_info, list(pat.pats), body))
+            elif isinstance(pat, (PatWild, PatVar)):
+                wild_arm = (pat, body)
+        if not con_arms:
+            return self._compile_fallback_match(scrutinee, arms, env, name_hint)
+        return self._compile_con_match_case3(scrutinee, con_arms, wild_arm, env, name_hint)
+
     # -----------------------------------------------------------------------
     # Tuples
     # -----------------------------------------------------------------------
 
     def _compile_tuple(self, expr: ExprTuple, env: Env, name_hint: str) -> Any:
-        """Compile a tuple as a tagged row (tag 0)."""
-        # Tuple (a, b) = A(A(N(0), a), b)
+        """Compile a 2-tuple as A(A(0, a), b) — tag-0 binary tagged value."""
         elems = [self._compile_expr(e, env) for e in expr.elems]
-        result = P(N(0)) if (env.arity > 0 and 0 <= env.arity) else N(0)
-        for e in elems:
-            if env.arity == 0:
+        if not elems:
+            return self._compile_nat_literal(0, env)
+        # Build left-to-right App chain starting with the tag (0)
+        if env.arity == 0:
+            result = N(0)
+            for e in elems:
                 result = A(result, e)
-            else:
+        else:
+            # In a law body: tag 0 must be quoted (A(N(0), N(0))) to avoid
+            # de Bruijn collision, then fields are bapp'd on.
+            result = A(N(0), N(0))  # quote(0) = literal 0
+            for e in elems:
                 result = bapp(result, e)
         return result
 
@@ -1690,20 +1794,223 @@ class Compiler:
         params = self._flatten_params(lam)
         body_expr = self._lambda_body(lam)
 
-        # First param is the self-reference; build a law with arity = len(params)
-        body_env = Env(globals=env.globals, arity=0)
-        for pat in params:
+        if not params:
+            raise CodegenError('codegen: fix requires at least one parameter (self-reference)')
+
+        # First param is the self-reference name; remaining are user-visible arguments.
+        self_name = self._pat_var_name(params[0])
+        user_params = params[1:]
+
+        # Build body env: self → N(0) via self_ref_name; user params → N(1), N(2), ...
+        body_env = Env(globals=env.globals, arity=0, self_ref_name=self_name)
+        for pat in user_params:
             pn = self._pat_var_name(pat)
             body_env = body_env.bind_param(pn)
 
         body_val = self._compile_expr(body_expr, body_env)
         name_nat = encode_name(name_hint) if name_hint else 0
-        law = L(len(params), name_nat, body_val)
+        law = L(len(user_params), name_nat, body_val)
 
         if env.arity == 0:
             return law
         else:
             return P(law)
+
+
+    # -----------------------------------------------------------------------
+    # Mutual recursion: dep-graph + Tarjan SCC
+    # -----------------------------------------------------------------------
+
+    def _build_dep_graph(self, let_decls: list) -> dict:
+        """
+        Build a forward-reference dependency graph for DeclLet declarations.
+        Returns {fq_name: set_of_fq_names_referenced}.
+        Only edges to other DeclLets in this module are included.
+        """
+        fq_set = {f'{self.module}.{d.name}' for d in let_decls}
+        graph: dict = {}
+        for d in let_decls:
+            fq = f'{self.module}.{d.name}'
+            names: set = set()
+            self._collect_all_names(d.body, names)
+            # Normalise short names to FQ
+            fq_refs = set()
+            for n in names:
+                if n in fq_set:
+                    fq_refs.add(n)
+                candidate = f'{self.module}.{n}'
+                if candidate in fq_set:
+                    fq_refs.add(candidate)
+            graph[fq] = fq_refs & fq_set
+        return graph
+
+    def _tarjan_scc(self, graph: dict) -> list:
+        """
+        Tarjan's strongly-connected-components algorithm.
+        Returns a list of SCCs in TOPOLOGICAL ORDER (dependencies first).
+        Within each SCC names are sorted lexicographically (canonical order per spec).
+        """
+        index_counter = [0]
+        index: dict = {}
+        lowlink: dict = {}
+        on_stack: set = set()
+        stack: list = []
+        sccs: list = []
+
+        def strongconnect(v: str) -> None:
+            index[v] = index_counter[0]
+            lowlink[v] = index_counter[0]
+            index_counter[0] += 1
+            stack.append(v)
+            on_stack.add(v)
+
+            for w in graph.get(v, set()):
+                if w not in index:
+                    strongconnect(w)
+                    lowlink[v] = min(lowlink[v], lowlink[w])
+                elif w in on_stack:
+                    lowlink[v] = min(lowlink[v], index[w])
+
+            if lowlink[v] == index[v]:
+                scc: list = []
+                while True:
+                    w = stack.pop()
+                    on_stack.discard(w)
+                    scc.append(w)
+                    if w == v:
+                        break
+                sccs.append(sorted(scc))  # canonical order within SCC
+
+        for v in sorted(graph.keys()):  # deterministic traversal
+            if v not in index:
+                strongconnect(v)
+
+        # Tarjan emits SCCs where deeper dependencies come first (forward-edge DFS),
+        # which is already topological order (dependencies before dependents).
+        return sccs
+
+    # -----------------------------------------------------------------------
+    # Mutual recursion: shared-pin encoding
+    # -----------------------------------------------------------------------
+
+    def _compile_mutual_scc(self, scc_names: list, scc_decls: list) -> None:
+        """
+        Compile a mutual recursion group (n >= 2 definitions) using the
+        shared-pin encoding from spec/02-mutual-recursion.md.
+
+        Encoding overview:
+          shared_pin = P(selector_law  law_0  law_1  ...  law_{n-1})
+
+        selector_law = L(n+1, 0, body) where body dispatches on the index
+        argument (last arg) and returns the corresponding law arg.
+
+        Each law_i is lambda-lifted: arity becomes 1 + original_arity.
+        The new first arg (index 1) is the shared pin.  All SCC references
+        (including self) go via the shared pin.
+
+        After building the shared pin, wrapper laws of the original arity are
+        emitted so external callers see the expected signature.
+        """
+        n = len(scc_names)
+        assert n >= 2
+        assert scc_names == sorted(scc_names), "must be in canonical order"
+
+        scc_indices = {name: i for i, name in enumerate(scc_names)}
+
+        # --- Build selector law ---
+        # arity = n+1; args: law_0 .. law_{n-1}, index_i
+        # body: nat dispatch on N(n+1) returning N(1)..N(n)
+        selector_env = Env(globals=self.env.globals, arity=n + 1)
+        tag_val_pairs = [(j, N(j + 1)) for j in range(n)]
+        dispatch_body = self._build_precompiled_nat_dispatch(
+            tag_val_pairs, None, None, N(n + 1), selector_env, '_selector'
+        )
+        selector_law = L(n + 1, 0, dispatch_body)
+
+        # --- Lambda-lift each law ---
+        laws = []
+        for decl in scc_decls:
+            law = self._compile_mutual_law(decl, scc_names, scc_indices)
+            laws.append(law)
+
+        # --- Build shared row (partially-applied selector) ---
+        # shared_row = selector_law applied to all laws; arity is 1 (awaits index).
+        # We do NOT wrap in P() because exec_() cannot handle P(App).
+        # The raw App chain is used directly in law bodies and wrapper laws.
+        shared_row: Any = selector_law
+        for law in laws:
+            shared_row = A(shared_row, law)
+
+        # --- Emit wrapper bindings ---
+        for i, (name, decl) in enumerate(zip(scc_names, scc_decls)):
+            wrapper = self._build_mutual_wrapper(shared_row, i, decl)
+            self.compiled[name] = wrapper
+            self.env.globals[name] = wrapper
+
+    def _compile_mutual_law(self, decl, scc_names: list, scc_indices: dict) -> Any:
+        """
+        Compile one lambda-lifted law in a mutual SCC.
+
+        Argument layout in the compiled law:
+          index 0 : self (the lambda-lifted law)
+          index 1 : shared_pin
+          index 2+: original user arguments
+
+        All SCC member references (including self-calls) compile to:
+          bapp(bapp(N(1), literal_j), N(1))
+        which evaluates to  (shared_pin j) shared_pin — the j-th law
+        partially applied to the shared pin, so callers supply only the
+        original user arguments.
+        """
+        lam = decl.body
+        params = self._flatten_params(lam)
+        body_expr = self._lambda_body(lam)
+
+        # Build body env with __shared__ at index 1, then original params.
+        body_env = Env(globals=dict(self.env.globals), arity=0, self_ref_name='')
+        body_env = body_env.bind_param('__shared__')  # index 1
+        for pat in params:
+            pn = self._pat_var_name(pat)
+            body_env = body_env.bind_param(pn)
+
+        # Register every SCC member (including self) as a _MutualRef.
+        for name in scc_names:
+            j = scc_indices[name]
+            body_env.globals[name] = _MutualRef(j)
+            short = name.split('.')[-1]
+            body_env.globals[short] = _MutualRef(j)
+
+        body_val = self._compile_expr(body_expr, body_env)
+        name_nat = encode_name(decl.name)
+        return L(1 + len(params), name_nat, body_val)
+
+    def _build_mutual_wrapper(self, shared_pin: Any, index: int, decl) -> Any:
+        """
+        Build an external-facing wrapper for SCC definition at `index`.
+
+        The wrapper has the original arity u and evaluates:
+          (shared_pin index) shared_pin arg1 ... argu
+        """
+        lam = decl.body
+        params = self._flatten_params(lam)
+        u = len(params)
+
+        if u == 0:
+            # Nullary definition: A(A(shared_pin, index), shared_pin)
+            return A(A(shared_pin, N(index)), shared_pin)
+
+        # Build a law of arity u.
+        # In the body (arity=u): N(1)=arg1 .. N(u)=argu, shared_pin is a literal.
+        # i_val: literal nat `index` inside a law body of arity u.
+        # Use quote form A(N(0), N(index)) if index <= u, else N(index).
+        i_val = A(N(0), N(index)) if index <= u else N(index)
+        extract = bapp(shared_pin, i_val)    # (shared_pin index) = law_index
+        call = bapp(extract, shared_pin)     # law_index shared_pin
+        for k in range(1, u + 1):
+            call = bapp(call, N(k))          # ... arg1 ... argu
+
+        name_nat = encode_name(decl.name)
+        return L(u, name_nat, call)
 
 
 # ---------------------------------------------------------------------------
