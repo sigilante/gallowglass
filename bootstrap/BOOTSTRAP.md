@@ -196,29 +196,40 @@ Three changes to `bootstrap/codegen.py`; prelude upgraded to full implementation
 
 Tests: `tests/bootstrap/test_codegen.py` (44 pass), `tests/prelude/` (24 planvm tests).
 
-### Milestone 8: Self-hosting candidate ← **in progress**
-Write the Gallowglass self-hosting compiler in the restricted dialect; compile it
-with the Python compiler; run on `x/plan`; compile itself.
+### ✅ Milestone 8: Self-hosting compiler — **ALPHA CANDIDATE**
 
-Output format: **Plan Assembler** (textual `.plan` files, Reaver format), not
-binary seed. See DECISIONS.md: "Why target Plan Assembler output instead of binary
-seed format?" and `spec/07-seed-format.md` §13 for the grammar.
+Write the Gallowglass self-hosting compiler in the restricted dialect; compile it
+with the Python compiler; validate self-hosting output.
+
+Output format: **Plan Assembler** (textual, Reaver format), not binary seed.
+See DECISIONS.md: "Why target Plan Assembler output instead of binary seed format?"
+and `spec/07-seed-format.md` §13 for the grammar.
 
 Sub-milestones:
 - **M8.1 Utilities** ✅ — string/bytes ops, nat arithmetic helpers
 - **M8.2 Lexer** ✅ — tokenises restricted Gallowglass source to token list
 - **M8.3 Parser** ✅ — token list → `Decl` AST nodes
-- **M8.4** — absorbed into M8.5 (scope resolution done in three-pass codegen)
+- **M8.4 Scope resolver** ✅ — qualifies all `EVar` references to FQ `Module.name` nats.
+  Three bootstrap codegen bugs fixed to get here: (1) `let`-binding De Bruijn shift in
+  lambda-lifted match arms, (2) broken `expr_tag` dispatch for ENat bypassed with
+  structural `planval_is_nat`/`planval_is_app` predicates, (3) same shift in
+  `sr_resolve_decls`. Tests: `tests/compiler/test_scope.py` — 15 pass.
 - **M8.5 Codegen** ✅ — three-pass `compile_program`: DType/DExt/DLet → `PlanVal`
 - **M8.6 Plan Assembler emitter** ✅ — `emit_program`: `List (Pair Nat PlanVal)` → `Bytes`
-  Tests: `tests/compiler/test_emit.py` — 15 pass, 24 skipped (recursion-depth limit for
-  outputs ≥2 bytes; planvm seed loading and M8.8 self-hosting cover those paths).
+  Tests: `tests/compiler/test_emit.py` — 38 pass, 1 skipped (planvm-gated
+  `TestSeedLoading`; all evaluation tests now active via BPLAN jets).
   Two bootstrap codegen bugs fixed: wildcard-arm drop in `_compile_con_body_extraction`
   and unary tag=0 z_body in the binary path of `_build_app_handler`. See DECISIONS.md.
-- **M8.7 Driver** ✅ — `main : Bytes → Bytes` chains lex→parse→codegen→emit; module name
-  hardcoded to "Compiler" (nn = 8243113893085146947). Tests: `tests/compiler/test_driver.py`
-  — 3 pass, 3 skipped (planvm/harness limits; covered by M8.8 self-hosting validation).
-- **M8.8 Validation** — compile Compiler.gls with Python compiler; run on Reaver; compile itself
+- **M8.7 Driver** ✅ — `main : Bytes → Bytes` chains lex→parse→scope→codegen→emit.
+  Module name hardcoded to "Compiler" (nn = 8243113893085146947).
+  Tests: `tests/compiler/test_driver.py` — 3 pass, 3 skipped (planvm-gated).
+- **M8.8 Self-hosting validation** ✅ (Path B) / pending (Path A)
+  - Path B (harness): Python bootstrap → `plan2pv` bridge → GLS `emit_program` processes
+    full Compiler.gls module (all definitions) and produces correct Plan Assembler output.
+    Tests: `tests/compiler/test_selfhost.py` — 17 pass, 2 planvm-gated skipped.
+  - Path A (planvm byte-identical): deferred pending cog wrapping (`main : Bytes → Bytes`
+    must be wrapped as a planvm cog to read stdin and write stdout). This is the final
+    alpha gate.
 
 ---
 

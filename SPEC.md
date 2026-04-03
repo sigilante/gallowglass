@@ -1,7 +1,7 @@
 # Gallowglass Language Specification
 
-**Version:** 0.2
-**Status:** Specification complete; bootstrap compiler and core prelude complete; self-hosting compiler in progress
+**Version:** 0.3 (alpha)
+**Status:** Specification complete; bootstrap compiler and core prelude complete; self-hosting compiler M8.8 Path B complete — alpha release candidate
 **VM Target:** PLAN (xocore-tech/PLAN) — runtime: Reaver (`sol-plunder/reaver`)
 **Output Format:** Plan Assembler (textual) — binary seed format deprecated upstream
 **Hash Algorithm:** BLAKE3-256
@@ -17,29 +17,30 @@ Gallowglass is a statically typed functional programming language designed with 
 
 It targets the PLAN virtual machine — a minimal graph-reduction system with four constructors (Pin, Law, App, Nat) and five opcodes. All Gallowglass types are erased at compile time. The PLAN output is untyped. Type errors are purely a compile-time concern.
 
-Gallowglass is not yet self-hosting. The current implementation path:
+The current implementation status:
 
 ```
 Phase 0: Foundation documents          ✅ complete
 Phase 1: Python bootstrap compiler     ✅ complete (Milestones 1–7.5)
-         → compiles restricted Gallowglass dialect to PLAN seeds
+         → compiles restricted Gallowglass dialect to Plan Assembler
          → Core prelude: 36 definitions across 5 modules, planvm-valid
 Phase 2: (merged into Phase 1)
-Phase 3: Self-hosting compiler         ← current (Milestone 8)
+Phase 3: Self-hosting compiler         ✅ ALPHA CANDIDATE (Milestone 8)
          → restricted Gallowglass compiler written in restricted Gallowglass
-         → compiles itself (true self-hosting)
          → output format: Plan Assembler (textual), not binary seeds
-         → M8.1 utilities ✅  M8.2 lexer ✅  M8.3 parser ✅  M8.5 codegen ✅  M8.6 emitter ✅
-         → M8.4 (absorbed into M8.5), M8.7 driver, M8.8 validation pending
+         → M8.1 utilities ✅  M8.2 lexer ✅  M8.3 parser ✅  M8.4 scope ✅
+         → M8.5 codegen ✅  M8.6 emitter ✅  M8.7 driver ✅
+         → M8.8 self-hosting validation: Path B (harness) ✅
+           GLS emit_program processes full Compiler.gls → Plan Assembler
+           Path A (planvm byte-identical): deferred pending cog wrapping
 Phase 4: Rust VM                       post-1.0
 Phase 5: Debugger                      post-1.0
 Phase 6: Hardening and ecosystem
 ```
 
-**Note on bootstrap language:** The bootstrap compiler is implemented in Python
-(not Sire as originally planned). Python was used because it was faster to build
-and fully functional. The Sire outlines are archived in `bootstrap/archive/sire/`.
-See `bootstrap/BOOTSTRAP.md` for the complete rationale.
+**Bootstrap language:** Python (not Sire). The bootstrap compiler lives in `bootstrap/*.py`.
+Archived Sire stubs (never executed) are in `bootstrap/archive/sire/`.
+See `bootstrap/BOOTSTRAP.md` and `DECISIONS.md §"Why Python for the bootstrap compiler?"` for rationale.
 
 ---
 
@@ -124,7 +125,7 @@ EffRow ::=
 
 ### 3.2 Primitive Types
 
-All primitive types are implemented in `external mod Core.*` (Sire-backed):
+All primitive types are exposed via `external mod Core.*` declarations and mapped to PLAN opcodes or planvm primitives by the compiler:
 
 ```gallowglass
 -- Arbitrary precision (never overflow)
@@ -852,7 +853,7 @@ Combinators: id, const, flip, fix, ·, |>, fst, snd, absurd
 | Seed format spec | ✅ Complete | `spec/07-seed-format.md` |
 | Python bootstrap compiler | ✅ Complete (M1–M7.5) | `bootstrap/` |
 | Core prelude (36 definitions) | ✅ Complete (M7–M7.5) | `prelude/src/Core/` |
-| Self-hosting compiler | 🔲 In progress (M8) | `compiler/src/` |
+| Self-hosting compiler | ✅ Alpha candidate (M8 complete) | `compiler/src/` |
 | Rust VM | 🔲 Post-1.0 | `vm/src/` |
 | Debugger | 🔲 Post-1.0 | — |
 
@@ -864,9 +865,9 @@ Combinators: id, const, flip, fix, ·, |>, fst, snd, absurd
 | planvm seed loading | Seed format validity; `x/plan` accepts the file | Docker `planvm` |
 | planvm evaluation | **Not yet tested** — format valid ≠ computation correct | Pending Reaver CLI |
 
-The evaluation gap closes in Milestone 8: the self-hosting compiler's output
-can be compared byte-for-byte against the Python compiler's output, providing
-a functional equivalence check without requiring a REPL evaluator.
+M8.8 Path B partially closes this gap: GLS `emit_program` is verified against the
+full Compiler.gls module via the BPLAN harness. M8.8 Path A (running `compiler.seed`
+via planvm on its own source and comparing output) will close it fully.
 Reaver (`sol-plunder/reaver`) is the planned CLI eval solution for full
 evaluation-based CI once available.
 15. Key References

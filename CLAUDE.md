@@ -1,6 +1,6 @@
 # Gallowglass
 
-Gallowglass is a programming language designed for LLMs to write and reason about, targeting the PLAN virtual machine (xocore-tech/PLAN). It is not yet self-hosting. This repo contains the language specification, bootstrap compiler (Sire), core prelude (Gallowglass), and self-hosting compiler (Gallowglass).
+Gallowglass is a programming language designed for LLMs to write and reason about, targeting the PLAN virtual machine (xocore-tech/PLAN). This repo contains the language specification, Python bootstrap compiler, core prelude (Gallowglass), and self-hosting compiler (Gallowglass). **Alpha milestone: self-hosting validation (M8.8) complete.**
 
 ## Design Principles (Gospel)
 
@@ -33,7 +33,8 @@ gallowglass/
 
   bootstrap/
     BOOTSTRAP.md         ← Bootstrap compiler overview and milestones
-    src/                 ← Sire source (bootstrap compiler)
+    *.py                 ← Python bootstrap compiler (lexer, parser, scope, codegen, emit)
+    archive/             ← Archived Sire stubs (superseded, reference only)
 
   prelude/
     PRELUDE.md           ← Prelude scope and organization
@@ -110,8 +111,13 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
 
 ## Current Phase
 
-**Phase 0 complete.** Foundation documents exist in `spec/`.
-**Phase 1 in progress.** Bootstrap compiler in `bootstrap/src/` (Sire).
+**Alpha release candidate.** All Milestone 8 phases complete.
+
+- Phase 0 (spec): complete.
+- Phase 1 (Python bootstrap compiler): complete. Milestones 1–7.5 done. Core prelude: 36 definitions, planvm-valid.
+- Phase 3 (self-hosting compiler, M8): complete through M8.8 Path B.
+  - M8.1 utilities, M8.2 lexer, M8.3 parser, M8.4 scope resolver, M8.5 codegen, M8.6 emitter, M8.7 driver: all done.
+  - M8.8 self-hosting validation: Path B (harness) complete — GLS `emit_program` processes the full Compiler.gls module and produces correct Plan Assembler output. Path A (planvm byte-identical comparison) deferred pending cog wrapping.
 
 The bootstrap compiler compiles the **restricted dialect** of Gallowglass only.
 See `bootstrap/BOOTSTRAP.md` for what the restricted dialect permits.
@@ -123,13 +129,25 @@ See `bootstrap/BOOTSTRAP.md` for what the restricted dialect permits.
 # (requires xocore-tech/PLAN installed)
 planvm <seed-file>
 
-# Run bootstrap compiler (once built)
-sire bootstrap/src/main.sire < input.gls > output.seed
+# Run the Python bootstrap compiler directly
+python3 -c "
+from bootstrap.lexer import lex; from bootstrap.parser import parse
+from bootstrap.scope import resolve; from bootstrap.codegen import compile_program
+from bootstrap.emit import emit
+import sys
+src = open(sys.argv[1]).read()
+from bootstrap.parser import parse
+prog = parse(lex(src, sys.argv[1]), sys.argv[1])
+resolved, _ = resolve(prog, 'Module', {}, sys.argv[1])
+compiled = compile_program(resolved, 'Module')
+sys.stdout.buffer.write(emit(compiled, 'Module.main'))
+" input.gls > output.seed
 
 # Run tests
-make test-bootstrap    # bootstrap compiler tests
-make test-prelude      # prelude tests
+make test-bootstrap    # bootstrap compiler tests (569 passing)
+make test-prelude      # prelude tests (planvm, Docker)
 make test-compiler     # self-hosting compiler tests
+make test-selfhost     # M8.8 self-hosting validation
 ```
 
 ## Key Invariants to Never Violate

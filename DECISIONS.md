@@ -194,11 +194,18 @@ The JetAudit approach (recording which jets fired inside the snapshot) introduce
 
 ### Why a restricted dialect rather than full Gallowglass for the self-hosting compiler source?
 
-The bootstrap compiler's scope is bounded by what the restricted dialect requires. Implicit typeclass resolution alone would require significant constraint-solving machinery in Sire. By requiring explicit dictionary passing in the self-hosting compiler source, the bootstrap compiler reduces to basic name resolution and arity checking for typeclass usage. The restrictions are relaxed once self-hosting is achieved.
+The bootstrap compiler's scope is bounded by what the restricted dialect requires. Implicit typeclass resolution alone would require significant constraint-solving machinery in the bootstrap. By requiring explicit dictionary passing in the self-hosting compiler source, the bootstrap compiler reduces to basic name resolution and arity checking for typeclass usage. The restrictions are relaxed once self-hosting is achieved.
 
-### Why Sire for the bootstrap compiler?
+### Why Python for the bootstrap compiler, not Sire?
 
-Sire is PLAN's own assembly language — it is available wherever PLAN is available, requires no external toolchain, and is designed for exactly this bootstrap purpose (writing pills). The bootstrap compiler is scaffolding; it never needs to be maintained long-term. The self-hosting compiler replaces it.
+The original design called for a bootstrap compiler in Sire (PLAN's macro/assembly language). Python was used instead because:
+
+- Python is faster to write and iterate on, and the bootstrap is thrown away after self-hosting anyway.
+- The bootstrap compiler needed to produce valid PLAN seeds directly — Python's arbitrary-precision integers and bytewise I/O make this straightforward.
+- Sire requires PLAN to be installed and running to execute, adding a circular dependency during early development. Python has no such dependency.
+- The Gallowglass self-hosting compiler (Compiler.gls) replaces the Python bootstrap entirely. There is no long-term maintenance burden.
+
+The archived Sire outlines are in `bootstrap/archive/sire/` for reference; they were superseded before any Sire code was executed. See `bootstrap/BOOTSTRAP.md` for the complete rationale.
 
 ### Why validate with Fibonacci and list operations before attempting the self-hosting compiler?
 
@@ -510,20 +517,29 @@ necessary for jet dispatch.
 Jets never affect correctness; only speed. M8.8 self-hosting validation provides the
 definitive correctness gate independent of the harness.
 
-**Jets registered (16):** `add`, `sub`, `mul`, `div_nat`, `mod_nat`, `pow2`, `bit_or`,
+**Jets registered (21):** `add`, `sub`, `mul`, `div_nat`, `mod_nat`, `pow2`, `bit_or`,
 `bit_and`, `shift_left`, `shift_right`, `nat_eq`, `nat_lt`, `lte`, `gte`, `max_nat`,
-`min_nat`. These cover all O(n) recursive arithmetic that previously blocked ~24 tests.
+`min_nat`, `nat_byte_len`, `bytes_length`, `bytes_content`, `bytes_concat`,
+`bytes_singleton`. These cover all O(n) recursive arithmetic and bytes operations that
+previously blocked ~24 tests. With all jets active, `test_emit.py` runs 38/39 tests
+(1 intentional skip).
 
-### Why does CI only validate seed loading, not evaluation? (Temporary)
+### Why does CI only validate seed loading, not evaluation? (Partially resolved)
 
 The Docker CI environment has `planvm` (the cog runner) but not a PLAN REPL
 evaluator. `planvm <seed>` runs a seed as an interactive cog — it has no
-"apply this function to these arguments and check the result" mode. The Sire
-pill (`x/plan xseed/sire.seed <<< '##8 ...'`) would provide this, but is not
-in the Docker image.
+"apply this function to these arguments and check the result" mode.
 
-Reaver (`sol-plunder/reaver`) is the planned CLI eval solution. Until it is
-available, semantic correctness is gated by the Python harness tests. The
-evaluation gap closes functionally in Milestone 8: if the Gallowglass-compiled
-compiler produces byte-identical seeds to the Python compiler, that is a strong
-functional equivalence proof not dependent on a REPL.
+Reaver (`sol-plunder/reaver`) is the planned CLI eval solution.
+
+**M8.8 Path B partially closes this gap:** The BPLAN harness now evaluates GLS
+`emit_program` on the full Compiler.gls compiled module and produces verifiable
+Plan Assembler output. This proves semantic correctness for the emit pipeline
+without a REPL. The remaining gap is `main` (the full pipeline: lex→parse→scope→
+codegen→emit), which exceeds Python's recursion limit and requires planvm Path A
+to validate end-to-end.
+
+**M8.8 Path A will fully close this gap:** When `main` is wrapped as a planvm cog
+(reads stdin, writes stdout), running `compiler.seed` on `Compiler.gls` and
+comparing the output to Path B provides byte-identical functional equivalence proof
+for the complete compiler pipeline. This is the alpha release gate.
