@@ -93,7 +93,15 @@ def arity(x):
 
 
 def match(p, l, a, z, m, o):
-    """Opcode 2: dispatch on constructor type."""
+    """Opcode 3: dispatch on constructor type.
+
+    The scrutinee ``o`` is forced to WHNF before dispatch so that a
+    saturated-but-unevaluated App (e.g. the result of a top-level function
+    application used directly as a match scrutinee) is reduced to its actual
+    constructor form before the branch is selected.  This matches real PLAN
+    semantics where Case_ forces its last argument.
+    """
+    o = evaluate(o)
     if is_pin(o):
         return apply(p, o.val)
     if is_law(o):
@@ -142,8 +150,10 @@ def op(opcode, args):
         n, a, b = args[0], args[1], args[2]
         return L(nat(a), n, b)
     if opcode == 2:
-        # Inc: nat(args[0]) + 1
-        return nat(args[0]) + 1
+        # Inc: nat(args[0]) + 1.  Force-evaluate the argument so that an
+        # unevaluated App (e.g. a lazy chain like A(A(add_law,3),4)) is
+        # reduced to its Nat value before nat() extracts it.
+        return nat(evaluate(args[0])) + 1
     if opcode == 3:
         # Case_: dispatch on constructor type (6 args: p, l, a, z, m, o)
         p, l, a_, z, m, o = args[0], args[1], args[2], args[3], args[4], args[5]
