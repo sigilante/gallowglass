@@ -1,6 +1,6 @@
 # Test Strategy
 
-**Last updated:** Milestone 7.5
+**Last updated:** BPLAN harness (post-M8.7)
 
 This document describes the test architecture, what each layer verifies,
 and the known gap between what is tested and what is not.
@@ -9,7 +9,7 @@ and the known gap between what is tested and what is not.
 
 ## Test Layers
 
-### Layer 1: Python harness (semantic correctness)
+### Layer 1a: Python harness (semantic correctness)
 
 **Tool:** `dev/harness/plan.py` — a Python implementation of PLAN semantics.
 **Runs:** Always; no external dependencies.
@@ -31,6 +31,31 @@ lifting, etc.
 **Limitation:** The harness is our own implementation of PLAN semantics. If the
 harness and the real planvm disagree on semantics (evaluation order, edge cases),
 the harness tests pass but planvm execution fails. This is the evaluation gap.
+
+---
+
+### Layer 1b: BPLAN harness (arithmetic-jetted correctness)
+
+**Tool:** `dev/harness/bplan.py` — PLAN evaluator extended with native jets.
+**Runs:** Always; no external dependencies.
+**Gate:** same as Layer 1a (`make test`)
+
+The BPLAN harness adds a jet registry: when a pinned Law's id matches a registered
+jet, `bevaluate` calls the native Python implementation instead of interpreting the
+Law body. This makes O(n) recursive arithmetic (add, mul, bit_or, shift_left, …)
+run in O(1), eliminating the Python recursion-depth limit that previously blocked
+~24 compiler emitter tests.
+
+**Jets:** `add`, `sub`, `mul`, `div_nat`, `mod_nat`, `pow2`, `bit_or`, `bit_and`,
+`shift_left`, `shift_right`, `nat_eq`, `nat_lt`, `lte`, `gte`, `max_nat`, `min_nat`.
+
+**Coverage:**
+- `tests/compiler/test_emit.py` — all 39 M8.6 emitter tests (was: 15 active, 24 skipped)
+
+**Relation to real BPLAN:** The jet registry is indexed by Python object identity
+(`id(L_object)`) rather than content hash. This is equivalent to BPLAN semantics
+for testing purposes because jet functions are provably correct (simple Python
+arithmetic). Correctness is still gated by M8.8 self-hosting validation.
 
 ---
 
@@ -122,14 +147,11 @@ tests/
     test_core_nat.py           ← 7 definitions (pred, is_zero, nat_eq, nat_lt, add, mul)
     test_core_option.py        ← 7 definitions
     test_core_list.py          ← 11 definitions
-  compiler/                    ← Milestone 8 (to be created)
+  compiler/                    ← Milestone 8
     __init__.py
-    test_lexer.py
-    test_parser.py
-    test_scope.py
-    test_codegen.py            ← compare PLAN values vs Python bootstrap
-    test_emit.py               ← compare seed bytes vs Python bootstrap
-    test_selfhost.py           ← byte-identical self-hosting validation
+    test_utils.py              ← M8.1 utilities (nat/list/byte ops); 45 tests + planvm seeds
+    test_emit.py               ← M8.6 Plan Assembler emitter; 39 active (BPLAN harness)
+    test_driver.py             ← M8.7 driver (main : Bytes → Bytes); 3 active + 3 skipped
 ```
 
 ---

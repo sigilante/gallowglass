@@ -491,12 +491,130 @@ The serialized seed nat is padded to fill complete `u64` words (8-byte boundary)
 
 ### 12.4 Bootstrap Compiler Requirements
 
-The bootstrap compiler must implement:
+The original bootstrap plan called for a binary seed emitter. This is superseded
+by Plan Assembler output (see §13). The seed format is documented here for
+reference and for any tooling that needs to read legacy seeds.
 
-1. **Seed serializer** — Given a PLAN value (the compilation output), produce seed bytes
-2. **Atom classification** — Categorize nats as byte/word/bignat
-3. **DAG traversal** — Identify shared subtrees for fragment splitting
-4. **Bit packer** — Encode fragment sizes and references into the bitstream
-5. **Hole management** — Insert `MkPin` as hole 0 when the output contains pins
+---
 
-The deserializer is only needed for tooling (seed inspection, testing). The VM handles deserialization.
+## 13. Plan Assembler Format (Reaver)
+
+**Reference implementation:** `sol-plunder/reaver` (`src/hs/PlanAssembler.hs`,
+`doc/reaver.md`). This is the current and forward-supported output format.
+Binary seeds (§1–§12) are deprecated upstream.
+
+Plan Assembler is a human-readable textual format for PLAN values. It uses
+s-expression syntax and compiles to the same PLAN DAG that binary seeds represent.
+
+### 13.1 Top-level Structure
+
+A Plan Assembler file (`.plan`) is a sequence of **top-level forms**, each
+terminated by a newline. The Gallowglass emitter produces one `#bind` form per
+compiled definition:
+
+```
+(#bind "name" expr)
+```
+
+Where `name` is the decimal encoding of the definition's name nat, and `expr` is
+the Plan Assembler expression for the compiled `PlanVal`.
+
+### 13.2 Expressions
+
+```
+expr ::= nat-literal           -- decimal number → constant nat (auto-quoted in law body)
+       | symbol                -- _N → de Bruijn ref N; or global name
+       | "(" expr+ ")"         -- function application: (f x y) = ((f x) y)
+       | "(#pin" expr ")"      -- pin constructor
+       | law-form              -- see §13.3
+```
+
+**Decimal numbers** in a law body are auto-quoted as constant nats. The assembler
+wraps them in `lawQuote` = `(0 k)`, i.e., a constant. Outside law bodies, numbers
+are bare nats.
+
+**Symbols** of the form `_N` (underscore followed by decimal digits) inside a law
+body are de Bruijn references: `_0` = the law itself (self-ref), `_1` = first
+argument, etc. Let-binding slots are allocated above the argument slots.
+
+### 13.3 Law Form
+
+```
+law-form ::= "(#law" string sig let-bind* body ")"
+
+sig      ::= "(" "_0" (" " "_" nat)* ")"
+             -- _0 = self; _1.._k = arguments; k = arity
+
+let-bind ::= symbol "(" expr ")"
+             -- juxtaposition syntax: name(rhs) allocates next slot
+
+body     ::= expr
+```
+
+Example (arity 2, one let-binding):
+
+```plan
+(#law "const" (_0 _1 _2)
+  _3(some-expr)
+  _1)
+```
+
+- `_0` = self, `_1` = first arg, `_2` = second arg
+- `_3(some-expr)` = let-bind slot 3 to `some-expr`; `_3` is now in scope
+- `_1` = body: return first argument
+
+### 13.4 String Encoding
+
+Strings in `#bind` and `#law` forms are **decimal encoding** of the name nat,
+enclosed in double quotes. The name nat is the little-endian encoding of the
+UTF-8 bytes of the identifier.
+
+The Gallowglass emitter uses the decimal representation of the compiled name nat
+directly (from `nat_to_decimal`).
+
+### 13.5 Mapping from PlanVal to Plan Assembler
+
+The M8.6 emitter (`emit_program` in `compiler/src/Compiler.gls`) converts
+`List (Pair Nat PlanVal)` (output of `compile_program`) to `Bytes` (UTF-8 Plan
+Assembler text).
+
+| PlanVal at top level | Plan Assembler output |
+|---|---|
+| `PNat n` | decimal `n` |
+| `PApp f x` | `(f_asm x_asm)` |
+| `PLaw name (MkPair arity body)` | `(#law "name" sig lets... body)` |
+| `PPin v` | `(#pin v_asm)` |
+
+Inside a law body (de Bruijn context, depth = arity):
+
+| PlanVal body node | Meaning | Assembler output |
+|---|---|---|
+| `PNat i` | de Bruijn ref | `_i` |
+| `PApp (PNat 0) (PNat k)` | constant nat k (`cg_quote_nat`) | `k` (decimal) |
+| `PApp (PApp (PNat 0) f) x` | application (`cg_bapp`) | `(f_asm x_asm)` |
+| `PApp (PApp (PNat 1) rhs) body` | let-chain | `_d(rhs_asm)\n  body_seq` |
+| `PPin v` | embedded constant | `(#pin v_top_asm)` |
+
+Where `d` is the next slot index (arity + 1, arity + 2, ...) and `v_top_asm`
+is the top-level emission of `v` (not inside the law body context).
+
+### 13.6 Worked Example
+
+```gallowglass
+let const : Nat → Nat → Nat = λ x y → x
+```
+
+Compiles to `PLaw const_name (MkPair 2 (PNat 1))`. Emits:
+
+```plan
+(#bind "const_name_decimal" (#law "const_name_decimal" (_0 _1 _2) _1))
+```
+
+A let-binding example — `let add3 : Nat → Nat → Nat → Nat = λ a b c → add (add a b) c`:
+
+```plan
+(#bind "add3_decimal"
+  (#law "add3_decimal" (_0 _1 _2 _3)
+    _4((add _1 _2))
+    (add _4 _3)))
+```

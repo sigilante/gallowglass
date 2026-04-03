@@ -2,7 +2,8 @@
 
 **Version:** 0.2
 **Status:** Specification complete; bootstrap compiler and core prelude complete; self-hosting compiler in progress
-**VM Target:** PLAN (xocore-tech/PLAN)
+**VM Target:** PLAN (xocore-tech/PLAN) — runtime: Reaver (`sol-plunder/reaver`)
+**Output Format:** Plan Assembler (textual) — binary seed format deprecated upstream
 **Hash Algorithm:** BLAKE3-256
 
 ---
@@ -27,6 +28,9 @@ Phase 2: (merged into Phase 1)
 Phase 3: Self-hosting compiler         ← current (Milestone 8)
          → restricted Gallowglass compiler written in restricted Gallowglass
          → compiles itself (true self-hosting)
+         → output format: Plan Assembler (textual), not binary seeds
+         → M8.1 utilities ✅  M8.2 lexer ✅  M8.3 parser ✅  M8.5 codegen ✅  M8.6 emitter ✅
+         → M8.4 (absorbed into M8.5), M8.7 driver, M8.8 validation pending
 Phase 4: Rust VM                       post-1.0
 Phase 5: Debugger                      post-1.0
 Phase 6: Hardening and ecosystem

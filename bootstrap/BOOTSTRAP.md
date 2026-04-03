@@ -196,9 +196,29 @@ Three changes to `bootstrap/codegen.py`; prelude upgraded to full implementation
 
 Tests: `tests/bootstrap/test_codegen.py` (44 pass), `tests/prelude/` (24 planvm tests).
 
-### Milestone 8: Self-hosting candidate ← **next**
+### Milestone 8: Self-hosting candidate ← **in progress**
 Write the Gallowglass self-hosting compiler in the restricted dialect; compile it
 with the Python compiler; run on `x/plan`; compile itself.
+
+Output format: **Plan Assembler** (textual `.plan` files, Reaver format), not
+binary seed. See DECISIONS.md: "Why target Plan Assembler output instead of binary
+seed format?" and `spec/07-seed-format.md` §13 for the grammar.
+
+Sub-milestones:
+- **M8.1 Utilities** ✅ — string/bytes ops, nat arithmetic helpers
+- **M8.2 Lexer** ✅ — tokenises restricted Gallowglass source to token list
+- **M8.3 Parser** ✅ — token list → `Decl` AST nodes
+- **M8.4** — absorbed into M8.5 (scope resolution done in three-pass codegen)
+- **M8.5 Codegen** ✅ — three-pass `compile_program`: DType/DExt/DLet → `PlanVal`
+- **M8.6 Plan Assembler emitter** ✅ — `emit_program`: `List (Pair Nat PlanVal)` → `Bytes`
+  Tests: `tests/compiler/test_emit.py` — 15 pass, 24 skipped (recursion-depth limit for
+  outputs ≥2 bytes; planvm seed loading and M8.8 self-hosting cover those paths).
+  Two bootstrap codegen bugs fixed: wildcard-arm drop in `_compile_con_body_extraction`
+  and unary tag=0 z_body in the binary path of `_build_app_handler`. See DECISIONS.md.
+- **M8.7 Driver** ✅ — `main : Bytes → Bytes` chains lex→parse→codegen→emit; module name
+  hardcoded to "Compiler" (nn = 8243113893085146947). Tests: `tests/compiler/test_driver.py`
+  — 3 pass, 3 skipped (planvm/harness limits; covered by M8.8 self-hosting validation).
+- **M8.8 Validation** — compile Compiler.gls with Python compiler; run on Reaver; compile itself
 
 ---
 

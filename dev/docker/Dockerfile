@@ -17,7 +17,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # gcc + binutils to compile planvm; python3 + git + make for tests/clone.
 RUN apt-get update && apt-get install -y \
-        gcc binutils git python3 make ca-certificates \
+        gcc binutils git python3 python3-pip make ca-certificates \
+    && pip3 install pytest \
     && rm -rf /var/lib/apt/lists/*
 
 # Clone and build planvm (C + x86_64 assembly, no Nix required).
