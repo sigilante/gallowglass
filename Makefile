@@ -7,10 +7,11 @@ DOCKER_IMAGE := gallowglass-dev
 .PHONY: test test-ci test-harness test-plan test-seed test-bootstrap \
         test-planvm test-planvm-docker test-prelude test-prelude-docker \
         test-compiler test-selfhost test-selfhost-docker \
+        test-demos \
         docker-build _docker-ensure clean help
 
 ## Run all local tests (Python harness only — no planvm required)
-test: test-harness test-bootstrap
+test: test-harness test-bootstrap test-demos
 
 ## Reproduce full CI locally using Docker (= make test + planvm seed validation).
 ## First run builds the Docker image (~5 min); subsequent runs use layer cache.
@@ -52,6 +53,10 @@ test-bootstrap:
 	$(PYTHON) tests/bootstrap/test_scope.py
 	$(PYTHON) tests/bootstrap/test_typecheck.py
 	$(PYTHON) tests/bootstrap/test_codegen.py
+
+## Run demo tests (no planvm required)
+test-demos:
+	$(PYTHON) -m pytest tests/demos/ -v
 
 ## Validate compiled seeds against x/plan (requires planvm on PATH or PLANVM=...)
 ## On macOS, use `make test-planvm-docker` instead.

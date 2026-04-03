@@ -20,6 +20,7 @@ gallowglass/
   CLAUDE.md              ← you are here
   DECISIONS.md           ← design rationale for non-obvious choices
   SPEC.md                ← full architecture overview (read this first)
+  ROADMAP.md             ← delivery plan: milestones M9–1.0 and post-1.0
 
   spec/
     00-primitives.md     ← Core.Primitives: ~101 operations, 11 modules

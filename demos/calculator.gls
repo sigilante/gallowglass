@@ -1,0 +1,85 @@
+-- Calculator demo
+-- Arithmetic expression evaluator in the restricted Gallowglass dialect.
+-- Input is hardcoded; output is a Nat value.
+--
+-- Demonstrates: algebraic types, pattern matching, self-recursion,
+--               building arithmetic from PLAN primitives.
+--
+-- To compile (Python bootstrap):
+--   python3 -m dev.harness.run demos/calculator.gls Calculator.example1
+--
+-- Expected outputs:
+--   Calculator.example1  = 14   -- (3 + 4) * 2
+--   Calculator.example2  = 4    -- 10 - (2 * 3)
+--   Calculator.example3  = 21   -- (1 + 2) * (3 + 4)
+
+external mod Core.PLAN {
+  inc : Nat → Nat
+}
+
+-- ---------------------------------------------------------------------------
+-- Natural number arithmetic from PLAN primitives.
+-- ---------------------------------------------------------------------------
+
+let add : Nat → Nat → Nat
+  = λ m n → match n {
+      | 0 → m
+      | k → Core.PLAN.inc (add m k)
+    }
+
+let mul : Nat → Nat → Nat
+  = λ m n → match n {
+      | 0 → 0
+      | k → add m (mul m k)
+    }
+
+-- Saturating subtraction: sub m n = max(0, m - n).
+let sub : Nat → Nat → Nat
+  = λ m n → match n {
+      | 0 → m
+      | k → match m {
+          | 0 → 0
+          | j → sub j k
+        }
+    }
+
+-- ---------------------------------------------------------------------------
+-- Expression type.
+-- ---------------------------------------------------------------------------
+
+type Expr =
+  | Lit Nat
+  | Add Expr Expr
+  | Sub Expr Expr
+  | Mul Expr Expr
+
+-- ---------------------------------------------------------------------------
+-- Evaluator.
+-- ---------------------------------------------------------------------------
+
+let eval : Expr → Nat
+  = λ e → match e {
+      | Lit n   → n
+      | Add a b → add (eval a) (eval b)
+      | Sub a b → sub (eval a) (eval b)
+      | Mul a b → mul (eval a) (eval b)
+    }
+
+-- ---------------------------------------------------------------------------
+-- Hardcoded examples.
+--
+-- The Expr type and eval function above demonstrate algebraic types and
+-- structural recursion.  The example values below are computed directly
+-- with the arithmetic primitives, avoiding the 4-constructor mixed-arity
+-- dispatch that the bootstrap codegen does not yet support at the harness
+-- level.  The numeric results are identical to what eval would produce.
+-- ---------------------------------------------------------------------------
+
+-- (3 + 4) * 2 = 14
+let example1 : Nat = mul (add 3 4) 2
+
+-- 10 - (2 * 3) = 4
+let example2 : Nat = sub 10 (mul 2 3)
+
+-- (1 + 2) * (3 + 4) = 21
+let example3 : Nat = mul (add 1 2) (add 3 4)
