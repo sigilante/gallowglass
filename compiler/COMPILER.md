@@ -205,21 +205,22 @@ monolithic file with clearly marked sections.
 
 ## 6. Sub-Milestones
 
-### Status as of 2026-03-24
+### Status as of 2026-04-03
 
 | Milestone | Status | Location in `Compiler.gls` |
 |-----------|--------|---------------------------|
 | M8.1: Core utilities | **COMPLETE** | Sections 1–9 |
 | M8.2: Lexer | **COMPLETE** | Sections 10–18 |
 | M8.3: Parser | **COMPLETE** | Sections 19–23 |
-| M8.4: Scope resolver | **NOT STARTED** | — |
+| M8.4: Scope resolver | **COMPLETE** | Section (integrated) |
 | M8.5: Codegen | **COMPLETE** | Section 24 |
 | M8.6: Seed emitter | **COMPLETE** | Section 25 |
 | M8.7: Driver/main | **COMPLETE** | Section 26 |
-| M8.8: Self-hosting validation | **NOT STARTED** | — |
+| M8.8: Self-hosting validation | **PARTIAL** | `tests/compiler/test_selfhost.py` |
 
-Tests passing: `tests/compiler/test_utils.py` (42 passed, 5 skipped),
-`tests/compiler/test_lexer.py` (10 passed, 3 skipped). Total: 52 passed, 8 skipped.
+M8.8 status: Path B (harness) complete — 17 tests pass.
+Path A (planvm functional, byte-identical self-hosting) deferred until cog
+infrastructure is in place. See `test_selfhost.py` for details.
 
 The `compile_program : List Decl → Nat → List (Pair Nat PlanVal)` entry point is
 exported and verified to compile. It performs three passes over a pre-resolved
@@ -246,7 +247,7 @@ Tested in `tests/compiler/test_lexer.py`.
 Recursive descent with pass-self pattern (`pe`) to break pseudo-mutual recursion.
 Produces `List Decl` with `DLet`, `DType`, `DExt` nodes.
 
-### Milestone 8.4: Scope resolver — **NEXT**
+### Milestone 8.4: Scope resolver ✓ COMPLETE
 
 **Input:** `List Decl` (unresolved names as bare nats).
 **Output:** `List Decl` with all variable references qualified to `Module.name` nats.
@@ -266,7 +267,7 @@ Algorithm (mirrors `bootstrap/scope.py`):
 **No cross-module imports.** Only names defined in the current file are in scope,
 plus the module name prefix itself.
 
-Tests: `tests/compiler/test_scope.py` (to be written).
+Tests: `tests/compiler/test_scope.py` — 15 passed.
 
 ### Milestone 8.5: Codegen ✓ COMPLETE
 
@@ -311,13 +312,27 @@ Tests: `tests/compiler/test_emit.py` — byte-level comparison against Python
 emit_program. Module name hardcoded to "Compiler" (`nn_Compiler = 8243113893085146947`,
 i.e. `int.from_bytes(b'Compiler', 'little')`). Tests: `tests/compiler/test_driver.py`.
 
-### Milestone 8.8: Self-hosting validation — NOT STARTED
+### Milestone 8.8: Self-hosting validation — PARTIAL
 
-1. Compile `compiler/src/Compiler.gls` with Python bootstrap → `compiler.seed`
-2. Run `planvm compiler.seed` with `Compiler.gls` as input → `compiler2.seed`
-3. Assert `compiler.seed == compiler2.seed` (byte-identical)
+**Path B (harness, complete):** `tests/compiler/test_selfhost.py` — 17 tests pass.
 
-Step 3 is the self-hosting test.
+  1. Python bootstrap compiles `Compiler.gls` → compiled dict of PLAN values.
+  2. `plan2pv` bridge converts each PLAN value to a GLS PlanVal ADT value.
+  3. GLS `emit_program` (BPLAN jets) processes the list → Plan Assembler bytes.
+  4. Assertions: non-empty, starts with `(#bind "`, correct bind count (one per
+     definition), contains `Compiler.main` binding, all lines are bind forms.
+
+**Path A (planvm functional, deferred):**
+
+  1. Compile `compiler/src/Compiler.gls` with Python bootstrap → `compiler.seed`
+  2. Run `planvm compiler.seed` with `Compiler.gls` as input → Plan Assembler bytes
+  3. Assert output equals Path B output (byte-identical)
+
+  Path A requires `Compiler.main` to be wrapped as a planvm cog (reads stdin,
+  writes stdout). This cog wrapping is not yet implemented. The `@requires_planvm`
+  tests in `test_selfhost.py` currently only validate seed loading.
+
+Step 3 (byte-identical planvm output vs Path B) is the definitive self-hosting gate.
 
 ---
 
@@ -369,16 +384,15 @@ compiler/
                           Section 10–18: lexer (M8.2)
                           Section 19–23: parser (M8.3)
                           Section 24:    codegen (M8.5)
-                          [TODO] scope resolver (M8.4)
-                          [TODO] seed emitter (M8.6)
-                          [TODO] main driver (M8.7)
+                          scope resolver (M8.4) — integrated into codegen section
+                          Section 25:    Plan Assembler emitter (M8.6)
+                          Section 26:    main driver (M8.7)
 
 tests/compiler/
-  test_utils.py        ← M8.1 utility tests (42 passed)
-  test_lexer.py        ← M8.2 lexer tests (10 passed)
-  test_parser.py       ← M8.3 parser tests (to be written)
-  test_scope.py        ← M8.4 scope tests (to be written)
-  test_codegen.py      ← M8.5 codegen tests; PLAN value equivalence (to be written)
-  test_emit.py         ← M8.6 emitter tests; byte-level seed equivalence (to be written)
-  test_selfhost.py     ← M8.8 self-hosting validation (to be written)
+  test_utils.py        ← M8.1 utility tests (42 passed, 5 skipped)
+  test_lexer.py        ← M8.2 lexer tests (10 passed, 3 skipped)
+  test_scope.py        ← M8.4 scope tests (15 passed)
+  test_emit.py         ← M8.6 emitter tests (38 passed, 1 planvm-gated skip)
+  test_driver.py       ← M8.7 driver tests (3 passed, 3 skipped)
+  test_selfhost.py     ← M8.8 self-hosting validation (17 passed, 2 planvm-gated skips)
 ```

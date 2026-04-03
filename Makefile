@@ -6,6 +6,7 @@ DOCKER_IMAGE := gallowglass-dev
 
 .PHONY: test test-ci test-harness test-plan test-seed test-bootstrap \
         test-planvm test-planvm-docker test-prelude test-prelude-docker \
+        test-compiler test-selfhost test-selfhost-docker \
         docker-build _docker-ensure clean help
 
 ## Run all local tests (Python harness only — no planvm required)
@@ -60,6 +61,20 @@ test-planvm:
 ## Build the Docker image containing planvm (run once; takes a few minutes)
 docker-build:
 	docker build -t $(DOCKER_IMAGE) dev/docker/
+
+## Run all compiler tests (harness-level, no planvm required)
+test-compiler:
+	$(PYTHON) -m pytest tests/compiler/ -v
+
+## Run M8.8 self-hosting tests (harness-level, no planvm required)
+test-selfhost:
+	$(PYTHON) -m pytest tests/compiler/test_selfhost.py -v
+
+## Run M8.8 self-hosting tests inside Docker with planvm active (macOS-friendly)
+## Build first: make docker-build
+test-selfhost-docker:
+	docker run --rm -v "$(PWD):/work" $(DOCKER_IMAGE) \
+	    sh -c 'PLANVM=planvm python3 -m pytest tests/compiler/test_selfhost.py -v'
 
 ## Run all compiler tests inside Docker with planvm active (macOS-friendly)
 ## Build first: make docker-build

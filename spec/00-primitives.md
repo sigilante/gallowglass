@@ -3,7 +3,7 @@
 **Spec version:** 0.1
 **Depends on:** SPEC.md, spec/06-surface-syntax.md
 
-This document specifies every primitive operation available in Gallowglass through `external mod` declarations. These are the foundational operations implemented in Sire (the bootstrap host language) and exposed to Gallowglass as external modules. All other Gallowglass functionality is built on top of these primitives.
+This document specifies every primitive operation available in Gallowglass through `external mod` declarations. These are foundational operations exposed to Gallowglass as external modules and mapped to PLAN opcodes or planvm primitives by the compiler. All other Gallowglass functionality is built on top of these primitives.
 
 There are 101 operations across 11 modules. Each operation is declared using the `external mod` grammar from `spec/06-surface-syntax.md`. All types are erased at compile time; the PLAN encoding notes describe the runtime representation.
 

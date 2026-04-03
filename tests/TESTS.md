@@ -1,6 +1,6 @@
 # Test Strategy
 
-**Last updated:** BPLAN harness (post-M8.7)
+**Last updated:** M8.8 self-hosting validation (Path B complete)
 
 This document describes the test architecture, what each layer verifies,
 and the known gap between what is tested and what is not.
@@ -152,6 +152,7 @@ tests/
     test_utils.py              ← M8.1 utilities (nat/list/byte ops); 45 tests + planvm seeds
     test_emit.py               ← M8.6 Plan Assembler emitter; 39 active (BPLAN harness)
     test_driver.py             ← M8.7 driver (main : Bytes → Bytes); 3 active + 3 skipped
+    test_selfhost.py           ← M8.8 self-hosting; 17 active + 2 planvm-gated
 ```
 
 ---
