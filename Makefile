@@ -61,6 +61,12 @@ test-planvm:
 docker-build:
 	docker build -t $(DOCKER_IMAGE) dev/docker/
 
+## Run all compiler tests inside Docker with planvm active (macOS-friendly)
+## Build first: make docker-build
+test-compiler-docker:
+	docker run --rm -v "$(PWD):/work" $(DOCKER_IMAGE) \
+	    sh -c 'PLANVM=planvm python3 -m pytest tests/compiler/ -v'
+
 ## Run planvm seed validation inside Docker (macOS-friendly, requires Docker Desktop)
 ## Build first: make docker-build
 test-planvm-docker:

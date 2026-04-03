@@ -968,22 +968,26 @@ class Compiler:
             if len(con_arms) == 1:
                 info, field_pats, body = con_arms[0]
                 return self._compile_con_body_extraction(
-                    scrutinee, info, field_pats, body, env, name_hint
+                    scrutinee, info, field_pats, body, env, name_hint, wild_arm
                 )
             else:
                 return self._compile_con_match_case3(scrutinee, con_arms, wild_arm, env, name_hint)
 
-    def _compile_con_body_extraction(self, scrutinee, info, field_pats, body, env, name_hint):
+    def _compile_con_body_extraction(self, scrutinee, info, field_pats, body, env, name_hint,
+                                      wild_arm=None):
         """
         Bind field patterns of a constructor and compile the body.
         Uses _compile_con_match_case3 for single-constructor field extraction.
+        wild_arm: the wildcard arm from the enclosing match, if any; passed through so
+        non-matching constructors fall to the default instead of returning P(0).
         """
         if info.arity == 0:
             return self._compile_expr(body, env, name_hint)
 
-        # Use a single-arm version of _compile_con_match_case3
+        # Use a single-arm version of _compile_con_match_case3, preserving wild_arm
+        # so that constructors other than `info` dispatch to the wildcard body.
         single_arm = [(info, field_pats, body)]
-        return self._compile_con_match_case3(scrutinee, single_arm, None, env, name_hint)
+        return self._compile_con_match_case3(scrutinee, single_arm, wild_arm, env, name_hint)
 
     def _compile_con_match_case3(self, scrutinee: Any, con_arms, wild_arm, env: Env, name_hint: str) -> Any:
         """
@@ -1065,10 +1069,13 @@ class Compiler:
                 if isinstance(p, PatVar):
                     all_field_pat_names.add(p.name)
 
-        # Determine which env.locals are used in arm bodies (excluding field pat names)
+        # Determine which env.locals are used in arm bodies (excluding field pat names).
+        # Include wild_body so its free variables are captured into the handler law.
         combined_names: set = set()
         for b in all_field_bodies:
             self._collect_all_names(b, combined_names)
+        if wild_body is not None:
+            self._collect_all_names(wild_body, combined_names)
         free_locals = [fv for fv in env.locals
                        if fv in combined_names and fv not in all_field_pat_names]
 
@@ -1109,12 +1116,48 @@ class Compiler:
             field_sorted = sorted(field_arms, key=lambda t: t[0].tag)
 
             if len(field_sorted) == 1:
-                # Single field arm: bind field to outer_arg and compile body
+                # Single field arm: bind field to outer_arg and compile body.
+                # When a wildcard is present, add a tag-check on outer_fun so
+                # non-matching constructors (including binary ones whose outer_fun
+                # is an App) correctly return the wild value.
                 info, pats, body = field_sorted[0]
                 arm_env = handler_env.child()
                 if pats and isinstance(pats[0], PatVar):
                     arm_env.locals[pats[0].name] = arg_idx
-                handler_body = self._compile_expr(body, arm_env, f'{name_hint}_{info.fq_name.split(".")[-1]}')
+                arm_body = self._compile_expr(body, arm_env, f'{name_hint}_{info.fq_name.split(".")[-1]}')
+                if wild_body is not None:
+                    wild_compiled = self._compile_expr(wild_body, handler_env, f'{name_hint}_wild')
+                    if handler_env.arity > 0:
+                        const_wild = bapp(const2_pin, wild_compiled)
+                        const2_wild = bapp(const2_pin, const_wild)
+                    else:
+                        const_wild = A(const2_pin, wild_compiled)
+                        const2_wild = A(const2_pin, const_wild)
+                    if info.tag == 0:
+                        # z=arm_body for Nat 0, m=wild for Nat k+1, a=const2_wild for App
+                        handler_body = self._make_reflect_dispatch(
+                            const2_wild, arm_body, const_wild, N(fun_idx), handler_env
+                        )
+                    else:
+                        # Build succ chain for m arm so arm fires at Nat info.tag
+                        n_cap = handler_env.arity
+                        m_ext_env = Env(globals=handler_env.globals, arity=n_cap + 1,
+                                        self_ref_name=handler_env.self_ref_name,
+                                        locals=dict(handler_env.locals))
+                        pred_ref = N(n_cap + 1)
+                        m_inner = self._build_precompiled_nat_dispatch(
+                            [(info.tag - 1, arm_body)], wild_body, None,
+                            pred_ref, m_ext_env, f'{name_hint}_tag_m'
+                        )
+                        m_succ = P(L(n_cap + 1, 0, m_inner))
+                        m_body_val = m_succ
+                        for i in range(1, n_cap + 1):
+                            m_body_val = bapp(m_body_val, N(i))
+                        handler_body = self._make_reflect_dispatch(
+                            const2_wild, wild_compiled, m_body_val, N(fun_idx), handler_env
+                        )
+                else:
+                    handler_body = arm_body
             else:
                 # Multiple field arms: dispatch on outer_fun (tag)
                 # Build per-arm precompiled bodies keyed by tag value
@@ -1197,10 +1240,60 @@ class Compiler:
                 inner_applied = bapp(inner_applied, N(fv_handler_idx))
             inner_applied = bapp(inner_applied, N(arg_idx))
 
-            # 2. Build Case_ on outer_fun (N(fun_idx)) with inner_applied as app handler
-            null_dispatch_for_inner = body_nat(0, handler_env.arity)
-            handler_body = self._make_op2_dispatch_reflect(
-                null_dispatch_for_inner, inner_applied, N(fun_idx), handler_env
+            # 2. Build Case_ on outer_fun (N(fun_idx)) with inner_applied as app handler.
+            # For unary constructors (arity=1), outer_fun is a bare Nat (the tag), not an App.
+            # The inner Case_ Nat zero fires when outer_fun=0; we use the unary arm body
+            # with tag=0 (if any) instead of the default fallback.
+            unary_tag0 = next(
+                ((i, p, b) for i, p, b in field_arms if i.arity == 1 and i.tag == 0),
+                None
+            )
+            if unary_tag0 is not None:
+                u_info, u_pats, u_body = unary_tag0
+                u_arm_env = handler_env.child()
+                if u_pats and isinstance(u_pats[0], PatVar):
+                    u_arm_env.locals[u_pats[0].name] = arg_idx
+                z_body = self._compile_expr(
+                    u_body, u_arm_env, f'{name_hint}_{u_info.fq_name.split(".")[-1]}'
+                )
+            else:
+                z_body = body_nat(0, handler_env.arity)
+
+            # Build m_body for unary arms with tag>0 (e.g. PPin tag=3).
+            # outer_fun=N(tag) goes to the Nat m arm with pred=tag-1.
+            # We lambda-lift handler_env so the arm bodies can reference outer_arg etc.
+            unary_arms_gt0 = [(i, p, b) for i, p, b in field_arms
+                              if i.arity == 1 and i.tag > 0]
+            if unary_arms_gt0:
+                n_cap = handler_env.arity
+                m_ext_env = Env(globals=handler_env.globals, arity=n_cap + 1,
+                                self_ref_name=handler_env.self_ref_name,
+                                locals=dict(handler_env.locals))
+                pred_ref_m = N(n_cap + 1)
+                m_tag_val_pairs = []
+                for m_info, m_pats, m_body_ast in unary_arms_gt0:
+                    m_arm_env = m_ext_env.child()
+                    if m_pats and isinstance(m_pats[0], PatVar):
+                        m_arm_env.locals[m_pats[0].name] = arg_idx
+                    m_arm_compiled = self._compile_expr(
+                        m_body_ast, m_arm_env,
+                        f'{name_hint}_{m_info.fq_name.split(".")[-1]}'
+                    )
+                    m_tag_val_pairs.append((m_info.tag - 1, m_arm_compiled))
+                m_dispatch = self._build_precompiled_nat_dispatch(
+                    m_tag_val_pairs, wild_body, wild_var_con,
+                    pred_ref_m, m_ext_env, f'{name_hint}_m_tag'
+                )
+                m_succ_law = P(L(n_cap + 1, 0, m_dispatch))
+                m_body = m_succ_law
+                for i in range(1, n_cap + 1):
+                    m_body = bapp(m_body, N(i))
+            else:
+                m_body = (bapp(const2_pin, P(N(0))) if handler_env.arity > 0
+                          else A(const2_pin, N(0)))
+
+            handler_body = self._make_reflect_dispatch(
+                inner_applied, z_body, m_body, N(fun_idx), handler_env
             )
         else:
             raise CodegenError(
@@ -1261,26 +1354,65 @@ class Compiler:
 
         tag_val_pairs = sorted(tag_val_pairs, key=lambda t: t[0])
 
+        def make_ext_env(base_env: Env) -> tuple:
+            """Return (ext_env, pred_ref) with one extra slot for the predecessor nat."""
+            n_cap = base_env.arity
+            ext = Env(globals=base_env.globals, arity=n_cap + 1,
+                      self_ref_name=base_env.self_ref_name,
+                      locals=dict(base_env.locals))
+            return ext, N(n_cap + 1)
+
+        def partially_apply(law_val: Any, base_env: Env) -> Any:
+            """bapp law_val to N(1)..N(base_env.arity) so the result needs one more arg."""
+            result = law_val
+            for i in range(1, base_env.arity + 1):
+                result = bapp(result, N(i))
+            return result
+
         def make_succ_compiled(idx: int) -> Any:
-            pred_env = Env(globals=env.globals, arity=1)
+            # Lambda-lift env vars so pre-compiled arm bodies (which reference
+            # env's de Bruijn indices) remain reachable inside the succ law.
+            ext_env, pred_ref = make_ext_env(env)
             remaining = [(t - tag_val_pairs[idx][0] - 1, v) for t, v in tag_val_pairs[idx+1:]]
             if remaining:
                 body = self._build_precompiled_nat_dispatch(
-                    remaining, wild_body, wild_var, N(1), pred_env, name_hint
+                    remaining, wild_body, wild_var, pred_ref, ext_env, name_hint
                 )
             elif wild_body is not None:
-                body = self._compile_expr(wild_body, pred_env, name_hint + '_wild')
+                body = self._compile_expr(wild_body, ext_env, name_hint + '_wild')
             else:
-                body = body_nat(0, 1)
-            return P(L(1, 0, body))
+                body = body_nat(0, ext_env.arity)
+            succ_law = P(L(ext_env.arity, 0, body))
+            return partially_apply(succ_law, env)
 
         zero_val = tag_val_pairs[0][1]
+        first_tag = tag_val_pairs[0][0]
+
         if len(tag_val_pairs) == 1:
             if wild_body is not None:
                 wild_val = self._compile_expr(wild_body, env, name_hint + '_wild')
-                succ = bapp(const2_pin, wild_val) if env.arity > 0 else A(const2_pin, wild_val)
+                const_wild = bapp(const2_pin, wild_val) if env.arity > 0 else A(const2_pin, wild_val)
             else:
-                succ = bapp(const2_pin, P(N(0))) if env.arity > 0 else A(const2_pin, N(0))
+                wild_val = None
+                const_wild = bapp(const2_pin, P(N(0))) if env.arity > 0 else A(const2_pin, N(0))
+
+            if first_tag <= 0:
+                # first_tag==0: normal dispatch at tag 0.
+                # first_tag<0: unreachable (duplicate-tag arms shifted to negative);
+                # treat same as tag=0 — this arm never fires, so value is irrelevant.
+                return self._make_op2_dispatch(zero_val, const_wild, scrutinee, env)
+            else:
+                # Non-zero first tag: fire zero_val at scrutinee=first_tag by building
+                # a succ chain of depth first_tag using recursive lambda-lifted laws.
+                z_val = wild_val if wild_val is not None else body_nat(0, env.arity)
+                ext_env, pred_ref = make_ext_env(env)
+                inner = self._build_precompiled_nat_dispatch(
+                    [(first_tag - 1, zero_val)], wild_body, wild_var,
+                    pred_ref, ext_env, name_hint
+                )
+                succ_law = P(L(ext_env.arity, 0, inner))
+                succ = partially_apply(succ_law, env)
+                return self._make_op2_dispatch(z_val, succ, scrutinee, env)
         else:
             succ = make_succ_compiled(0)
 

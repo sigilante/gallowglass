@@ -182,8 +182,9 @@ def judge(args, ie, body):
     while is_app(body) and is_app(body.fun) and is_nat(body.fun.fun) and body.fun.fun == 1:
         v = body.fun.arg
         k = body.arg
+        v_val = kal(n, e, v)
         n += 1
-        e.insert(0, kal(n, e, v))
+        e.insert(0, v_val)
         body = k
 
     return kal(n, e, body)

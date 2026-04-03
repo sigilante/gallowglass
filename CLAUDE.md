@@ -141,4 +141,29 @@ make test-compiler     # self-hosting compiler tests
 - BLAKE3-256 is the hash algorithm everywhere. No exceptions.
 - `Show` and `Debug` are distinct typeclasses. Never conflate them.
 - Contracts must be statable from the mathematical specification alone.
-- 
+
+## Bootstrap Codegen Pitfalls (read before touching `bootstrap/codegen.py`)
+
+The bootstrap codegen has two known classes of bugs that re-emerge when new types or
+match patterns are introduced. Both are documented with fixes in DECISIONS.md §"Bootstrap
+Compiler" — read that section before writing new constructor match patterns.
+
+**Wildcard arm drop (`_compile_con_body_extraction`).** When a constructor match has
+exactly one non-wildcard arm and a wildcard, `_compile_con_match` routes to
+`_compile_con_body_extraction`. The wildcard arm *must* be passed through to
+`_compile_con_match_case3`; if it is not, all constructors (being PLAN Apps) match the
+single arm and the wildcard body is silently unreachable. Pattern: `| Con x → body | _ → default`.
+Symptom: `f(OtherConstructor)` returns the same result as `f(Con ...)`. Fix: pass `wild_arm`
+explicitly. This bit us during M8.6 for `planval_is_nat`, `planval_is_app`, etc.
+
+**Mixed-arity binary path (`_build_app_handler`).** When a type has both unary (arity=1)
+and binary (arity=2) field-bearing constructors, the binary path is active (max_arity=2).
+Unary constructors encode as `A(Nat(tag), field)` — their `outer_fun` is a bare Nat.
+The inner Case_ Nat dispatch (`z`/`m`) fires for them, *not* the App handler. If the
+unary arm has tag=0, its body must be compiled in `handler_env` with `field=N(arg_idx)`
+and used as `z_body`. Unary arms with tag>0 require a lambda-lifted `m_body` sub-law (not
+yet implemented; those test cases are skipped). Symptom: `emit_pval (PNat n)` returns
+`<0>` (P(0)) instead of bytes. This bit us during M8.6 for `emit_pval_dispatch`.
+
+The **prelude types** (Option, Result, List) are not affected because they only use
+exhaustive 2-arm matches with either same-arity constructors or one nullary + one unary.

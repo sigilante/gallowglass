@@ -287,6 +287,53 @@ The same fix also addressed multi-constructor field extraction: `_compile_con_ma
 now uses Case_ (opcode 3) App handler `(fun=tag, arg=field)` to extract fields,
 enabling `| Some x → f x` in the restricted dialect.
 
+### Two recurring bootstrap codegen bugs: single-arm wildcard drop and mixed-arity dispatch (M8.6)
+
+*Fixed in M8.6. This entry documents the pattern so future agents recognise it immediately.*
+
+**Bug 1 — `_compile_con_body_extraction` drops `wild_arm`.**
+
+When a constructor match has exactly one non-wildcard arm:
+```gallowglass
+match v { | PNat _ → 1 | _ → 0 }
+```
+`_compile_con_match` routes to `_compile_con_body_extraction` (single-arm path). The
+original code passed `wild_arm=None` to `_compile_con_match_case3`, silently losing the
+wildcard body. The Case_ App handler matched ALL constructors (they are all PLAN Apps) and
+returned 1 regardless. So `planval_is_nat(PApp ...)` returned 1 instead of 0.
+
+**Fix:** pass `wild_arm` from `_compile_con_match` to `_compile_con_body_extraction` and
+thence to `_compile_con_match_case3`.
+
+**Invariant to maintain:** Any call site that invokes `_compile_con_body_extraction` (which
+is only ever called from `_compile_con_match`) must pass the enclosing `wild_arm`. Do not
+add call sites that omit it.
+
+**Bug 2 — Binary path in `_build_app_handler` ignores unary arms.**
+
+The binary path (`max_arity == 2`) handles constructors where the outer_fun from Case_ App
+is `A(tag, field1)`. For unary constructors (arity=1, e.g. PNat), outer_fun is a bare Nat
+(`tag`), not an App. The inner Case_ fires the Nat z/m dispatch, not the App handler.
+Before the fix, z_body was `body_nat(0, handler_env.arity)` = `P(0)` — a wrong fallback.
+
+For the unary arm with tag=0 (PNat): outer_fun=0 → inner Case_ z fires. The fix compiles
+the unary arm body in `handler_env` with `field = N(arg_idx)` (the outer_arg) and uses it
+as z_body. Unary arms with tag>0 (like PPin=3) require a lambda-lifted m_body sub-law;
+this is deferred until PPin emitter tests are written.
+
+**Constraint:** The binary path assumes PlanVal-style types where:
+- Unary arm tag=0 exists (e.g. PNat) — handled by z_body
+- Binary arms have tags 1+ — handled by App dispatch and inner_law
+- Unary arms with tag>0 (e.g. PPin=3) — currently fall to m=const(0); tests are skipped
+
+When writing a type with multiple unary tags >0, extend the fix to build a proper
+lambda-lifted m_body sub-law capturing free variables from handler_env.
+
+**Root cause shared by both bugs:** The bootstrap codegen was designed incrementally.
+The prelude only uses types where (a) matches are exhaustive over 2 arms, (b) all
+field-bearing arms have the same arity. PlanVal is the first 4-constructor mixed-arity
+type, exposing both gaps simultaneously.
+
 A related bug found during Milestone 7.5: **nat globals inside law bodies must
 use the quote form `A(N(0), N(k))` rather than being pinned.** Pinning `True=1`
 as `P(1)` causes Case_ dispatch to route to the Pin branch (returning the inner
@@ -400,6 +447,72 @@ token is `TkColon`, the parser advances past tokens until it sees `TkEqual`,
 then parses the body expression. Type annotations are discarded; the
 self-hosting compiler trusts well-typed input for M8. The type checker is
 added in M9 after self-hosting is confirmed.
+
+### Why target Plan Assembler output instead of binary seed format? (M8.6 pivot, 2026-03-25)
+
+Sol (PLAN author) confirmed that binary seeds are being deprecated in favour of
+**Plan Assembler** — a human-readable textual serialization of the same PLAN DAG
+structure that also supports multiple files and macros. The JS VM (in development)
+and all future runtimes will target Plan Assembler.
+
+**Impact on M8.6:** The original seed emitter was the most mechanically complex
+remaining phase — a bit-packed binary format requiring bignat encoding, a
+fragment bitstream, and a header with five u64 fields (see `spec/07-seed-format.md`).
+The Plan Assembler equivalent is text concatenation, which is drastically simpler
+to implement in restricted Gallowglass.
+
+**Impact on M8.7/M8.8:** The driver reads stdin, writes stdout; the self-hosting
+validation compares textual `.pla` output rather than binary seed bytes. The
+comparison is now a string equality rather than a byte-for-byte binary diff.
+
+**Impact on the runtime target:** Sol recommends targeting the **Reaver** repo
+(`sol-plunder/reaver`) rather than `planvm-amd64`. The M8.0 I/O investigation
+should look at Reaver's execution model. The JS VM (browser/Node.js) is also
+incoming and will support Plan Assembly.
+
+**Format specification obtained (2026-03-27):** The Plan Assembler format was
+extracted from `vendor/reaver/src/hs/PlanAssembler.hs` and `vendor/reaver/doc/reaver.md`.
+Full grammar documented in `spec/07-seed-format.md` §13. M8.6 implementation
+is in `compiler/src/Compiler.gls` Section 25.
+
+**No change to M8.1–M8.5:** All phases through codegen produce `PlanVal` trees,
+which are format-agnostic. The pivot only affects the serialization layer (M8.6).
+
+### Why a BPLAN harness instead of modifying the pure PLAN evaluator?
+
+The pure Python harness (`dev/harness/plan.py`) implements opcodes 0–4 only. Functions
+like `add`, `mul`, `bit_or`, and `shift_left` are compiled to recursive PLAN Laws that
+are O(n) or O(n²) in the operand values. This caps what the harness can test: any output
+requiring `bytes_concat` over more than a single byte hits `add(content, ~12K)` → ~100K
+Python frames, exceeding `sys.setrecursionlimit(50000)`.
+
+The BPLAN harness (`dev/harness/bplan.py`) adds a **jet registry**: a dict mapping
+`id(L_object) → J` that is populated once at startup by `register_jets(compiled_dict)`.
+The BPLAN evaluator (`bevaluate`) is a complete re-implementation of the PLAN evaluator
+that checks the jet registry in `_bexec` — if `P(law)` is being applied and `id(law)`
+is in the registry, it evaluates arguments and calls the Python implementation directly
+instead of interpreting the Law body.
+
+**Why by identity, not by hash or name:** The bootstrap codegen embeds global function
+references directly as `P(law_value)` in Law bodies at compile time. The same Python
+`L` object is shared across all referencing Laws. Python identity (`id(L)`) is the
+cheapest and most reliable way to recognize a specific compiled function without
+modifying the compiled output or computing content hashes.
+
+**Why a separate file, not modifying plan.py:** The pure PLAN evaluator is the
+authoritative reference implementation. Adding jet dispatch to it would couple the
+reference implementation to the bootstrap test infrastructure, making it harder to
+reason about purity. `bplan.py` imports from `plan.py` and overrides only what is
+necessary for jet dispatch.
+
+**Risk:** Name-based jet identity means a jet that accidentally has a different L object
+(e.g., from recompiling) would silently fall back to pure PLAN (slow but correct).
+Jets never affect correctness; only speed. M8.8 self-hosting validation provides the
+definitive correctness gate independent of the harness.
+
+**Jets registered (16):** `add`, `sub`, `mul`, `div_nat`, `mod_nat`, `pow2`, `bit_or`,
+`bit_and`, `shift_left`, `shift_right`, `nat_eq`, `nat_lt`, `lte`, `gte`, `max_nat`,
+`min_nat`. These cover all O(n) recursive arithmetic that previously blocked ~24 tests.
 
 ### Why does CI only validate seed loading, not evaluation? (Temporary)
 

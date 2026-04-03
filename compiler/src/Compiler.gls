@@ -3516,3 +3516,645 @@ let compile_program : List Decl → Nat → List (Pair Nat PlanVal)
 -- =====================================================================
 -- End of M8.5: Codegen
 -- =====================================================================
+
+-- =====================================================================
+-- Section 24b: M8.4 Scope Resolver
+-- =====================================================================
+--
+-- resolve_program : List Decl → Nat → List Decl
+--
+-- Sits between parse_program and compile_program in main.
+-- Rewrites every EVar n in DLet bodies: if n is a known global bare
+-- name, replaces it with EVar (Module.n).  Also qualifies ArmCon
+-- constructor names (looked up in contab at codegen time via FQ key).
+--
+-- Algorithm:
+--   Pass 1 (sr_collect_globals): walk all decls, build a
+--     List (Pair Nat Nat)  — bare_name → fq_name — from
+--     DLet names, DType constructor names, and DExt item names.
+--   Pass 2 (sr_resolve_decls): for each DLet, walk the body Expr
+--     with a bound-variable set (List Nat).  EVar n in the bound set
+--     is a local — leave it alone.  EVar n found in the globals table
+--     is replaced by EVar fq_n.
+--
+-- Builtins (True, False, Unit) are not declared in source via
+-- DLet/DType/DExt, so they never enter the globals table and pass
+-- through unchanged.  The codegen finds them as bare nats in
+-- cg_register_builtins, as required.
+--
+-- Pass-self (pe) breaks the pseudo-mutual recursion between
+-- sr_dispatch and sr_rewrite_arms, exactly as cg_dispatch/cg_cf_dispatch.
+-- =====================================================================
+
+-- sr_collect_con_names: add constructor bare→fq pairs from a ConDef list
+let sr_collect_con_names
+      : List ConDef → Nat → List (Pair Nat Nat) → List (Pair Nat Nat)
+  = λ cdefs mod_name acc →
+      match cdefs {
+        | Nil → acc
+        | Cons cdef rest →
+            match cdef {
+              | MkConDef con_name _ →
+                  let fq = name_concat_dot mod_name con_name in
+                  sr_collect_con_names rest mod_name
+                    (assoc_insert con_name fq acc)
+            }
+      }
+
+-- sr_collect_ext_items: add external item bare→fq pairs
+let sr_collect_ext_items
+      : List Nat → Nat → List (Pair Nat Nat) → List (Pair Nat Nat)
+  = λ items ext_mod acc →
+      match items {
+        | Nil → acc
+        | Cons item_name rest →
+            sr_collect_ext_items rest ext_mod
+              (assoc_insert item_name (name_concat_dot ext_mod item_name) acc)
+      }
+
+-- sr_collect_globals: build the bare→fq table from all decls
+-- Uses direct exhaustive 3-way match to avoid the bootstrap wildcard-arm-drop
+-- bug that makes decl_is_let/decl_is_type/decl_is_ext return 1 for all Decls.
+let sr_collect_globals
+      : List Decl → Nat → List (Pair Nat Nat) → List (Pair Nat Nat)
+  = λ decls mod_name acc →
+      match decls {
+        | Nil → acc
+        | Cons decl rest →
+            let acc2 = match decl {
+                         | DLet bare _ →
+                             assoc_insert bare (name_concat_dot mod_name bare) acc
+                         | DType _ cdefs →
+                             sr_collect_con_names cdefs mod_name acc
+                         | DExt ext_mod items →
+                             sr_collect_ext_items items ext_mod acc
+                       } in
+            sr_collect_globals rest mod_name acc2
+      }
+
+-- sr_rewrite_arm: rewrite one MatchArm, tracking bound variables.
+-- ArmCon constructor names are also qualified (contab is keyed by FQ).
+let sr_rewrite_arm
+      : (Expr → List Nat → List (Pair Nat Nat) → Expr)
+      → MatchArm → List Nat → List (Pair Nat Nat) → MatchArm
+  = λ pe arm bound gtab →
+      match (arm_is_nat arm) {
+        | 0 →
+            match (arm_is_var arm) {
+              | 0 →
+                  -- ArmCon: qualify constructor name; fields are local binders
+                  let fields   = arm_get_con_fields arm in
+                  let con_name = arm_get_con_name arm in
+                  let fq_con   = match (assoc_lookup con_name gtab) {
+                                   | None    → con_name
+                                   | Some fq → fq
+                                 } in
+                  let bound2 = append fields bound in
+                  let body2  = pe (arm_get_con_body arm) bound2 gtab in
+                  ArmCon fq_con (MkPair fields body2)
+              | _ →
+                  -- ArmVar: var name is a local binder
+                  let n     = arm_get_var_name arm in
+                  let body2 = pe (arm_get_var_body arm) (Cons n bound) gtab in
+                  ArmVar n body2
+            }
+        | _ →
+            -- ArmNat: no new binders
+            let body2 = pe (arm_get_nat_body arm) bound gtab in
+            ArmNat (arm_get_nat_tag arm) body2
+      }
+
+-- sr_rewrite_arms: rewrite a list of MatchArms
+let sr_rewrite_arms
+      : (Expr → List Nat → List (Pair Nat Nat) → Expr)
+      → List MatchArm → List Nat → List (Pair Nat Nat) → List MatchArm
+  = λ pe arms bound gtab →
+      match arms {
+        | Nil → Nil
+        | Cons arm rest →
+            Cons (sr_rewrite_arm pe arm bound gtab)
+                 (sr_rewrite_arms pe rest bound gtab)
+      }
+
+-- sr_dispatch: dispatch on expr structure and recurse via pass-self pe.
+-- EVar: qualify if in gtab and not in bound.
+-- ELam/ELet/EPin: extend bound for body.
+-- EApp/EIf/EMatch: recurse into sub-expressions.
+-- ENat/EText: no names — pass through unchanged.
+--
+-- Dispatch strategy avoids the bootstrap mixed-arity expr_tag bug:
+--   planval_is_nat expr = 1  ↔  EVar   (unary tag-0, same layout as PNat)
+--   planval_is_app expr = 1  ↔  binary  (EApp/ELam/ELet/EIf/EMatch/EPin)
+--   neither               ↔  ENat   (unary tag-4, returns 0/P(0) for both)
+-- ENat has no names, so returning expr unchanged is correct.
+let sr_dispatch
+      : (Expr → List Nat → List (Pair Nat Nat) → Expr)
+      → Expr → List Nat → List (Pair Nat Nat) → Expr
+  = λ pe expr bound gtab →
+      match (nat_eq (planval_is_nat expr) 1) {
+        | 0 →
+            -- Not EVar. Check for binary constructor (has App outer-fun).
+            match (nat_eq (planval_is_app expr) 1) {
+              | 0 →
+                  -- Unary with tag > 0 (ENat, EText…): no names, pass through.
+                  expr
+              | _ →
+                  -- Binary constructor: dispatch by tag.
+                  match (nat_eq (expr_tag expr) 1) {
+                    | 0 →
+                        match (nat_eq (expr_tag expr) 2) {
+                          | 0 →
+                              match (nat_eq (expr_tag expr) 3) {
+                                | 0 →
+                                    match (nat_eq (expr_tag expr) 5) {
+                                      | 0 →
+                                          match (nat_eq (expr_tag expr) 6) {
+                                            | 0 →
+                                                -- EPin (tag 7)
+                                                match expr {
+                                                  | EPin n p →
+                                                      match p {
+                                                        | MkPair rhs body →
+                                                            let rhs2  = pe rhs bound gtab in
+                                                            let body2 = pe body (Cons n bound) gtab in
+                                                            EPin n (MkPair rhs2 body2)
+                                                      }
+                                                  | _ → expr
+                                                }
+                                            | _ →
+                                                -- EMatch (tag 6)
+                                                match expr {
+                                                  | EMatch scr arms →
+                                                      let scr2  = pe scr bound gtab in
+                                                      let arms2 = sr_rewrite_arms pe arms bound gtab in
+                                                      EMatch scr2 arms2
+                                                  | _ → expr
+                                                }
+                                          }
+                                      | _ →
+                                          -- EIf (tag 5)
+                                          match expr {
+                                            | EIf cond p →
+                                                match p {
+                                                  | MkPair then_ else_ →
+                                                      EIf (pe cond bound gtab)
+                                                          (MkPair (pe then_ bound gtab)
+                                                                  (pe else_ bound gtab))
+                                                }
+                                            | _ → expr
+                                          }
+                                    }
+                                | _ →
+                                    -- ELet (tag 3): name bound in body, not rhs
+                                    match expr {
+                                      | ELet n p →
+                                          match p {
+                                            | MkPair rhs body →
+                                                let rhs2  = pe rhs bound gtab in
+                                                let body2 = pe body (Cons n bound) gtab in
+                                                ELet n (MkPair rhs2 body2)
+                                          }
+                                      | _ → expr
+                                    }
+                              }
+                          | _ →
+                              -- ELam (tag 2): param bound in body
+                              match expr {
+                                | ELam p b →
+                                    ELam p (pe b (Cons p bound) gtab)
+                                | _ → expr
+                              }
+                        }
+                    | _ →
+                        -- EApp (tag 1)
+                        match expr {
+                          | EApp f a →
+                              EApp (pe f bound gtab) (pe a bound gtab)
+                          | _ → expr
+                        }
+                  }
+            }
+        | _ →
+            -- EVar (tag 0): qualify if global and not locally bound
+            match expr {
+              | EVar n →
+                  match (cg_name_in_list n bound) {
+                    | 0 →
+                        match (assoc_lookup n gtab) {
+                          | None    → expr
+                          | Some fq → EVar fq
+                        }
+                    | _ → expr
+                  }
+              | _ → expr
+            }
+      }
+
+-- sr_rewrite_expr: tie the knot via pass-self
+let sr_rewrite_expr
+      : Expr → List Nat → List (Pair Nat Nat) → Expr
+  = λ expr bound gtab →
+      sr_dispatch sr_rewrite_expr expr bound gtab
+
+-- sr_resolve_decls: rewrite DLet bodies; DType/DExt pass through unchanged
+-- Uses direct exhaustive 3-way match to avoid wildcard-arm-drop bootstrap bug.
+let sr_resolve_decls
+      : List Decl → List (Pair Nat Nat) → List Decl
+  = λ decls gtab →
+      match decls {
+        | Nil → Nil
+        | Cons decl rest →
+            let new_decl = match decl {
+                             | DLet name body →
+                                 DLet name (sr_rewrite_expr body Nil gtab)
+                             | DType _ _ → decl
+                             | DExt _ _  → decl
+                           } in
+            Cons new_decl (sr_resolve_decls rest gtab)
+      }
+
+-- resolve_program: collect globals then rewrite all DLet bodies
+let resolve_program : List Decl → Nat → List Decl
+  = λ decls mod_name →
+      let gtab = sr_collect_globals decls mod_name Nil in
+      sr_resolve_decls decls gtab
+
+-- =====================================================================
+-- End of M8.4: Scope Resolver
+-- =====================================================================
+
+-- =====================================================================
+-- Section 25: M8.6 Plan Assembler Emitter
+-- =====================================================================
+--
+-- Converts List (Pair Nat PlanVal) (output of compile_program) to Bytes
+-- (UTF-8 Plan Assembler text, Reaver format).
+--
+-- Output format per definition:
+--   (#bind "name_decimal" expr)
+--
+-- Law bodies use de Bruijn slot encoding:
+--   _N          = de Bruijn reference N
+--   k (decimal) = constant nat k  (auto-quoted by assembler)
+--   (f x)       = application
+--   _N(rhs)     = let-binding (juxtaposition syntax in #law body)
+--   (#pin v)    = embedded pin
+--
+-- See spec/07-seed-format.md §13 for the full grammar.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------------
+-- nat_to_decimal_go: recursive descent decimal encoder
+-- Emits digits most-significant first by recursing on n/10.
+-- Stops (bytes_empty) when n = 0 — so leading zeros are never emitted.
+-- ---------------------------------------------------------------------------
+let nat_to_decimal_go : Nat → Bytes
+  = λ n → match n {
+      | 0 → MkPair 0 0
+      | pred →
+          bytes_concat
+            (nat_to_decimal_go (div_nat n 10))
+            (bytes_singleton (add 0x30 (mod_nat n 10)))
+    }
+
+-- nat_to_decimal: convert Nat to decimal Bytes, handling 0 → "0"
+let nat_to_decimal : Nat → Bytes
+  = λ n → match n {
+      | 0 → bytes_singleton 0x30
+      | pred → nat_to_decimal_go n
+    }
+
+-- ---------------------------------------------------------------------------
+-- emit_debruijn_ref: emit "_N" for de Bruijn slot N
+-- 0x5F = '_'
+-- ---------------------------------------------------------------------------
+let emit_debruijn_ref : Nat → Bytes
+  = λ i →
+      bytes_concat (bytes_singleton 0x5F) (nat_to_decimal i)
+
+-- ---------------------------------------------------------------------------
+-- emit_asm_app: emit "(f_asm x_asm)" — Plan Assembler application
+-- 0x28='('  0x20=' '  0x29=')'
+-- ---------------------------------------------------------------------------
+let emit_asm_app : Bytes → Bytes → Bytes
+  = λ f_asm x_asm →
+      bytes_concat (bytes_singleton 0x28)
+        (bytes_concat f_asm
+          (bytes_concat (bytes_singleton 0x20)
+            (bytes_concat x_asm (bytes_singleton 0x29))))
+
+-- ---------------------------------------------------------------------------
+-- emit_asm_let: emit "_slot(rhs_asm)\n  body_asm" — let-binding in law body
+-- 0x28='('  0x29=')'  0x0A='\n'  0x20=' '
+-- ---------------------------------------------------------------------------
+let emit_asm_let : Nat → Bytes → Bytes → Bytes
+  = λ slot rhs_asm body_asm →
+      bytes_concat (emit_debruijn_ref slot)
+        (bytes_concat (bytes_singleton 0x28)
+          (bytes_concat rhs_asm
+            (bytes_concat (bytes_singleton 0x29)
+              (bytes_concat (bytes_singleton 0x0A)
+                (bytes_concat (bytes_singleton 0x20)
+                  (bytes_concat (bytes_singleton 0x20)
+                    body_asm))))))
+
+-- ---------------------------------------------------------------------------
+-- emit_asm_pin: emit "(#pin inner_asm)"
+-- 0x23='#'  0x70='p'  0x69='i'  0x6E='n'
+-- ---------------------------------------------------------------------------
+let emit_asm_pin : Bytes → Bytes
+  = λ inner_asm →
+      bytes_concat (bytes_singleton 0x28)
+        (bytes_concat (bytes_singleton 0x23)
+          (bytes_concat (bytes_singleton 0x70)
+            (bytes_concat (bytes_singleton 0x69)
+              (bytes_concat (bytes_singleton 0x6E)
+                (bytes_concat (bytes_singleton 0x20)
+                  (bytes_concat inner_asm (bytes_singleton 0x29)))))))
+
+-- ---------------------------------------------------------------------------
+-- emit_law_sig_go: emit " _i ... _k" (space-prefixed args beyond _0)
+-- Self-recursive; terminates when i > k.
+-- ---------------------------------------------------------------------------
+let emit_law_sig_go : Nat → Nat → Bytes
+  = λ i k →
+      match (lte i k) {
+        | 0 → MkPair 0 0
+        | pred →
+            bytes_concat
+              (bytes_concat (bytes_singleton 0x20) (emit_debruijn_ref i))
+              (emit_law_sig_go (add i 1) k)
+      }
+
+-- emit_law_sig: emit "(_0 _1 ... _arity)" — the full #law parameter list.
+-- _0 = self-ref; _1.._arity = arguments.
+-- 0x28='('  0x29=')'
+let emit_law_sig : Nat → Bytes
+  = λ arity →
+      bytes_concat (bytes_singleton 0x28)
+        (bytes_concat (emit_debruijn_ref 0)
+          (bytes_concat (emit_law_sig_go 1 arity)
+            (bytes_singleton 0x29)))
+
+-- ---------------------------------------------------------------------------
+-- Bootstrap compiler constraint: self-recursive calls inside nested
+-- constructor-match arms are NOT supported.
+--
+-- When the bootstrap compiler compiles a constructor match, it creates a
+-- sub-law for each arm via lambda lifting (_build_app_handler). Inside that
+-- sub-law, N(0) refers to the sub-law itself, NOT the outer law. A self-
+-- recursive call like `emit_body_val ep f depth` inside a nested arm therefore
+-- appears as an unbound variable.
+--
+-- Fix: separate the DISPATCH LOGIC from the RECURSION KNOT, exactly as
+-- cg_dispatch / cg_compile_expr do.
+--
+--   emit_bval_dispatch ep ebv pval depth
+--     — no self-recursion; calls ebv (a parameter) for recursive subcases
+--     — captured parameters (ep, ebv, depth) are correctly lambda-lifted
+--       into sub-laws created for match arms
+--
+--   emit_body_val ep pval depth
+--     = emit_bval_dispatch ep (emit_body_val ep) pval depth
+--     — trivial wrapper that ties the knot; its body has no match arms, so
+--       the self-reference N(0) works correctly
+--
+-- The same pattern is used for emit_pval_dispatch / emit_pval.
+-- ---------------------------------------------------------------------------
+
+-- pair_nat_planval_fst / pair_nat_planval_snd:
+-- Field accessors for Pair Nat PlanVal, used by emit_pval_dispatch to avoid
+-- a nested constructor match (| MkPair arity body → ...) inside an outer
+-- constructor match arm, which would create another sub-law.
+let pair_nat_planval_fst : Pair Nat PlanVal → Nat
+  = λ p → match p { | MkPair a _ → a }
+
+let pair_nat_planval_snd : Pair Nat PlanVal → PlanVal
+  = λ p → match p { | MkPair _ b → b }
+
+-- planval_app_fun / planval_app_arg: field accessors for PApp.
+-- Used by emit_bval_dispatch to avoid a doubly-nested constructor match
+-- (match f { | PApp ... } inside | PApp f x →).
+-- planval_is_app is already defined in the PlanVal helpers above.
+let planval_app_fun : PlanVal → PlanVal
+  = λ v → match v { | PApp f _ → f | _ → v }
+
+let planval_app_arg : PlanVal → PlanVal
+  = λ v → match v { | PApp _ x → x | _ → v }
+
+-- ---------------------------------------------------------------------------
+-- emit_bval_dispatch: body-context emitter dispatch.
+--
+-- Parameters:
+--   ep    = emit_pval (top-level emitter; for PPin content and bare PLaw)
+--   ebv   = emit_body_val ep (passed for recursive subcases; NOT self-ref)
+--   pval  = PlanVal node to emit
+--   depth = de Bruijn slots so far (starts = arity; +1 per let-binding)
+--
+-- Pattern table (spec/07-seed-format.md §13.5):
+--   PNat i                           → "_i"             (de Bruijn ref)
+--   PApp(PNat 0)(PNat k)             → "k"              (cg_quote_nat constant)
+--   PApp(PApp(PNat 0) x2) x          → "(x2 x)"         (cg_bapp application)
+--   PApp(PApp(PNat 1) x2) x          → "_d(x2)\n  x"   (let-chain, d=depth+1)
+--   PPin v                           → "(#pin ep(v))"   (embedded via ep)
+--   PLaw ...                         → ep pval           (lambda-lifted, via ep)
+--
+-- Only ONE level of constructor match (on pval) is used here.
+-- The | PApp f x → arm uses if/then/else + helper function calls exclusively —
+-- no let-bindings inside match arms (those compile to A(A(N(1),rhs),k) forms
+-- that _bjudge processes only at the top of a law body; inside a Case_ arm
+-- they become stuck and are returned as-is by _bkal).
+-- Helper functions emit_bval_papp_nat / emit_bval_papp_app carry the
+-- sub-dispatch logic and are called with fully-applied inline arguments.
+-- ---------------------------------------------------------------------------
+
+-- emit_bval_papp_nat: sub-dispatch for PApp(PNat opcode)(x).
+-- No let-bindings: avoids stuck A(A(N(1),...),k) values in Case_ arms.
+let emit_bval_papp_nat
+      : (PlanVal → Nat → Bytes)
+      → Nat → PlanVal → PlanVal → Nat
+      → Bytes
+  = λ ebv opcode f x depth →
+      if nat_eq opcode 0 then
+        if planval_is_nat x then
+          nat_to_decimal (planval_get_nat x)
+        else
+          emit_asm_app (ebv f depth) (ebv x depth)
+      else
+        emit_asm_app (ebv f depth) (ebv x depth)
+
+-- emit_bval_papp_app: sub-dispatch for PApp(PApp(PNat opcode)(x2))(x).
+-- opcode = planval_get_nat (planval_app_fun f), x2 = planval_app_arg f.
+-- No let-bindings; add depth 1 computed inline (twice when needed).
+let emit_bval_papp_app
+      : (PlanVal → Nat → Bytes)
+      → Nat → PlanVal → PlanVal → PlanVal → Nat
+      → Bytes
+  = λ ebv opcode x2 f x depth →
+      if nat_eq opcode 0 then
+        emit_asm_app (ebv x2 depth) (ebv x depth)
+      else if nat_eq opcode 1 then
+        emit_asm_let (add depth 1) (ebv x2 depth) (ebv x (add depth 1))
+      else
+        emit_asm_app (ebv f depth) (ebv x depth)
+
+let emit_bval_dispatch
+      : (PlanVal → Bytes)
+      → (PlanVal → Nat → Bytes)
+      → PlanVal
+      → Nat
+      → Bytes
+  = λ ep ebv pval depth →
+      match pval {
+        | PNat i →
+            emit_debruijn_ref i
+        | PApp f x →
+            -- Dispatch on f using helper functions (no let-bindings in arm body).
+            -- planval_is_nat f → f = PNat opcode  → emit_bval_papp_nat
+            -- planval_is_app f, planval_is_nat f2 → emit_bval_papp_app
+            -- else              → PLaw / PPin: generic application
+            if planval_is_nat f then
+              emit_bval_papp_nat ebv (planval_get_nat f) f x depth
+            else if planval_is_app f then
+              if planval_is_nat (planval_app_fun f) then
+                emit_bval_papp_app ebv
+                  (planval_get_nat (planval_app_fun f))
+                  (planval_app_arg f) f x depth
+              else
+                emit_asm_app (ebv f depth) (ebv x depth)
+            else
+              emit_asm_app (ebv f depth) (ebv x depth)
+        | PPin v →
+            emit_asm_pin (ep v)
+        | PLaw _ _ →
+            -- Lambda-lifted laws appear as PPin(PLaw ...) in law bodies.
+            ep pval
+      }
+
+-- emit_body_val: ties the knot for emit_bval_dispatch.
+-- Simple body (no match arms) — self-reference N(0) works correctly.
+let emit_body_val : (PlanVal → Bytes) → PlanVal → Nat → Bytes
+  = λ ep pval depth →
+      emit_bval_dispatch ep (emit_body_val ep) pval depth
+
+-- ---------------------------------------------------------------------------
+-- emit_plaw: emit a complete #law form at top level.
+--   ep    = emit_pval (for embedded PPin/PLaw in body)
+--   name  = name nat
+--   arity = argument count (slots 1.._arity)
+--   body  = law body PlanVal
+-- Output: "(#law "name_decimal" sig\n  body_asm)"
+-- 0x23='#'  0x6C='l'  0x61='a'  0x77='w'  0x22='"'  0x0A='\n'
+-- ---------------------------------------------------------------------------
+let emit_plaw : (PlanVal → Bytes) → Nat → Nat → PlanVal → Bytes
+  = λ ep name arity body →
+      let name_str =
+        bytes_concat (bytes_singleton 0x22)
+          (bytes_concat (nat_to_decimal name) (bytes_singleton 0x22)) in
+      let law_kw =
+        bytes_concat (bytes_singleton 0x28)
+          (bytes_concat (bytes_singleton 0x23)
+            (bytes_concat (bytes_singleton 0x6C)
+              (bytes_concat (bytes_singleton 0x61)
+                (bytes_concat (bytes_singleton 0x77)
+                  (bytes_singleton 0x20))))) in
+      let sig = emit_law_sig arity in
+      let body_asm = emit_body_val ep body arity in
+      bytes_concat law_kw
+        (bytes_concat name_str
+          (bytes_concat (bytes_singleton 0x20)
+            (bytes_concat sig
+              (bytes_concat (bytes_singleton 0x0A)
+                (bytes_concat (bytes_singleton 0x20)
+                  (bytes_concat (bytes_singleton 0x20)
+                    (bytes_concat body_asm (bytes_singleton 0x29))))))))
+
+-- ---------------------------------------------------------------------------
+-- emit_pval_dispatch: top-level emitter dispatch (no self-recursion).
+-- Uses ep parameter for all recursive subcases.
+-- pair_nat_planval_fst/snd replace the nested match on PLaw's Pair field.
+-- ---------------------------------------------------------------------------
+let emit_pval_dispatch : (PlanVal → Bytes) → PlanVal → Bytes
+  = λ ep pval →
+      match pval {
+        | PNat n → nat_to_decimal n
+        | PApp f x → emit_asm_app (ep f) (ep x)
+        | PLaw name ap →
+            emit_plaw ep name (pair_nat_planval_fst ap) (pair_nat_planval_snd ap)
+        | PPin v → emit_asm_pin (ep v)
+      }
+
+-- emit_pval: ties the knot for emit_pval_dispatch.
+-- Simple body (no match arms) — self-reference N(0) works correctly.
+let emit_pval : PlanVal → Bytes
+  = λ pval → emit_pval_dispatch emit_pval pval
+
+-- ---------------------------------------------------------------------------
+-- emit_bind: emit one top-level (#bind "name_decimal" expr_asm)\n
+-- 0x23='#'  0x62='b'  0x69='i'  0x6E='n'  0x64='d'
+-- ---------------------------------------------------------------------------
+let emit_bind : Nat → PlanVal → Bytes
+  = λ name pval →
+      let name_str =
+        bytes_concat (bytes_singleton 0x22)
+          (bytes_concat (nat_to_decimal name) (bytes_singleton 0x22)) in
+      let bind_kw =
+        bytes_concat (bytes_singleton 0x28)
+          (bytes_concat (bytes_singleton 0x23)
+            (bytes_concat (bytes_singleton 0x62)
+              (bytes_concat (bytes_singleton 0x69)
+                (bytes_concat (bytes_singleton 0x6E)
+                  (bytes_concat (bytes_singleton 0x64)
+                    (bytes_singleton 0x20)))))) in
+      let expr_asm = emit_pval pval in
+      bytes_concat bind_kw
+        (bytes_concat name_str
+          (bytes_concat (bytes_singleton 0x20)
+            (bytes_concat expr_asm
+              (bytes_concat (bytes_singleton 0x29) (bytes_singleton 0x0A)))))
+
+-- ---------------------------------------------------------------------------
+-- emit_program: main entry point for M8.6.
+-- Input:  List (Pair Nat PlanVal) — output of compile_program
+-- Output: Bytes — UTF-8 Plan Assembler text, one (#bind ...) per definition
+-- ---------------------------------------------------------------------------
+let emit_program : List (Pair Nat PlanVal) → Bytes
+  = λ defs →
+      foldl
+        (λ acc def →
+          match def {
+            | MkPair name pval →
+                bytes_concat acc (emit_bind name pval)
+          })
+        (MkPair 0 0)
+        defs
+
+-- =====================================================================
+-- End of M8.6: Plan Assembler Emitter
+-- =====================================================================
+
+-- =====================================================================
+-- Section 26: M8.7 Driver
+-- =====================================================================
+-- main: top-level entry point.
+-- Input:  Bytes  — UTF-8 source text of a single .gls file
+-- Output: Bytes  — Plan Assembler text (one (#bind ...) per definition)
+--
+-- Module name is hardcoded to "Compiler" for M8.8 self-hosting validation.
+-- "Compiler" as a little-endian nat:
+--   int.from_bytes(b'Compiler', 'little') = 8243113893085146947
+--   hex: 0x72656c69706d6f43
+-- ---------------------------------------------------------------------------
+let nn_Compiler : Nat = 8243113893085146947
+
+let main : Bytes → Bytes
+  = λ src →
+      let tokens  = lex src 0 1 1 in
+      let decls   = parse_program tokens in
+      let decls2  = resolve_program decls nn_Compiler in
+      let compiled = compile_program decls2 nn_Compiler in
+      emit_program compiled
+
+-- =====================================================================
+-- End of M8.7: Driver
+-- =====================================================================

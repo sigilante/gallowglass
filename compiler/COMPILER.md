@@ -214,8 +214,8 @@ monolithic file with clearly marked sections.
 | M8.3: Parser | **COMPLETE** | Sections 19–23 |
 | M8.4: Scope resolver | **NOT STARTED** | — |
 | M8.5: Codegen | **COMPLETE** | Section 24 |
-| M8.6: Seed emitter | **NOT STARTED** | — |
-| M8.7: Driver/main | **NOT STARTED** | — |
+| M8.6: Seed emitter | **COMPLETE** | Section 25 |
+| M8.7: Driver/main | **COMPLETE** | Section 26 |
 | M8.8: Self-hosting validation | **NOT STARTED** | — |
 
 Tests passing: `tests/compiler/test_utils.py` (42 passed, 5 skipped),
@@ -286,7 +286,7 @@ Key implementation notes for future reference:
 - **Forward reference rule**: every function that is called by another must be
   defined *before* it in the file (no forward refs in the restricted dialect).
 
-### Milestone 8.6: Seed emitter — NOT STARTED
+### Milestone 8.6: Seed emitter ✓ COMPLETE
 
 **Input:** `List (Pair Nat PlanVal)` + entry FQ name.
 **Output:** `Bytes` (seed format per `spec/07-seed-format.md`).
@@ -305,14 +305,11 @@ in the file; `byte_append`, `u64_le`, and `bits_append` helpers will be needed.
 Tests: `tests/compiler/test_emit.py` — byte-level comparison against Python
 `bootstrap/emit.py` for the same PlanVal inputs.
 
-### Milestone 8.7: Driver/main — NOT STARTED (blocked on M8.0 I/O)
+### Milestone 8.7: Driver/main ✓ COMPLETE
 
-Wire lex → parse → resolve → codegen → emit into a single `main` entry point.
-The I/O mechanism (stdin/stdout via planvm syscalls, CLI args, or a Sire wrapper)
-must be resolved (M8.0 investigation) before this can be written.
-
-See `compiler/CODEGEN_PLAN.md §M8.0` for the two candidate I/O conventions and
-the test approach for resolving the unknown.
+`main : Bytes → Bytes` in Section 26. Chains lex → parse_program → compile_program →
+emit_program. Module name hardcoded to "Compiler" (`nn_Compiler = 8243113893085146947`,
+i.e. `int.from_bytes(b'Compiler', 'little')`). Tests: `tests/compiler/test_driver.py`.
 
 ### Milestone 8.8: Self-hosting validation — NOT STARTED
 
