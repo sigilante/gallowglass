@@ -75,12 +75,15 @@ syntax (spec/06-surface-syntax.md).
 | `λ` expressions | Anonymous functions, multi-argument |
 | Function application | Left-associative, juxtaposition |
 | `type` declarations | Sum types (`\|` constructors) only; no record syntax |
-| `match` expressions | Nat and nullary constructor patterns |
+| `match` expressions | Nat, nullary constructor, unary/binary constructor, and tuple patterns |
 | `if`/`then`/`else` | Bool dispatch via opcode 2 |
 | Nat, Bool, Text, Bytes literals | Primitive literals |
 | `pin` expression | Programmer-controlled pinning |
 | Basic type annotations | Monomorphic and simple polymorphic (`∀ a.`) |
 | `external mod` declarations | VM boundary for Core.* primitives |
+| `fix` expressions | Self-referential anonymous recursion |
+| Tuples | Binary tuples `(a, b)`; tuple patterns in match |
+| Mutual recursion | Lexicographically-ordered SCC compilation via shared-pin rows |
 
 ### 2.2 Excluded (deferred to self-hosting compiler)
 
@@ -91,9 +94,6 @@ syntax (spec/06-surface-syntax.md).
 | Contracts (`\| pre`, `\| post`) | No solver in bootstrap |
 | `module` / `import` | Multi-file compilation deferred |
 | Typeclasses | Deferred |
-| Mutual recursion | Deferred |
-| Tuples | Deferred |
-| `let rec` / `fix` | Deferred |
 | Row-polymorphic records | Deferred |
 
 ### 2.3 Effect Handling
@@ -195,6 +195,31 @@ Three changes to `bootstrap/codegen.py`; prelude upgraded to full implementation
 - `Core.List`: `head`, `tail`, `map`, `filter`, `foldl`, `foldr` (11 total)
 
 Tests: `tests/bootstrap/test_codegen.py` (44 pass), `tests/prelude/` (24 planvm tests).
+
+### ✅ Milestone 9.1–9.3: Restricted dialect extensions
+
+Three codegen additions enabling the prelude and self-hosting compiler to use richer idioms.
+
+**M9.1 — `fix` expressions:**
+`fix (λ self args → body)` compiles correctly: `params[0]` becomes `self_ref_name`
+(maps to N(0) law self-reference), `params[1:]` are user params, law arity =
+`len(user_params)`. `_collect_all_names` and `_collect_free` updated to traverse ExprFix.
+
+**M9.2 — Tuples:**
+Binary tuple construction `(a, b)` encodes as `A(tag_0, a, b)` using the quote form
+`A(N(0), N(0))` for tag 0 inside law bodies (not Pin). Tuple match `(x, y)` dispatches
+via `_compile_con_match_case3` with synthetic ConInfo(tag=0, arity=2).
+
+**M9.3 — Mutual recursion (SCC compilation):**
+Tarjan's SCC detection added to `compile()` pass 3. Single-element SCCs compile as before.
+Multi-element SCCs use the shared-pin row encoding from spec/02-mutual-recursion.md:
+selector law `L(n+1, 0, dispatch_body)` applied to n lambda-lifted member laws forms
+a Pin row; `(shared_pin i) shared_pin` extracts and fully applies member i. Each member
+law gets an extra first param `__shared__` (index 1). Wrapper laws for external callers
+embed the shared pin as a non-bapp App literal in the law body.
+Canonical SCC ordering: lexicographic by FQ name (consistent with PinId stability).
+
+Tests: `tests/bootstrap/test_codegen.py` (53 pass — 9 new tests for fix, tuples, mutual recursion).
 
 ### ✅ Milestone 8: Self-hosting compiler — **ALPHA CANDIDATE**
 
