@@ -767,7 +767,12 @@ class TypeChecker:
             return self.infer(lenv2, expr.body)
 
         if isinstance(expr, ExprFix):
-            return self.infer(lenv, expr.lam)
+            # fix (λ self args → body) : T
+            # The lambda has type T → T (self-ref in, T out).
+            t = self.fresh()
+            lam_ty = self.infer(lenv, expr.lam)
+            self.unify(lam_ty, TArr(t, t), expr.loc)
+            return t
 
         if isinstance(expr, ExprHandle):
             return self.infer(lenv, expr.comp)
@@ -817,25 +822,180 @@ class TypeChecker:
                 sub_prefix = f"{prefix}.{'.'.join(decl.name)}" if prefix else '.'.join(decl.name)
                 self._prepass_lets(decl.body, sub_prefix)
 
-    def _check_decls(self, decls: list[Any], prefix: str) -> None:
-        """Main pass: infer bodies and unify/generalize."""
+    # ------------------------------------------------------------------ #
+    # Dependency graph and SCC detection (for ordered checking)            #
+    # ------------------------------------------------------------------ #
+
+    def _collect_expr_refs(self, expr: Any, into: set) -> None:
+        """Walk an expression and collect all ExprVar name strings into `into`."""
+        if isinstance(expr, ExprVar):
+            into.add(str(expr.name))
+        elif isinstance(expr, ExprApp):
+            self._collect_expr_refs(expr.fun, into)
+            self._collect_expr_refs(expr.arg, into)
+        elif isinstance(expr, ExprLam):
+            self._collect_expr_refs(expr.body, into)
+        elif isinstance(expr, ExprLet):
+            self._collect_expr_refs(expr.rhs, into)
+            self._collect_expr_refs(expr.body, into)
+        elif isinstance(expr, ExprPin):
+            self._collect_expr_refs(expr.rhs, into)
+            self._collect_expr_refs(expr.body, into)
+        elif isinstance(expr, ExprMatch):
+            self._collect_expr_refs(expr.scrutinee, into)
+            for _pat, guard, body in expr.arms:
+                if guard is not None:
+                    self._collect_expr_refs(guard, into)
+                self._collect_expr_refs(body, into)
+        elif isinstance(expr, ExprIf):
+            self._collect_expr_refs(expr.cond, into)
+            self._collect_expr_refs(expr.then_, into)
+            self._collect_expr_refs(expr.else_, into)
+        elif isinstance(expr, ExprTuple):
+            for e in expr.elems:
+                self._collect_expr_refs(e, into)
+        elif isinstance(expr, ExprList):
+            for e in expr.elems:
+                self._collect_expr_refs(e, into)
+        elif isinstance(expr, ExprFix):
+            self._collect_expr_refs(expr.lam, into)
+        elif isinstance(expr, ExprOp):
+            self._collect_expr_refs(expr.lhs, into)
+            self._collect_expr_refs(expr.rhs, into)
+        elif isinstance(expr, ExprUnary):
+            self._collect_expr_refs(expr.operand, into)
+        elif isinstance(expr, ExprAnn):
+            self._collect_expr_refs(expr.expr, into)
+        elif isinstance(expr, ExprDo):
+            self._collect_expr_refs(expr.rhs, into)
+            self._collect_expr_refs(expr.body, into)
+        elif isinstance(expr, ExprHandle):
+            self._collect_expr_refs(expr.comp, into)
+        elif isinstance(expr, ExprWith):
+            self._collect_expr_refs(expr.expr, into)
+        elif isinstance(expr, ExprRecord):
+            for _, v in expr.fields:
+                self._collect_expr_refs(v, into)
+        elif isinstance(expr, ExprRecordUpdate):
+            self._collect_expr_refs(expr.base, into)
+            for _, v in expr.fields:
+                self._collect_expr_refs(v, into)
+
+    def _build_dep_graph(self, let_decls: list, prefix: str) -> dict:
+        """Build a forward-reference dependency graph among DeclLets in this scope."""
+        fq_set = {f'{prefix}.{d.name}' for d in let_decls}
+        graph: dict = {}
+        for d in let_decls:
+            fq = f'{prefix}.{d.name}'
+            refs: set = set()
+            self._collect_expr_refs(d.body, refs)
+            fq_refs: set = set()
+            for r in refs:
+                if r in fq_set:
+                    fq_refs.add(r)
+                candidate = f'{prefix}.{r}'
+                if candidate in fq_set:
+                    fq_refs.add(candidate)
+            graph[fq] = fq_refs & fq_set
+        return graph
+
+    def _tarjan_scc(self, graph: dict) -> list:
+        """Tarjan's SCC algorithm. Returns SCCs in topological order (deps first).
+        Within each SCC names are sorted lexicographically."""
+        index_counter = [0]
+        index: dict = {}
+        lowlink: dict = {}
+        on_stack: set = set()
+        stack: list = []
+        sccs: list = []
+
+        def strongconnect(v: str) -> None:
+            index[v] = index_counter[0]
+            lowlink[v] = index_counter[0]
+            index_counter[0] += 1
+            stack.append(v)
+            on_stack.add(v)
+            for w in graph.get(v, set()):
+                if w not in index:
+                    strongconnect(w)
+                    lowlink[v] = min(lowlink[v], lowlink[w])
+                elif w in on_stack:
+                    lowlink[v] = min(lowlink[v], index[w])
+            if lowlink[v] == index[v]:
+                scc: list = []
+                while True:
+                    w = stack.pop()
+                    on_stack.discard(w)
+                    scc.append(w)
+                    if w == v:
+                        break
+                sccs.append(sorted(scc))
+
+        for v in sorted(graph.keys()):
+            if v not in index:
+                strongconnect(v)
+
+        return sccs  # topological order: dependencies before dependents
+
+    # ------------------------------------------------------------------ #
+    # Per-decl and per-SCC checking                                        #
+    # ------------------------------------------------------------------ #
+
+    def _check_let_decl(self, decl: Any, prefix: str) -> None:
+        """Type-check a single DeclLet, then generalize if unannotated."""
+        fq = f"{prefix}.{decl.name}" if prefix else decl.name
+        expected = self.type_env.get(fq, Scheme([], self.fresh()))
+        expected_mono = self._instantiate(expected)
+        body_ty = self.infer({}, decl.body)
+        self.unify(expected_mono, body_ty, decl.loc)
+        if decl.type_ann is None:
+            self.type_env[fq] = self._generalize({}, expected_mono)
+
+    def _check_mutual_scc(self, decls: list, prefix: str) -> None:
+        """Type-check a mutually recursive SCC.
+
+        All bodies are checked before any generalization so that provisional
+        unification variables are not prematurely closed over.
+        """
+        # Phase 1: instantiate all provisional types and check bodies.
+        fq_to_mono: dict = {}
         for decl in decls:
-            if isinstance(decl, DeclLet):
-                fq = f"{prefix}.{decl.name}" if prefix else decl.name
-                expected = self.type_env.get(fq, Scheme([], self.fresh()))
-                expected_mono = self._instantiate(expected)
+            fq = f"{prefix}.{decl.name}" if prefix else decl.name
+            expected = self.type_env.get(fq, Scheme([], self.fresh()))
+            fq_to_mono[fq] = self._instantiate(expected)
 
-                # Infer the body in an empty local env (top-level)
-                body_ty = self.infer({}, decl.body)
-                self.unify(expected_mono, body_ty, decl.loc)
+        for decl in decls:
+            fq = f"{prefix}.{decl.name}" if prefix else decl.name
+            body_ty = self.infer({}, decl.body)
+            self.unify(fq_to_mono[fq], body_ty, decl.loc)
 
-                # Generalize if unannotated
-                if decl.type_ann is None:
-                    self.type_env[fq] = self._generalize({}, expected_mono)
+        # Phase 2: generalize unannotated members (all at once).
+        for decl in decls:
+            fq = f"{prefix}.{decl.name}" if prefix else decl.name
+            if decl.type_ann is None:
+                self.type_env[fq] = self._generalize({}, fq_to_mono[fq])
 
-            elif isinstance(decl, DeclInst):
+    def _check_decls(self, decls: list[Any], prefix: str) -> None:
+        """Main pass: infer bodies and unify/generalize, respecting SCC order."""
+        # Collect let decls and process them in SCC (topological) order.
+        let_decls = [d for d in decls if isinstance(d, DeclLet)]
+        if let_decls:
+            decl_map = {f'{prefix}.{d.name}': d for d in let_decls}
+            graph = self._build_dep_graph(let_decls, prefix)
+            sccs = self._tarjan_scc(graph)
+            for scc_fq_names in sccs:
+                scc_lets = [decl_map[n] for n in scc_fq_names if n in decl_map]
+                if not scc_lets:
+                    continue
+                if len(scc_lets) == 1:
+                    self._check_let_decl(scc_lets[0], prefix)
+                else:
+                    self._check_mutual_scc(scc_lets, prefix)
+
+        # Handle instances and submodules in their original order.
+        for decl in decls:
+            if isinstance(decl, DeclInst):
                 self._check_instance(decl, prefix)
-
             elif isinstance(decl, DeclMod):
                 sub_prefix = f"{prefix}.{'.'.join(decl.name)}" if prefix else '.'.join(decl.name)
                 self._check_decls(decl.body, sub_prefix)

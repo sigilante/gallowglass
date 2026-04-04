@@ -506,6 +506,106 @@ def test_mod_block_type_registered():
 
 
 # ---------------------------------------------------------------------------
+# M9.4 — fix expressions
+# ---------------------------------------------------------------------------
+
+def test_fix_infers_recursive_nat():
+    """fix λ self n → ... : Nat → Nat"""
+    src = '''
+external mod Core.PLAN { inc : Nat → Nat }
+let countdown : Nat → Nat
+  = fix λ self n → match n { | 0 → 0 | k → self k }
+'''
+    s = ty_of(src, 'countdown')
+    assert isinstance(s.body, TArr)
+    assert isinstance(s.body.dom, TCon) and s.body.dom.name == 'Nat'
+    assert isinstance(s.body.cod, TCon) and s.body.cod.name == 'Nat'
+
+def test_fix_annotated_matches():
+    """Type annotation on a fix expression is accepted."""
+    src = '''
+let repeat : Nat → Nat → Nat
+  = fix λ self n m → match n { | 0 → 0 | k → m + self k m }
+'''
+    s = ty_of(src, 'repeat')
+    assert isinstance(s.body, TArr)
+    inner = s.body.cod
+    assert isinstance(inner, TArr)
+    assert isinstance(inner.dom, TCon) and inner.dom.name == 'Nat'
+    assert isinstance(inner.cod, TCon) and inner.cod.name == 'Nat'
+
+def test_fix_self_ref_type_unified():
+    """The self-reference type is unified with the fix result type, not the lambda type."""
+    src = 'let fn_id = fix λ self nn → nn'
+    s = ty_of(src, 'fn_id')
+    # fix λ self n → n : a → a  (polymorphic identity via recursion)
+    # The lambda type is (a→a)→(a→a); fix of that is a→a.
+    assert isinstance(s.body, TArr)
+    dom = s.body.dom
+    cod = s.body.cod
+    assert isinstance(dom, TBound) and isinstance(cod, TBound)
+    assert dom.name == cod.name
+
+def test_fix_wrong_self_usage():
+    """Applying self to a Bool when the recursive type is Nat→Nat is a type error."""
+    src = '''
+let bad_fn : Nat → Nat
+  = fix λ self nn → self True
+'''
+    check_error(src, 'cannot unify')
+
+
+# ---------------------------------------------------------------------------
+# M9.4 — mutual recursion SCC ordering
+# ---------------------------------------------------------------------------
+
+def test_mutual_annotated():
+    """Mutually recursive is_even / is_odd with explicit annotations type-check."""
+    src = '''
+type Bool2 = | Even | Odd
+let is_even : Nat → Bool
+  = λ n → match n { | 0 → True | k → is_odd k }
+let is_odd : Nat → Bool
+  = λ n → match n { | 0 → False | k → is_even k }
+'''
+    te = pipeline(src)
+    for name in ('Test.is_even', 'Test.is_odd'):
+        s = te[name]
+        assert isinstance(s.body, TArr)
+        assert isinstance(s.body.dom, TCon) and s.body.dom.name == 'Nat'
+        assert isinstance(s.body.cod, TCon) and s.body.cod.name == 'Bool'
+
+def test_mutual_unannotated_inferred():
+    """Mutually recursive add/zero without annotations are inferred as Nat→Nat."""
+    src = '''
+let my_add = λ n m → match n { | 0 → m | k → Core.PLAN.inc (my_add k m) }
+external mod Core.PLAN { inc : Nat → Nat }
+'''
+    te = pipeline(src)
+    s = te['Test.my_add']
+    assert isinstance(s.body, TArr)
+    assert isinstance(s.body.dom, TCon) and s.body.dom.name == 'Nat'
+
+def test_mutual_forward_ref():
+    """A let that references a later let is resolved via the pre-pass."""
+    src = '''
+let use_val : Nat = base_val + 1
+let base_val : Nat = 42
+'''
+    te = pipeline(src)
+    s = te['Test.use_val']
+    assert isinstance(s.body, TCon) and s.body.name == 'Nat'
+
+def test_mutual_type_error_propagates():
+    """A type error in one SCC member still raises TypecheckError."""
+    src = '''
+let fn1 : Bool → Nat = λ nn → fn2 nn
+let fn2 : Nat → Nat = λ nn → nn + 1
+'''
+    check_error(src, 'cannot unify')
+
+
+# ---------------------------------------------------------------------------
 # Run as script
 # ---------------------------------------------------------------------------
 
