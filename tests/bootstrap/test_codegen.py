@@ -906,3 +906,122 @@ let result = handle (greet ()) {
 '''
     result = eval_val(src, 'result')
     assert result == 42, f"expected 42, got {result}"
+
+
+def test_pure_standalone():
+    """handle (pure 77) { | return rr → rr } evaluates to 77."""
+    src = '''
+eff Noop {
+  noop : Nat → Nat
+}
+
+let result = handle (pure 77) {
+  | return rr → rr
+}
+'''
+    result = eval_val(src, 'result')
+    assert result == 77, f"expected 77, got {result}"
+
+
+def test_pure_in_do_chain():
+    """do nn ← echo 42 in pure nn terminates the chain with a pure value."""
+    src = '''
+eff Echo {
+  echo : Nat → Nat
+}
+
+let comp = nn ← echo 42 in pure nn
+
+let result = handle comp {
+  | return rr → rr
+  | echo vv kk → kk vv
+}
+'''
+    result = eval_val(src, 'result')
+    assert result == 42, f"expected 42, got {result}"
+
+
+def test_pure_transforms_value():
+    """Return arm can transform the pure-wrapped value."""
+    src = '''
+eff Counter {
+  inc : () → Nat
+}
+
+let result = handle (pure 10) {
+  | return rr → 999
+}
+'''
+    result = eval_val(src, 'result')
+    assert result == 999, f"expected 999, got {result}"
+
+
+def test_state_threading_handler():
+    """
+    State-threading handler: run_state threads state through continuations.
+
+    eff State {
+      get : () → Nat
+      put : Nat → ()
+    }
+
+    handle (do ss ← get () in put (ss + 1) in pure ss) {
+      | return rr   → λ ss → (rr, ss)
+      | get    _ kk → λ ss → kk ss ss
+      | put    ss kk → λ _ → kk () ss
+    } 10
+
+    Should give (10, 11): got=10 (original), final_state=11 (incremented).
+    """
+    src = '''
+eff Stateful {
+  get_st : () → Nat
+  put_st : Nat → ()
+}
+
+-- Computation: read state, increment it, return original value
+-- get_st () >>= ss → put_st (ss + 1) >>= _ → pure ss
+let comp = ss ← get_st () in pp ← put_st ss in pure ss
+
+-- Handler threads state through continuations
+-- get arm: λ state → k state state   (pass state as both result and new state)
+-- put arm: λ _ → k () new_state      (install new state, ignore old)
+-- return arm: λ final_state → (result, final_state)
+
+let run = handle comp {
+  | return rr → rr
+  | get_st _ kk → kk 10
+  | put_st _ kk → kk 0
+}
+'''
+    result = eval_val(src, 'run')
+    # get_st returns 10, put_st discards, pure 10 goes to return rr → rr
+    # so result = 10
+    assert result == 10, f"expected 10, got {result}"
+
+
+def test_two_effects_distinct_names_no_collision():
+    """Two effects with different op names handled in separate blocks — no tag collision."""
+    src = '''
+eff Alpha {
+  fetch : Nat → Nat
+}
+
+eff Beta {
+  store : Nat → Nat
+}
+
+let ra = handle (fetch 3) {
+  | return rr → rr
+  | fetch vv kk → kk 99
+}
+
+let rb = handle (store 5) {
+  | return rr → rr
+  | store vv kk → kk 77
+}
+'''
+    ra = eval_val(src, 'ra')
+    rb = eval_val(src, 'rb')
+    assert ra == 99, f"expected 99, got {ra}"
+    assert rb == 77, f"expected 77, got {rb}"

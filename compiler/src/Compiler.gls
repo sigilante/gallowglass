@@ -468,6 +468,7 @@ type Token =
   | TkExternal
   | TkMod
   | TkIn
+  | TkFix
   | TkLambda
   | TkForall
   | TkUnderscore
@@ -486,6 +487,7 @@ type Expr =
   | EIf Expr (Pair Expr Expr)       -- cond, (then_, else_)
   | EMatch Expr (List MatchArm)
   | EPin Nat (Pair Expr Expr)       -- name, (rhs, body)
+  | EFix Nat (Pair (List Nat) Expr)  -- self_name, (params, body)
 
 type MatchArm =
   | ArmNat Nat Expr
@@ -620,6 +622,7 @@ let kw_arrow_uni    : Nat = 0x9286E2           -- "→"  (E2 86 92)
 let kw_backarrow_uni: Nat = 0x9086E2           -- "←"  (E2 86 90)
 let kw_forall_uni   : Nat = 0x8088E2           -- "∀"  (E2 88 80)
 let kw_underscore   : Nat = 0x5F               -- "_"
+let kw_fix          : Nat = 0x786966           -- "fix"
 
 -- =====================================================================
 -- Section 12: LexPos Helpers
@@ -800,7 +803,11 @@ let lex_classify_ident : Nat → Nat → Token
                                                                   match (nat_eq ident_nat kw_forall_ascii) {
                                                                     | 0 →
                                                                         match (nat_eq ident_nat kw_underscore) {
-                                                                          | 0 → TkIdent ident_nat
+                                                                          | 0 →
+                                                                              match (nat_eq ident_nat kw_fix) {
+                                                                                | 0 → TkIdent ident_nat
+                                                                                | k → TkFix
+                                                                              }
                                                                           | k → TkUnderscore
                                                                         }
                                                                     | k → TkForall
@@ -1445,6 +1452,15 @@ let parse_lam_body_pe : (List Token → Pair Expr (List Token)) → List Nat →
         | MkPair body rest → MkPair (build_lambda params body) rest
       }
 
+-- parse_fix_body_pe: finish parsing fix expression body
+-- self_name: the self-reference name; params: user params; toks: positioned on →
+-- Produces EFix self_name (MkPair params body) rather than nested ELam
+let parse_fix_body_pe : (List Token → Pair Expr (List Token)) → Nat → List Nat → List Token → Pair Expr (List Token)
+  = λ pe self_name params toks →
+      match (pe (tok_tail toks)) {
+        | MkPair body rest → MkPair (EFix self_name (MkPair params body)) rest
+      }
+
 -- parse_if_else_pe: finish parsing if/then/else given cond and then_ parsed
 -- toks is positioned on 'else' keyword
 let parse_if_else_pe : (List Token → Pair Expr (List Token)) → Expr → Expr → List Token → Pair Expr (List Token)
@@ -1505,7 +1521,21 @@ let parse_expr_dispatch : (List Token → Pair Expr (List Token)) → List Token
                   match (tok_is toks TkLet) {
                     | 0 →
                         match (tok_is toks TkAt) {
-                          | 0 → parse_app_expr_pe pe toks
+                          | 0 →
+                              match (tok_is toks TkFix) {
+                                | 0 → parse_app_expr_pe pe toks
+                                | k →
+                                    -- fix λ self params → body
+                                    -- tok_tail twice: skip 'fix', skip 'λ'
+                                    match (tok_eat_ident (tok_tail (tok_tail toks))) {
+                                      | MkPair 0 _ → MkPair (EVar 0) toks
+                                      | MkPair self_name toks2 →
+                                          match (parse_lambda_params toks2) {
+                                            | MkPair params toks3 →
+                                                parse_fix_body_pe pe self_name params toks3
+                                          }
+                                    }
+                              }
                           | k →
                               match (tok_eat_ident (tok_tail toks)) {
                                 | MkPair 0 _ → MkPair (EVar 0) toks
@@ -1950,7 +1980,7 @@ let cg_build_constructor_body : Nat → Nat → PlanVal
 -- Layer 3a: Expr tag extractors and single-arm helpers
 -- -------------------------------------------------------------------
 
--- expr_tag: 0=EVar 1=EApp 2=ELam 3=ELet 4=ENat 5=EIf 6=EMatch 7=EPin
+-- expr_tag: 0=EVar 1=EApp 2=ELam 3=ELet 4=ENat 5=EIf 6=EMatch 7=EPin 8=EFix
 -- SAFE: all arms return constant nats (no outer param refs in bodies)
 let expr_tag : Expr → Nat
   = λ e →
@@ -1963,6 +1993,7 @@ let expr_tag : Expr → Nat
         | EIf _ _   → 5
         | EMatch _ _ → 6
         | EPin _ _  → 7
+        | EFix _ _  → 8
       }
 
 -- Per-constructor accessors (each: single App arm + wildcard — safe)
@@ -2010,6 +2041,12 @@ let cg_epin_name : Expr → Nat
 
 let cg_epin_pair : Expr → Pair Expr Expr
   = λ e → match e { | EPin _ p → p | _ → MkPair e e }
+
+let cg_efix_self : Expr → Nat
+  = λ e → match e { | EFix n _ → n | _ → 0 }
+
+let cg_efix_pair : Expr → Pair (List Nat) Expr
+  = λ e → match e { | EFix _ p → p | _ → MkPair Nil e }
 
 -- -------------------------------------------------------------------
 -- Layer 3b: MatchArm single-arm helpers
@@ -2171,15 +2208,28 @@ let cg_cf_dispatch : (Expr → List Nat → CEnv → List Nat → List Nat)
                                       | 0 →
                                           match (nat_eq (expr_tag expr) 6) {
                                             | 0 →
-                                                -- EPin: collect from rhs then body (name bound in body)
-                                                match expr {
-                                                  | EPin n pair →
-                                                      match pair {
-                                                        | MkPair rhs body →
-                                                            cf body (Cons n bound) env
-                                                              (cf rhs bound env acc)
+                                                match (nat_eq (expr_tag expr) 7) {
+                                                  | 0 →
+                                                      -- EFix (tag 8): body has self_name and all params bound
+                                                      match expr {
+                                                        | EFix self_n pair →
+                                                            match pair {
+                                                              | MkPair params body →
+                                                                  cf body (append params (Cons self_n bound)) env acc
+                                                            }
+                                                        | _ → acc
                                                       }
-                                                  | _ → acc
+                                                  | _ →
+                                                      -- EPin (tag 7): collect from rhs then body (name bound in body)
+                                                      match expr {
+                                                        | EPin n pair →
+                                                            match pair {
+                                                              | MkPair rhs body →
+                                                                  cf body (Cons n bound) env
+                                                                    (cf rhs bound env acc)
+                                                            }
+                                                        | _ → acc
+                                                      }
                                                 }
                                             | _ →
                                                 -- EMatch: collect from scrutinee + all arms
@@ -2319,16 +2369,29 @@ let cg_hv_dispatch : (Expr → Nat → Nat) → Expr → Nat → Nat
                                       | 0 →
                                           match (nat_eq (expr_tag expr) 6) {
                                             | 0 →
-                                                match expr {
-                                                  | EPin _ pair →
-                                                      match pair {
-                                                        | MkPair r b →
-                                                            match (hv r name) {
-                                                              | 0 → hv b name
-                                                              | _ → 1
+                                                match (nat_eq (expr_tag expr) 7) {
+                                                  | 0 →
+                                                      -- EFix (tag 8): check body (self_name and params are not free)
+                                                      match expr {
+                                                        | EFix _ pair →
+                                                            match pair {
+                                                              | MkPair _ body → hv body name
                                                             }
+                                                        | _ → 0
                                                       }
-                                                  | _ → 0
+                                                  | _ →
+                                                      -- EPin (tag 7)
+                                                      match expr {
+                                                        | EPin _ pair →
+                                                            match pair {
+                                                              | MkPair r b →
+                                                                  match (hv r name) {
+                                                                    | 0 → hv b name
+                                                                    | _ → 1
+                                                                  }
+                                                            }
+                                                        | _ → 0
+                                                      }
                                                 }
                                             | _ →
                                                 match expr {
@@ -3184,6 +3247,28 @@ let cg_compile_if : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat →
         | _ → PNat 0
       }
 
+-- cg_compile_fix: compile EFix (fix λ self params → body)
+-- Creates a law with arity = length(params). N(0) = self, N(1..n) = params.
+-- self_name is bound via cenv_self so cg_compile_var returns PNat 0 for it.
+let cg_compile_fix : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                   → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+  = λ expr env ctab hint ce →
+      match expr {
+        | EFix self_name p →
+            match p {
+              | MkPair params body →
+                  -- Start fresh: globals preserved, locals cleared, arity=0
+                  -- self_name goes into cenv_self so references to it become N(0)
+                  let g = cenv_globals env in
+                  let env0 = cenv_make g Nil 0 (Some self_name) in
+                  -- Bind each user param at N(1), N(2), ... via cenv_new_param
+                  let env1 = cg_bind_params params env0 in
+                  let body_val = ce body env1 ctab 0 in
+                  PLaw hint (MkPair (length params) body_val)
+            }
+        | _ → PNat 0
+      }
+
 -- cg_compile_match: compile EMatch
 let cg_compile_match : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
                      → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
@@ -3250,8 +3335,14 @@ let cg_compile_complex : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Na
                     | 0 →
                         match (nat_eq (expr_tag expr) 6) {
                           | 0 →
-                              -- EPin (tag 7)
-                              cg_compile_pin expr env ctab hint ce
+                              match (nat_eq (expr_tag expr) 7) {
+                                | 0 →
+                                    -- EFix (tag 8)
+                                    cg_compile_fix expr env ctab hint ce
+                                | _ →
+                                    -- EPin (tag 7)
+                                    cg_compile_pin expr env ctab hint ce
+                              }
                           | _ →
                               -- EMatch (tag 6)
                               cg_compile_match expr env ctab hint ce
@@ -3670,16 +3761,31 @@ let sr_dispatch
                                       | 0 →
                                           match (nat_eq (expr_tag expr) 6) {
                                             | 0 →
-                                                -- EPin (tag 7)
-                                                match expr {
-                                                  | EPin n p →
-                                                      match p {
-                                                        | MkPair rhs body →
-                                                            let rhs2  = pe rhs bound gtab in
-                                                            let body2 = pe body (Cons n bound) gtab in
-                                                            EPin n (MkPair rhs2 body2)
+                                                match (nat_eq (expr_tag expr) 7) {
+                                                  | 0 →
+                                                      -- EFix (tag 8): self_name and params are bound in body
+                                                      match expr {
+                                                        | EFix self_n p →
+                                                            match p {
+                                                              | MkPair params body →
+                                                                  let all_bound = append params (Cons self_n bound) in
+                                                                  let body2 = pe body all_bound gtab in
+                                                                  EFix self_n (MkPair params body2)
+                                                            }
+                                                        | _ → expr
                                                       }
-                                                  | _ → expr
+                                                  | _ →
+                                                      -- EPin (tag 7)
+                                                      match expr {
+                                                        | EPin n p →
+                                                            match p {
+                                                              | MkPair rhs body →
+                                                                  let rhs2  = pe rhs bound gtab in
+                                                                  let body2 = pe body (Cons n bound) gtab in
+                                                                  EPin n (MkPair rhs2 body2)
+                                                            }
+                                                        | _ → expr
+                                                      }
                                                 }
                                             | _ →
                                                 -- EMatch (tag 6)

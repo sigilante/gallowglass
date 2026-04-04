@@ -193,6 +193,11 @@ class Resolver:
             b = BindingCon(fq, ty, 0, Loc('<builtin>', 0, 0))
             self.env.bindings[fq] = b
             self.frames[0].bind(kw, fq)
+        # Pre-declare CPS builtins
+        # `pure v` wraps a pure value as a no-op CPS computation: λ dispatch k → k v
+        b_pure = BindingValue('pure', None, None, Loc('<builtin>', 0, 0))
+        self.env.bindings['pure'] = b_pure
+        self.frames[0].bind('pure', 'pure')
 
     # ------------------------------------------------------------------
     # Frame management
@@ -729,7 +734,15 @@ class Resolver:
             self._bind_in_top(arm.resume, arm.resume)
             body = self._resolve_expr(arm.body)
             self._pop_frame()
-            return HandlerOp(arm.once, arm.op_name, arm.arg_pats, arm.resume, body, arm.loc)
+            # Resolve op_name to its FQ form (e.g. "inc" → "Module.Counter.inc")
+            # so the codegen uses per-effect tag numbering rather than global short names.
+            # If resolution fails (e.g. the name is not a known effect op) keep the
+            # short name — the codegen will give a clearer error at compile time.
+            try:
+                fq_op_name = self._lookup_short(arm.op_name, arm.loc)
+            except Exception:
+                fq_op_name = arm.op_name
+            return HandlerOp(arm.once, fq_op_name, arm.arg_pats, arm.resume, body, arm.loc)
         return arm
 
     # ------------------------------------------------------------------

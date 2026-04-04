@@ -1,6 +1,6 @@
 # Test Strategy
 
-**Last updated:** M8.8 self-hosting validation (Path B complete)
+**Last updated:** M10.7 — GLS compiler EFix support; integration test battery (667 tests)
 
 This document describes the test architecture, what each layer verifies,
 and the known gap between what is tested and what is not.
@@ -26,7 +26,8 @@ lifting, etc.
 **Coverage:**
 - `tests/sanity/test_plan.py` — opcodes 0–4, law evaluation, Case_ dispatch
 - `tests/sanity/test_seed.py` — seed format round-trip
-- `tests/bootstrap/test_*.py` — lexer, parser, scope, typecheck, codegen (461 tests)
+- `tests/bootstrap/test_*.py` — lexer, parser, scope, typecheck, codegen (462 tests)
+- `tests/bootstrap/test_programs.py` — integration battery: Fibonacci (self-recursive + fix), Ackermann, Sudan, even/odd (20 tests)
 
 **Limitation:** The harness is our own implementation of PLAN semantics. If the
 harness and the real planvm disagree on semantics (evaluation order, edge cases),

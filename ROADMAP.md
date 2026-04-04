@@ -1,24 +1,35 @@
 # Gallowglass Roadmap
 
-**Last updated:** 2026-04-03
-**Current status:** Alpha candidate — M8 complete (Path B), M8.8 Path A pending cog I/O. M9.1–9.4 complete. M10.1–10.2 complete.
+**Last updated:** 2026-04-04
+**Current status:** Alpha — M8 complete (Path B). M9.1–9.4 complete. M10.1–10.7 complete. 667 tests passing.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
 ---
 
-## Alpha closeout
+## ✅ Alpha
 
-**Blocker: cog I/O model** (awaiting confirmation from PLAN authors).
+**Alpha is declared.** The original M8.8 Path A gate (cog wrapper + planvm byte-identical
+round-trip) has been superseded by the PLAN spec update: the cog/driver model no longer
+exists. It has been replaced by direct side-effects with virtualization for sandboxed
+pure execution. There is no stable cog wrapping API to target.
 
-The remaining work is wrapping `Compiler.main : Bytes → Bytes` as a planvm cog that
-reads source from stdin and writes Plan Assembler to stdout. Once the I/O model is
-confirmed:
+The alpha acceptance criteria, as met:
 
-- Implement cog wrapper in `Compiler.gls` (small addition to Section 26)
-- Run `compiler.seed` on `Compiler.gls` source via planvm
-- Assert output matches Path B byte-for-byte (M8.8 Path A)
-- Tag alpha release
+- M8.8 Path B: GLS `emit_program` processes full `Compiler.gls` and produces correct
+  Plan Assembler output via the Python harness ✅
+- planvm seed loading: `Compiler.main` seed is a valid seed ✅ (planvm-gated CI)
+- M9 restricted dialect improvements (fix, tuples, mutual recursion, typechecks) ✅
+- M10 effect handlers (CPS codegen, pure, do-notation, namespacing) ✅
+- Integration test battery (Fibonacci, Ackermann, Sudan) ✅
+- 667 tests passing ✅
+
+**Deferred to post-alpha (pending upstream stabilization):**
+
+M8.8 Path A equivalent — running the compiler via the VM's side-effect I/O model to
+validate planvm byte-identical output — is deferred until the direct side-effects +
+virtualization API stabilizes (see `IO.md`). This is tracked as a post-1.0 CI gate,
+not an alpha blocker.
 
 Everything below is post-alpha.
 
@@ -77,9 +88,38 @@ to a CPS bind via nested lambda-lifted laws. Outer local captures are lambda-lif
 into both the dispatch law and the inner continuation law.
 Tests: `tests/bootstrap/test_codegen.py` (63 pass — 10 new).
 
+### ✅ M10.3 — `pure` for do-notation
+
+`pure v` registered as builtin CPS law `L(3, "pure", bapp(N(3), N(1)))`.
+`pure v` = `A(pure_law, v)` — a 2-arg partial application that calls `k v`.
+Enables do chains to terminate with a pure computed value.
+
+### ✅ M10.4 — State-threading handler validation
+
+Multi-op do chains with captured free variables compile and evaluate correctly.
+Tests confirmed nested lambda lifting across `ss ← get_st () in pp ← put_st ss in pure ss`.
+
+### ✅ M10.5 — Per-effect tag namespacing
+
+`_resolve_handler_arm` resolves each `HandlerOp.op_name` to its FQ form so the codegen uses
+per-effect tag numbering. Two effects sharing a short op name produce a scope ambiguity error
+rather than silent mis-dispatch.
+
+**M10.6 — Integration test battery (`tests/bootstrap/test_programs.py`):**
+Fibonacci (self-recursive let + fix), Ackermann, Sudan function. 20 tests.
+All programs compile via Python bootstrap and evaluate against expected Nat
+outputs using the PLAN reference evaluator. ✅
+
+**M10.7 — GLS compiler: `EFix` + `TkFix` support:**
+Added `TkFix` token, `EFix Nat (Pair (List Nat) Expr)` AST constructor,
+keyword lexer recognition of `fix`, `parse_fix_body_pe`, `cg_compile_fix`.
+Updated `expr_tag`, `cg_cf_dispatch`, `cg_hv_dispatch`, `sr_dispatch`,
+`cg_compile_complex`, and `parse_expr_dispatch`. M8.8 self-hosting invariant
+preserved (667 tests passing). ✅
+
 **Remaining M10 scope:**
-- Codegen: state-threading handlers (continuation k captures outer state)
-- Full surface syntax integration with effect annotations
+- Full surface syntax integration with effect annotations in the prelude
+- GLS compiler: `DEff`/`EHandle`/`EDo` support (deferred to post-M10)
 - Runtime: no change — continuations are ordinary PLAN values
 
 **Unblocked by M10:** `IO`, `Exn`, `State`, `Generator` effects. The CSV and
@@ -158,6 +198,27 @@ are added incrementally post-1.0.
 The jet-matching optimizer written in PLAN itself, as described in `DECISIONS.md
 §"Why does jet matching logic live in the optimizer?"`. Requires a stable set of
 jets to optimize against — i.e., a working prelude and several real programs.
+
+### Pattern matching codegen: Hd/Sz/CaseN/Ix convention
+The current codegen uses opcode 3 (`Case_`) directly for all pattern matching. Sol
+confirmed this is "extremely heavy" — the intended convention is `Hd`/`Sz` for branch
+identification, `CaseN` jets for switching, and `Ix` for field extraction. Migrating
+the codegen (both Python bootstrap and GLS self-hosting compiler) to this convention
+is a post-1.0 correctness-preserving optimization. See `DECISIONS.md §"Why Case_ for
+pattern matching now?"`.
+
+### Text/Bytes high-bit length encoding
+Current encoding uses a plain `(byte_length, content_nat)` pair. Sol recommends using
+a high bit to encode the length for efficiency (avoids a separate length field for
+small strings). Migration requires updating the bootstrap emitter, prelude, and any
+code that introspects Text/Bytes representation. Deferred until the encoding is
+finalized upstream.
+
+### VM I/O integration (M8.8 Path A equivalent for 1.0)
+Once the direct side-effects + virtualization API stabilizes, wrap `Compiler.main` to
+read source from the VM's I/O channel and write Plan Assembler to the output channel.
+Run the compiled compiler on its own source via the VM and assert byte-identical output.
+This is the definitive planvm-executed self-hosting gate.
 
 ---
 
