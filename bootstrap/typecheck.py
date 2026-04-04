@@ -29,6 +29,7 @@ from bootstrap.ast import (
     PatWild, PatVar, PatCon, PatNat, PatText, PatTuple, PatList,
     PatCons, PatAs, PatOr,
     ExprVar, ExprApp, ExprLam, ExprLet, ExprMatch, ExprHandle,
+    HandlerReturn, HandlerOp,
     ExprIf, ExprTuple, ExprList, ExprNat, ExprText, ExprRawText,
     ExprBytes, ExprHexBytes, ExprUnit, ExprPin, ExprDo, ExprFix,
     ExprOp, ExprUnary, ExprAnn, ExprWith, ExprRecord, ExprRecordUpdate,
@@ -77,6 +78,33 @@ class TApp:
 class TTup:
     """Tuple type: (a, b, c). len(elems) >= 2."""
     elems: list  # list[MonoType]
+
+
+@dataclass
+class TRow:
+    """Effect row: flat dict of named effects plus an optional open tail.
+
+    effects: dict[str, list[MonoType]]  — effect_name → list of type args
+             e.g. {'IO': [], 'Exn': [io_error_ty], 'State': [int_ty]}
+    tail: TMeta | None  — open row variable; None = closed row
+
+    The tail variable is a unification meta that ranges over "whatever other
+    effects the caller operates in." Row unification distributes excess effects
+    into each side's tail (see spec/05-type-system.md §4.3).
+    """
+    effects: dict  # str → list[MonoType]
+    tail: Any      # TMeta | None
+
+
+@dataclass
+class TComp:
+    """Computation type: {row} T — a value of type T with an effect row.
+
+    Appears as the return type of effectful functions and effect operations.
+    Eliminated by `handle` expressions (which remove one effect from the row).
+    """
+    row: Any  # TRow
+    ty: Any   # MonoType (value type)
 
 
 @dataclass
@@ -132,6 +160,20 @@ def _pp(ty: Any, checker: 'TypeChecker') -> str:
         return f"{f_} {a_pp}"
     elif isinstance(ty, TTup):
         return "(" + ", ".join(_pp(e, checker) for e in ty.elems) + ")"
+    elif isinstance(ty, TRow):
+        parts = []
+        for name in sorted(ty.effects.keys()):
+            args = ty.effects[name]
+            if args:
+                parts.append(name + ' ' + ' '.join(_pp(a, checker) for a in args))
+            else:
+                parts.append(name)
+        inner = ', '.join(parts) if parts else '∅'
+        if ty.tail is not None:
+            inner += ' | ' + _pp(ty.tail, checker)
+        return '{' + inner + '}'
+    elif isinstance(ty, TComp):
+        return _pp(ty.row, checker) + ' ' + _pp(ty.ty, checker)
     return repr(ty)
 
 
@@ -163,6 +205,10 @@ class TypeChecker:
         self._counter += 1
         return m
 
+    def fresh_row(self) -> TRow:
+        """Create an open row with no explicit effects and a fresh tail variable."""
+        return TRow({}, self.fresh())
+
     def deref(self, ty: Any) -> Any:
         """Chase TMeta links (no path compression for simplicity)."""
         while isinstance(ty, TMeta) and ty.ref is not None:
@@ -185,7 +231,41 @@ class TypeChecker:
             return self._occurs(meta, ty.fun) or self._occurs(meta, ty.arg)
         elif isinstance(ty, TTup):
             return any(self._occurs(meta, e) for e in ty.elems)
+        elif isinstance(ty, TRow):
+            if any(self._occurs(meta, a) for args in ty.effects.values() for a in args):
+                return True
+            return ty.tail is not None and self._occurs(meta, ty.tail)
+        elif isinstance(ty, TComp):
+            return self._occurs(meta, ty.row) or self._occurs(meta, ty.ty)
         return False
+
+    def _flatten_row(self, row: Any) -> tuple:
+        """Chase tail pointers and return (effects_dict, tail_meta_or_None).
+
+        Merges chained TRow values into a single flat dict.  The returned
+        tail is either None (closed) or a TMeta that hasn't been resolved yet.
+        """
+        row = self.deref(row)
+        if isinstance(row, TMeta):
+            return {}, row      # unknown open row
+        if not isinstance(row, TRow):
+            return {}, None     # shouldn't happen; treat as closed
+        effects: dict = dict(row.effects)
+        tail = row.tail
+        while tail is not None:
+            d = self.deref(tail)
+            if isinstance(d, TMeta):
+                tail = d
+                break
+            if not isinstance(d, TRow):
+                tail = None
+                break
+            # Merge effects (first-seen wins; duplicates unified at the call site)
+            for k, v in d.effects.items():
+                if k not in effects:
+                    effects[k] = v
+            tail = d.tail
+        return effects, tail
 
     def unify(self, t1: Any, t2: Any, loc: Loc) -> None:
         t1 = self.deref(t1)
@@ -234,6 +314,78 @@ class TypeChecker:
                     f"cannot unify bound vars '{t1.name}' and '{t2.name}'", loc)
             return
 
+        # ---- Effect row unification (spec/05-type-system.md §4.3) ----
+        if isinstance(t1, TRow) or isinstance(t2, TRow):
+            # Promote a TMeta to an open row if needed (handles row-var meta)
+            if not isinstance(t1, TRow):
+                raise TypecheckError(
+                    f"cannot unify row '{_pp(t2, self)}' with type '{_pp(t1, self)}'", loc)
+            if not isinstance(t2, TRow):
+                raise TypecheckError(
+                    f"cannot unify row '{_pp(t1, self)}' with type '{_pp(t2, self)}'", loc)
+            e1, tail1 = self._flatten_row(t1)
+            e2, tail2 = self._flatten_row(t2)
+            common = set(e1.keys()) & set(e2.keys())
+            only1 = {k: v for k, v in e1.items() if k not in e2}   # in t1 not t2
+            only2 = {k: v for k, v in e2.items() if k not in e1}   # in t2 not t1
+            # Unify type args for shared effects
+            for name in common:
+                args1, args2 = e1[name], e2[name]
+                if len(args1) != len(args2):
+                    raise TypecheckError(
+                        f"effect '{name}': argument arity mismatch", loc)
+                for a1, a2 in zip(args1, args2):
+                    self.unify(a1, a2, loc)
+            if only1 or only2:
+                # Asymmetric: excess effects flow into the other side's tail
+                fresh_shared = self.fresh()
+                if only2:
+                    if tail1 is None:
+                        raise TypecheckError(
+                            f"closed effect row missing: {', '.join(sorted(only2))}", loc)
+                    self.unify(tail1, TRow(only2, fresh_shared), loc)
+                else:
+                    # only1 non-empty, only2 empty
+                    if tail1 is None:
+                        pass  # t1 closed and has everything t2 has — tails below
+                    else:
+                        self.unify(tail1, TRow(only2, fresh_shared), loc)
+                if only1:
+                    if tail2 is None:
+                        raise TypecheckError(
+                            f"closed effect row missing: {', '.join(sorted(only1))}", loc)
+                    self.unify(tail2, TRow(only1, fresh_shared), loc)
+                else:
+                    if tail2 is None:
+                        pass
+                    else:
+                        self.unify(tail2, TRow(only1, fresh_shared), loc)
+            else:
+                # Same explicit effects; unify tails directly
+                if tail1 is None and tail2 is None:
+                    pass
+                elif tail1 is None:
+                    self.unify(tail2, TRow({}, None), loc)
+                elif tail2 is None:
+                    self.unify(tail1, TRow({}, None), loc)
+                else:
+                    self.unify(tail1, tail2, loc)
+            return
+
+        # ---- Computation type unification ----
+        if isinstance(t1, TComp) and isinstance(t2, TComp):
+            self.unify(t1.row, t2.row, loc)
+            self.unify(t1.ty, t2.ty, loc)
+            return
+        # Permissive: TComp vs plain type — extract the value type only.
+        # Effects in non-handle positions are not enforced in the bootstrap.
+        if isinstance(t1, TComp) and not isinstance(t2, TComp):
+            self.unify(t1.ty, t2, loc)
+            return
+        if isinstance(t2, TComp) and not isinstance(t1, TComp):
+            self.unify(t1, t2.ty, loc)
+            return
+
         raise TypecheckError(
             f"cannot unify '{_pp(t1, self)}' with '{_pp(t2, self)}'", loc)
 
@@ -261,6 +413,16 @@ class TypeChecker:
             for e in ty.elems:
                 result |= self._free_metas(e, seen)
             return result
+        elif isinstance(ty, TRow):
+            result = set()
+            for args in ty.effects.values():
+                for a in args:
+                    result |= self._free_metas(a, seen)
+            if ty.tail is not None:
+                result |= self._free_metas(ty.tail, seen)
+            return result
+        elif isinstance(ty, TComp):
+            return self._free_metas(ty.row, seen) | self._free_metas(ty.ty, seen)
         return set()
 
     def _free_metas_in_lenv(self, lenv: dict[str, Scheme]) -> set[int]:
@@ -280,6 +442,18 @@ class TypeChecker:
             return TApp(self._zonk(ty.fun), self._zonk(ty.arg))
         elif isinstance(ty, TTup):
             return TTup([self._zonk(e) for e in ty.elems])
+        elif isinstance(ty, TRow):
+            zonked = {k: [self._zonk(a) for a in v] for k, v in ty.effects.items()}
+            tail = self._zonk(ty.tail) if ty.tail is not None else None
+            # If tail resolved to another TRow, flatten it in
+            if isinstance(tail, TRow):
+                for k, v in tail.effects.items():
+                    if k not in zonked:
+                        zonked[k] = v
+                tail = tail.tail
+            return TRow(zonked, tail)
+        elif isinstance(ty, TComp):
+            return TComp(self._zonk(ty.row), self._zonk(ty.ty))
         return ty
 
     def _generalize(self, lenv: dict[str, Scheme], ty: Any) -> Scheme:
@@ -315,6 +489,14 @@ class TypeChecker:
                 self._replace_metas(ty.arg, meta_to_name))
         elif isinstance(ty, TTup):
             return TTup([self._replace_metas(e, meta_to_name) for e in ty.elems])
+        elif isinstance(ty, TRow):
+            new_effects = {k: [self._replace_metas(a, meta_to_name) for a in v]
+                           for k, v in ty.effects.items()}
+            new_tail = self._replace_metas(ty.tail, meta_to_name) if ty.tail is not None else None
+            return TRow(new_effects, new_tail)
+        elif isinstance(ty, TComp):
+            return TComp(self._replace_metas(ty.row, meta_to_name),
+                         self._replace_metas(ty.ty, meta_to_name))
         return ty
 
     def _instantiate(self, scheme: Scheme) -> Any:
@@ -339,6 +521,14 @@ class TypeChecker:
                 self._replace_bounds(ty.arg, sub))
         elif isinstance(ty, TTup):
             return TTup([self._replace_bounds(e, sub) for e in ty.elems])
+        elif isinstance(ty, TRow):
+            new_effects = {k: [self._replace_bounds(a, sub) for a in v]
+                           for k, v in ty.effects.items()}
+            new_tail = self._replace_bounds(ty.tail, sub) if ty.tail is not None else None
+            return TRow(new_effects, new_tail)
+        elif isinstance(ty, TComp):
+            return TComp(self._replace_bounds(ty.row, sub),
+                         self._replace_bounds(ty.ty, sub))
         return ty
 
     # ------------------------------------------------------------------ #
@@ -363,7 +553,14 @@ class TypeChecker:
                 inner = t.body
                 walk(inner)
             elif isinstance(t, TyEffect):
-                walk(t.ty)  # ignore effect row
+                walk(t.ty)
+                # Also collect type args within the effect row entries
+                for _name, args in t.row.entries:
+                    for arg in args:
+                        walk(arg)
+                # Row variables (r–z) participate in generalization too
+                if t.row.row_var and t.row.row_var not in seen:
+                    seen.append(t.row.row_var)
             elif isinstance(t, AstTyTuple):
                 for e in t.elems: walk(e)
             elif isinstance(t, TyRecord):
@@ -402,7 +599,21 @@ class TypeChecker:
                 new_bound[v] = TBound(v)
             return self.ast_to_mono(ty.body, new_bound)
         if isinstance(ty, TyEffect):
-            return self.ast_to_mono(ty.ty, bound)  # ignore effect
+            # Convert effect row to TRow, wrap return type in TComp
+            row_effects: dict = {}
+            for eff_name, eff_args in ty.row.entries:
+                row_effects[eff_name] = [self.ast_to_mono(a, bound) for a in eff_args]
+            if ty.row.row_var is not None:
+                rv = ty.row.row_var
+                if rv in bound:
+                    tail = bound[rv]
+                else:
+                    tail = self.fresh()
+                    bound[rv] = tail
+            else:
+                tail = None
+            row = TRow(row_effects, tail)
+            return TComp(row, self.ast_to_mono(ty.ty, bound))
         if isinstance(ty, AstTyTuple):
             return TTup([self.ast_to_mono(e, bound) for e in ty.elems])
         if isinstance(ty, TyRecord):
@@ -526,6 +737,43 @@ class TypeChecker:
                 self.type_env[fq_m] = scheme
                 methods[member.name] = scheme
         self.class_methods[fq_cls] = methods
+
+    def _register_decl_eff(self, fq_prefix: str, decl: DeclEff) -> None:
+        """Register effect operations from a DeclEff.
+
+        For `eff State s { get : ⊤ → s; put : s → ⊤ }`, each operation
+        is registered as a function whose return type is a TComp carrying the
+        effect in its row.  Row variable `r` is added so callers can compose
+        the effect with other effects in their context.
+
+          State.get : ∀ s r. ⊤ → {State s | r} s
+          State.put : ∀ s r. s → {State s | r} ⊤
+        """
+        fq_eff = f"{fq_prefix}.{decl.name}" if fq_prefix else decl.name
+        # Build a bound map for the effect's own type params
+        param_bounds = {p: TBound(p) for p in decl.params}
+        # Effect type args in the row: list of TBound for each param
+        eff_args = [param_bounds[p] for p in decl.params]
+        # Row variable for openness
+        row_var = TBound('r') if 'r' not in param_bounds else TBound('r_')
+        row_var_name = 'r' if 'r' not in param_bounds else 'r_'
+        for op in decl.ops:
+            fq_op = f"{fq_eff}.{op.name}"
+            # Parse op type: A → B  (caller perspective)
+            # Result: A → {Eff args | r} B
+            op_mono = self.ast_to_mono(op.ty, dict(param_bounds))
+            # op_mono should be TArr(arg_ty, ret_ty) or just ret_ty (nullary)
+            if isinstance(op_mono, TArr):
+                arg_ty = op_mono.dom
+                ret_ty = op_mono.cod
+            else:
+                arg_ty = TCon('⊤')
+                ret_ty = op_mono
+            eff_row = TRow({decl.name: eff_args}, row_var)
+            op_return = TComp(eff_row, ret_ty)
+            full_ty = TArr(arg_ty, op_return)
+            all_vars = list(decl.params) + [row_var_name]
+            self.type_env[fq_op] = Scheme(all_vars, full_ty)
 
     def _register_decl_ext(self, decl: DeclExt) -> None:
         """Register external mod items."""
@@ -767,10 +1015,68 @@ class TypeChecker:
             return self.infer(lenv2, expr.body)
 
         if isinstance(expr, ExprFix):
-            return self.infer(lenv, expr.lam)
+            # fix (λ self args → body) : T
+            # The lambda has type T → T (self-ref in, T out).
+            t = self.fresh()
+            lam_ty = self.infer(lenv, expr.lam)
+            self.unify(lam_ty, TArr(t, t), expr.loc)
+            return t
 
         if isinstance(expr, ExprHandle):
-            return self.infer(lenv, expr.comp)
+            # handle computation { | return x → e_r | op args k → e_op ... }
+            # Typing (spec/05-type-system.md §5.1):
+            #   computation : {E, R} α
+            #   return arm:  x : α  ⊢  e_r : β
+            #   op arms:  args : A_i,  k : B_i → {R} β  ⊢  e_op : {R} β
+            #   result type: {R} β
+            alpha = self.fresh()                     # computation value type
+            beta = self.fresh()                      # handler result type
+            residual_row = self.fresh_row()          # R: residual effect row
+
+            # Infer computation; unify its value type with alpha
+            comp_ty = self.infer(lenv, expr.comp)
+            comp_row = self.fresh_row()
+            self.unify(comp_ty, TComp(comp_row, alpha), expr.loc)
+
+            for arm in expr.arms:
+                if isinstance(arm, HandlerReturn):
+                    # | return x → body: x : alpha, body : beta
+                    pat_ty, pat_b = self.infer_pat(arm.pattern, lenv)
+                    self.unify(pat_ty, alpha, arm.loc)
+                    body_ty = self.infer({**lenv, **pat_b}, arm.body)
+                    self.unify(body_ty, beta, arm.loc)
+
+                elif isinstance(arm, HandlerOp):
+                    # Look up the operation to get its argument and return types
+                    op_fq = str(arm.op_name)
+                    if op_fq in self.type_env:
+                        op_ty = self._instantiate(self.type_env[op_fq])
+                        # op_ty: A → {E | r} B  →  arg_ty=A, op_ret_val=B
+                        op_arg_ty = self.fresh()
+                        op_ret = self.fresh()
+                        self.unify(op_ty, TArr(op_arg_ty, op_ret), arm.loc)
+                        op_ret_val = self.fresh()
+                        self.unify(op_ret, TComp(self.fresh_row(), op_ret_val), arm.loc)
+                    else:
+                        op_arg_ty = self.fresh()
+                        op_ret_val = self.fresh()
+
+                    # Bind arg patterns — for simplicity, bind each to op_arg_ty
+                    lenv2 = dict(lenv)
+                    for arg_pat in arm.arg_pats:
+                        pt, pb = self.infer_pat(arg_pat, lenv2)
+                        self.unify(pt, op_arg_ty, arm.loc)
+                        lenv2.update(pb)
+
+                    # Continuation k : op_ret_val → {R} β
+                    k_ty = TArr(op_ret_val, TComp(residual_row, beta))
+                    lenv2[arm.resume] = Scheme([], k_ty)
+
+                    # Body : {R} β
+                    body_ty = self.infer(lenv2, arm.body)
+                    self.unify(body_ty, TComp(residual_row, beta), arm.loc)
+
+            return TComp(residual_row, beta)
 
         # Fall-through: return fresh meta for unhandled nodes
         return self.fresh()
@@ -798,6 +1104,8 @@ class TypeChecker:
                 self.type_arity[fq] = len(decl.params)
             elif isinstance(decl, DeclExt):
                 self._register_decl_ext(decl)
+            elif isinstance(decl, DeclEff):
+                self._register_decl_eff(prefix, decl)
             elif isinstance(decl, DeclClass):
                 self._register_decl_class(prefix, decl)
             elif isinstance(decl, DeclMod):
@@ -817,25 +1125,185 @@ class TypeChecker:
                 sub_prefix = f"{prefix}.{'.'.join(decl.name)}" if prefix else '.'.join(decl.name)
                 self._prepass_lets(decl.body, sub_prefix)
 
-    def _check_decls(self, decls: list[Any], prefix: str) -> None:
-        """Main pass: infer bodies and unify/generalize."""
+    # ------------------------------------------------------------------ #
+    # Dependency graph and SCC detection (for ordered checking)            #
+    # ------------------------------------------------------------------ #
+
+    def _collect_expr_refs(self, expr: Any, into: set) -> None:
+        """Walk an expression and collect all ExprVar name strings into `into`."""
+        if isinstance(expr, ExprVar):
+            into.add(str(expr.name))
+        elif isinstance(expr, ExprApp):
+            self._collect_expr_refs(expr.fun, into)
+            self._collect_expr_refs(expr.arg, into)
+        elif isinstance(expr, ExprLam):
+            self._collect_expr_refs(expr.body, into)
+        elif isinstance(expr, ExprLet):
+            self._collect_expr_refs(expr.rhs, into)
+            self._collect_expr_refs(expr.body, into)
+        elif isinstance(expr, ExprPin):
+            self._collect_expr_refs(expr.rhs, into)
+            self._collect_expr_refs(expr.body, into)
+        elif isinstance(expr, ExprMatch):
+            self._collect_expr_refs(expr.scrutinee, into)
+            for _pat, guard, body in expr.arms:
+                if guard is not None:
+                    self._collect_expr_refs(guard, into)
+                self._collect_expr_refs(body, into)
+        elif isinstance(expr, ExprIf):
+            self._collect_expr_refs(expr.cond, into)
+            self._collect_expr_refs(expr.then_, into)
+            self._collect_expr_refs(expr.else_, into)
+        elif isinstance(expr, ExprTuple):
+            for e in expr.elems:
+                self._collect_expr_refs(e, into)
+        elif isinstance(expr, ExprList):
+            for e in expr.elems:
+                self._collect_expr_refs(e, into)
+        elif isinstance(expr, ExprFix):
+            self._collect_expr_refs(expr.lam, into)
+        elif isinstance(expr, ExprOp):
+            self._collect_expr_refs(expr.lhs, into)
+            self._collect_expr_refs(expr.rhs, into)
+        elif isinstance(expr, ExprUnary):
+            self._collect_expr_refs(expr.operand, into)
+        elif isinstance(expr, ExprAnn):
+            self._collect_expr_refs(expr.expr, into)
+        elif isinstance(expr, ExprDo):
+            self._collect_expr_refs(expr.rhs, into)
+            self._collect_expr_refs(expr.body, into)
+        elif isinstance(expr, ExprHandle):
+            self._collect_expr_refs(expr.comp, into)
+            for arm in expr.arms:
+                if isinstance(arm, HandlerReturn):
+                    self._collect_expr_refs(arm.body, into)
+                elif isinstance(arm, HandlerOp):
+                    self._collect_expr_refs(arm.body, into)
+        elif isinstance(expr, ExprWith):
+            self._collect_expr_refs(expr.expr, into)
+        elif isinstance(expr, ExprRecord):
+            for _, v in expr.fields:
+                self._collect_expr_refs(v, into)
+        elif isinstance(expr, ExprRecordUpdate):
+            self._collect_expr_refs(expr.base, into)
+            for _, v in expr.fields:
+                self._collect_expr_refs(v, into)
+
+    def _build_dep_graph(self, let_decls: list, prefix: str) -> dict:
+        """Build a forward-reference dependency graph among DeclLets in this scope."""
+        fq_set = {f'{prefix}.{d.name}' for d in let_decls}
+        graph: dict = {}
+        for d in let_decls:
+            fq = f'{prefix}.{d.name}'
+            refs: set = set()
+            self._collect_expr_refs(d.body, refs)
+            fq_refs: set = set()
+            for r in refs:
+                if r in fq_set:
+                    fq_refs.add(r)
+                candidate = f'{prefix}.{r}'
+                if candidate in fq_set:
+                    fq_refs.add(candidate)
+            graph[fq] = fq_refs & fq_set
+        return graph
+
+    def _tarjan_scc(self, graph: dict) -> list:
+        """Tarjan's SCC algorithm. Returns SCCs in topological order (deps first).
+        Within each SCC names are sorted lexicographically."""
+        index_counter = [0]
+        index: dict = {}
+        lowlink: dict = {}
+        on_stack: set = set()
+        stack: list = []
+        sccs: list = []
+
+        def strongconnect(v: str) -> None:
+            index[v] = index_counter[0]
+            lowlink[v] = index_counter[0]
+            index_counter[0] += 1
+            stack.append(v)
+            on_stack.add(v)
+            for w in graph.get(v, set()):
+                if w not in index:
+                    strongconnect(w)
+                    lowlink[v] = min(lowlink[v], lowlink[w])
+                elif w in on_stack:
+                    lowlink[v] = min(lowlink[v], index[w])
+            if lowlink[v] == index[v]:
+                scc: list = []
+                while True:
+                    w = stack.pop()
+                    on_stack.discard(w)
+                    scc.append(w)
+                    if w == v:
+                        break
+                sccs.append(sorted(scc))
+
+        for v in sorted(graph.keys()):
+            if v not in index:
+                strongconnect(v)
+
+        return sccs  # topological order: dependencies before dependents
+
+    # ------------------------------------------------------------------ #
+    # Per-decl and per-SCC checking                                        #
+    # ------------------------------------------------------------------ #
+
+    def _check_let_decl(self, decl: Any, prefix: str) -> None:
+        """Type-check a single DeclLet, then generalize if unannotated."""
+        fq = f"{prefix}.{decl.name}" if prefix else decl.name
+        expected = self.type_env.get(fq, Scheme([], self.fresh()))
+        expected_mono = self._instantiate(expected)
+        body_ty = self.infer({}, decl.body)
+        self.unify(expected_mono, body_ty, decl.loc)
+        if decl.type_ann is None:
+            self.type_env[fq] = self._generalize({}, expected_mono)
+
+    def _check_mutual_scc(self, decls: list, prefix: str) -> None:
+        """Type-check a mutually recursive SCC.
+
+        All bodies are checked before any generalization so that provisional
+        unification variables are not prematurely closed over.
+        """
+        # Phase 1: instantiate all provisional types and check bodies.
+        fq_to_mono: dict = {}
         for decl in decls:
-            if isinstance(decl, DeclLet):
-                fq = f"{prefix}.{decl.name}" if prefix else decl.name
-                expected = self.type_env.get(fq, Scheme([], self.fresh()))
-                expected_mono = self._instantiate(expected)
+            fq = f"{prefix}.{decl.name}" if prefix else decl.name
+            expected = self.type_env.get(fq, Scheme([], self.fresh()))
+            fq_to_mono[fq] = self._instantiate(expected)
 
-                # Infer the body in an empty local env (top-level)
-                body_ty = self.infer({}, decl.body)
-                self.unify(expected_mono, body_ty, decl.loc)
+        for decl in decls:
+            fq = f"{prefix}.{decl.name}" if prefix else decl.name
+            body_ty = self.infer({}, decl.body)
+            self.unify(fq_to_mono[fq], body_ty, decl.loc)
 
-                # Generalize if unannotated
-                if decl.type_ann is None:
-                    self.type_env[fq] = self._generalize({}, expected_mono)
+        # Phase 2: generalize unannotated members (all at once).
+        for decl in decls:
+            fq = f"{prefix}.{decl.name}" if prefix else decl.name
+            if decl.type_ann is None:
+                self.type_env[fq] = self._generalize({}, fq_to_mono[fq])
 
-            elif isinstance(decl, DeclInst):
+    def _check_decls(self, decls: list[Any], prefix: str) -> None:
+        """Main pass: infer bodies and unify/generalize, respecting SCC order."""
+        # Collect let decls and process them in SCC (topological) order.
+        let_decls = [d for d in decls if isinstance(d, DeclLet)]
+        if let_decls:
+            decl_map = {f'{prefix}.{d.name}': d for d in let_decls}
+            graph = self._build_dep_graph(let_decls, prefix)
+            sccs = self._tarjan_scc(graph)
+            for scc_fq_names in sccs:
+                scc_lets = [decl_map[n] for n in scc_fq_names if n in decl_map]
+                if not scc_lets:
+                    continue
+                if len(scc_lets) == 1:
+                    self._check_let_decl(scc_lets[0], prefix)
+                else:
+                    self._check_mutual_scc(scc_lets, prefix)
+
+        # Handle instances and submodules in their original order.
+        for decl in decls:
+            if isinstance(decl, DeclInst):
                 self._check_instance(decl, prefix)
-
             elif isinstance(decl, DeclMod):
                 sub_prefix = f"{prefix}.{'.'.join(decl.name)}" if prefix else '.'.join(decl.name)
                 self._check_decls(decl.body, sub_prefix)

@@ -221,6 +221,26 @@ Canonical SCC ordering: lexicographic by FQ name (consistent with PinId stabilit
 
 Tests: `tests/bootstrap/test_codegen.py` (53 pass — 9 new tests for fix, tuples, mutual recursion).
 
+### ✅ Milestone 9.4: Type checker extensions
+
+Three additions to `bootstrap/typecheck.py`:
+
+**ExprFix:** was incorrectly returning the lambda type. Now: fresh `t`, unify lambda
+type with `TArr(t, t)`, return `t`. Correct for `fix λ self args → body : T` where
+the lambda has type `T → T`.
+
+**SCC-ordered checking:** `_check_decls` uses `_build_dep_graph` + `_tarjan_scc` to
+process `DeclLet` groups in topological order. Multi-element SCCs use `_check_mutual_scc`:
+instantiate all provisional types, check all bodies, then generalize unannotated members
+together — preventing premature generalization from disconnecting mutual unification variables.
+
+**`_collect_expr_refs`:** full ExprVar walker over all expression forms, used for
+building the dependency graph.
+
+Tests: `tests/bootstrap/test_typecheck.py` (79 pass — 8 new tests covering fix inference,
+annotated fix, self-ref unification, fix type errors, mutual recursion annotated/unannotated,
+forward references, and mutual type error propagation).
+
 ### ✅ Milestone 8: Self-hosting compiler — **ALPHA CANDIDATE**
 
 Write the Gallowglass self-hosting compiler in the restricted dialect; compile it
