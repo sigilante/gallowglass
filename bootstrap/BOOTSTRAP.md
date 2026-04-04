@@ -84,12 +84,14 @@ syntax (spec/06-surface-syntax.md).
 | `fix` expressions | Self-referential anonymous recursion |
 | Tuples | Binary tuples `(a, b)`; tuple patterns in match |
 | Mutual recursion | Lexicographically-ordered SCC compilation via shared-pin rows |
+| `eff` declarations | Effect ops compile to 3-arg CPS laws; `handle`/do supported |
+| `handle` expressions | CPS dispatch: `comp dispatch_fn return_fn` |
+| do-notation (`x ← rhs in body`) | CPS bind: lambda-lifts continuation over captured locals |
 
 ### 2.2 Excluded (deferred to self-hosting compiler)
 
 | Feature | Reason |
 |---|---|
-| `handle` expressions | Effect handlers require CPS transformation |
 | Effect rows in types | Parsed, never unified; checked post-Phase-3 |
 | Contracts (`\| pre`, `\| post`) | No solver in bootstrap |
 | `module` / `import` | Multi-file compilation deferred |
@@ -240,6 +242,31 @@ building the dependency graph.
 Tests: `tests/bootstrap/test_typecheck.py` (79 pass — 8 new tests covering fix inference,
 annotated fix, self-ref unification, fix type errors, mutual recursion annotated/unannotated,
 forward references, and mutual type error propagation).
+
+### ✅ Milestone 10.1: Effect row types in type checker
+
+See M10.1 entry in ROADMAP.md.
+
+### ✅ Milestone 10.2: Effect handler codegen (CPS transform)
+
+CPS compilation of `eff` declarations, `handle` expressions, and do-notation (`x ← rhs in body`)
+added to `bootstrap/codegen.py` and `bootstrap/scope.py`.
+
+**Changes made:**
+1. **`scope.py` effect op binding**: `_collect_decl` for `DeclEff` now registers each op as a
+   `BindingValue` so callers can reference it by name (e.g. `inc` resolves to `Module.Eff.inc`).
+2. **`_register_eff`**: Each op compiles to a 3-arg law `L(3, name, dispatch(tag, op_arg, k))` —
+   calling `E.op arg` produces a 2-arg partial application that is the CPS computation value.
+3. **`_compile_handle`**: Assembles `A(A(comp_val, dispatch_fn), return_fn)` (top level) or
+   `bapp(bapp(...))` (law body). Dispatch fn and return fn are lambda-lifted from outer locals.
+4. **`_compile_dispatch_fn`**: Builds `L(n_cap+3, name, nat_dispatch_body)` — N(1)=op_tag,
+   N(2)=op_arg, N(3)=resume; dispatches on op_tag via `_build_precompiled_nat_dispatch`.
+5. **`_compile_return_fn`**: Builds `L(n_cap+1, name, body)` — N(last)=return value.
+6. **`_compile_do`**: CPS bind `x ← rhs in body` compiles to an `(n_cap+2)`-arg law; the inner
+   continuation `λ x → body_comp dispatch k_outer` is lambda-lifted as an `(n_cap+3)`-arg law.
+
+Tests: `tests/bootstrap/test_codegen.py` (63 pass — 10 new tests for eff op compilation,
+single-op handle, two-op dispatch, do-notation sequencing, and outer local capture).
 
 ### ✅ Milestone 8: Self-hosting compiler — **ALPHA CANDIDATE**
 

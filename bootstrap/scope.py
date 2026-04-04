@@ -355,6 +355,17 @@ class Resolver:
             fq = f"{mod}.{decl.name}"
             b = BindingType(fq, len(decl.params), decl.loc)
             self._safe_register_type(fq, b, decl.name, top_level=top_level)
+            # Register each effect op as a value binding so callers can reference it.
+            # E.g. `eff Counter { inc : Unit → Nat }` makes `inc` resolve to
+            # `Module.Counter.inc` (FQ name used by the codegen CPS compilation).
+            for op in decl.ops:
+                fq_op = f"{fq}.{op.name}"
+                b_op = BindingValue(fq_op, op.ty, None, op.loc)
+                if fq_op not in self.env.bindings:
+                    self.env.bindings[fq_op] = b_op
+                    self.env.module_exports.setdefault(self.module_name, set()).add(fq_op)
+                    if top_level:
+                        self.frames[0].bind(op.name, fq_op)
 
         elif isinstance(decl, DeclClass):
             fq = f"{mod}.{decl.name}"
