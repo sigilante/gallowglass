@@ -606,6 +606,148 @@ let fn2 : Nat → Nat = λ nn → nn + 1
 
 
 # ---------------------------------------------------------------------------
+# M10.1 — Effect row types and handler checking
+# ---------------------------------------------------------------------------
+
+# -- TRow and TComp construction helpers -----------------------------------
+
+from bootstrap.typecheck import TRow, TComp  # noqa: E402
+
+
+def test_eff_decl_registers_ops():
+    """DeclEff registers each operation in type_env with a TArr(A, TComp) scheme."""
+    src = '''
+eff Counter {
+  tick : Nat → Nat
+}
+let dummy : Nat = 0
+'''
+    te = pipeline(src)
+    assert 'Test.Counter.tick' in te
+    op_scheme = te['Test.Counter.tick']
+    # tick : Nat → {Counter | r} Nat
+    assert isinstance(op_scheme.body, TArr)
+    assert isinstance(op_scheme.body.dom, TCon) and op_scheme.body.dom.name == 'Nat'
+    cod = op_scheme.body.cod
+    assert isinstance(cod, TComp)
+    assert 'Counter' in cod.row.effects
+    assert isinstance(cod.ty, TCon) and cod.ty.name == 'Nat'
+
+def test_eff_decl_nullary_op():
+    """Nullary effect op registers with ⊤ as the argument type."""
+    src = '''
+eff Ticker {
+  tick : ⊤ → ⊤
+}
+let dummy : Nat = 0
+'''
+    te = pipeline(src)
+    assert 'Test.Ticker.tick' in te
+
+def test_eff_decl_poly_param():
+    """Effect with a type parameter: State s."""
+    src = '''
+eff State s {
+  get : ⊤ → s
+  put : s → ⊤
+}
+let dummy : Nat = 0
+'''
+    te = pipeline(src)
+    assert 'Test.State.get' in te
+    assert 'Test.State.put' in te
+    get_scheme = te['Test.State.get']
+    # get : ∀ s r. ⊤ → {State s | r} s
+    assert 's' in get_scheme.vars
+    assert 'r' in get_scheme.vars
+
+def test_ast_to_mono_tyeffect_builds_tcomp():
+    """A type annotation {IO} Nat compiles to TComp(TRow({'IO':[]}, None), Nat)."""
+    src = 'let fn1 : Nat → {IO} Nat = λ nn → nn'
+    # Should type-check without error (permissive: effects not enforced at call site)
+    te = pipeline(src)
+    assert 'Test.fn1' in te
+    s = te['Test.fn1']
+    assert isinstance(s.body, TArr)
+    cod = s.body.cod
+    assert isinstance(cod, TComp)
+    assert 'IO' in cod.row.effects
+
+def test_trow_open_unifies_with_closed():
+    """{IO | r} unifies with {IO} (r constrained to empty)."""
+    src = '''
+let use_io : Nat → {IO} Nat = λ nn → nn
+let wrapper : Nat → {IO | r} Nat = use_io
+'''
+    te = pipeline(src)
+    assert 'Test.wrapper' in te
+
+def test_trow_closed_mismatch_error():
+    """Closed row {IO} vs closed row {State s} is a type error."""
+    src = '''
+eff State s { get : ⊤ → s }
+let bad : Nat → {IO} Nat = λ nn → nn
+let also_bad : Nat → {State Nat} Nat = bad
+'''
+    check_error(src, 'closed effect row missing')
+
+def test_handle_return_arm_only():
+    """A handle with only a return arm type-checks."""
+    src = '''
+eff Noop {
+  noop : ⊤ → ⊤
+}
+let run_noop : Nat → Nat
+  = λ nn → handle nn {
+      | return xx → xx
+    }
+'''
+    te = pipeline(src)
+    s = te['Test.run_noop']
+    assert isinstance(s.body, TArr)
+    assert isinstance(s.body.dom, TCon) and s.body.dom.name == 'Nat'
+
+def test_handle_op_arm_binds_continuation():
+    """An op arm's continuation k is bound and its body type-checks."""
+    src = '''
+eff Counter {
+  tick : Nat → Nat
+}
+let step : Nat → Nat
+  = λ nn → handle nn {
+      | return xx  → xx
+      | tick vv kk → kk vv
+    }
+'''
+    te = pipeline(src)
+    assert 'Test.step' in te
+
+def test_handle_return_type_mismatch():
+    """If the return arm returns Bool but the op arm returns Nat, error."""
+    src = '''
+eff Counter {
+  tick : Nat → Nat
+}
+let bad_handler : Nat → Nat
+  = λ nn → handle nn {
+      | return xx  → True
+      | tick vv kk → kk vv
+    }
+'''
+    check_error(src, 'cannot unify')
+
+def test_row_var_generalized():
+    """A function with an open row variable in its type gets it generalized."""
+    src = 'let passthru : Nat → {IO | r} Nat = λ nn → nn'
+    te = pipeline(src)
+    s = te['Test.passthru']
+    assert isinstance(s.body, TArr)
+    cod = s.body.cod
+    assert isinstance(cod, TComp)
+    assert cod.row.tail is not None   # open row — tail not None
+
+
+# ---------------------------------------------------------------------------
 # Run as script
 # ---------------------------------------------------------------------------
 
