@@ -61,6 +61,8 @@ Laws are the only executable unit. A law `{n a b}` has name `n`, arity `a`, and 
 
 Pins are content-addressed with BLAKE3-256. Two pins with identical content have identical hashes and are deduplicated in the heap. The heap is a Merkle-DAG: pins reference other pins but never the interior of other pins, keeping the reference graph acyclic.
 
+**Pin evaluation:** A pin's content is reduced to WHNF (weak head normal form) plus the spine of any Law body — not to full normal form. Ephemeral pins used as intermediate results remain in WHNF. Mutually recursive functions can be encoded directly via pins (though they cannot be persisted, as persisted pins require acyclic content).
+
 Five core opcodes (as nat values 0–4, accessed as `P(N(k))` — a Pin wrapping the opcode nat):
 
 | Opcode | Name    | Arity | Semantics |
@@ -82,19 +84,17 @@ implementations.
 
 ### 2.2 Execution Semantics
 
-PLAN uses **lazy evaluation** (normal-order reduction). Values are reduced to normal form when pinned (opcode 4) or forced. Within a cog event, evaluation is lazy. Between cog events, the state is fully normalized.
+PLAN uses **lazy evaluation** (normal-order reduction). Opcode 4 (Force) evaluates a value to WHNF. Opcode 0 (Pin) content-addresses a value after reducing it to WHNF plus the spine of any Law body. Full normalization is not guaranteed and not required for correctness.
 
-Because state is always fully normalized between events, long-lived space leaks from unevaluated thunks are impossible in persistent storage. This property is inherited by all Gallowglass programs.
+Because persistent pins are content-addressed and acyclic, values that are stored persistently are structurally sound. Ephemeral pins — common as intermediate results in practice — may contain unevaluated subterms in WHNF.
 
-### 2.3 Effects and the Cog Model
+### 2.3 Effects and the I/O Model
 
-Effects in Gallowglass cross the PLAN VM boundary via Plunder's **cog/driver model**:
+The cog/driver model from earlier PLAN architectures has been replaced. PLAN now provides **direct support for side-effects**, with **virtualization** to run code in a pure sandbox.
 
-- A **cog** is a persistent state machine that processes batches of inputs and produces outputs
-- **Drivers** mediate between the cog and the outside world (network, file system, etc.)
-- All I/O passes through driver effects; pure PLAN code has no side effects
+From Gallowglass's perspective the design is unchanged: `IO`, `External`, and `Exn` effects mark functions that cross the VM boundary. The PLAN laws themselves are pure. The effect system tracks which functions require I/O interaction.
 
-From Gallowglass's perspective: `IO` and `External` effects compile to interactions with drivers. The PLAN laws themselves are pure. The effect system tracks which functions require driver interaction.
+The VM-level mechanism — direct side-effects + virtualization API — is under active specification upstream. The Gallowglass effect system compiles to the correct abstraction layer; the binding to specific VM primitives is tracked in `IO.md` and will be completed once the API stabilizes.
 
 ---
 
@@ -133,8 +133,11 @@ type Nat : builtin    -- natural numbers (PLAN nat)
 type Int : builtin    -- integers (sign-magnitude pair)
 
 -- Text and binary data
-type Text  : builtin  -- UTF-8 validated, (byte_length, content_nat) pair
-type Bytes : builtin  -- raw binary, (byte_length, content_nat) pair
+-- Encoding: structural pair (byte_length, content_nat).
+-- Target encoding (post-alpha): use a high bit of content_nat to encode length,
+-- eliminating the separate length field for small strings. See ROADMAP §Post-1.0.
+type Text  : builtin  -- UTF-8 validated
+type Bytes : builtin  -- raw binary
 
 -- Boolean
 type Bool  : builtin  -- True | False

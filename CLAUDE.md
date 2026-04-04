@@ -99,7 +99,7 @@ type Result a b =
 ASCII alternatives are normalized to Unicode at the lexer — never appear post-lex.
 
 ### Effect System
-- `Abort` is NOT in any effect row. It is unhandleable, propagates to cog supervisor.
+- `Abort` is NOT in any effect row. It is unhandleable, propagates to the VM's virtualization supervisor.
 - `External` marks VM boundary crossings.
 - `{}` empty row means pure. Absence of annotation also means pure.
 - Dictionaries are implicit in source, explicit in Glass IR.
@@ -112,13 +112,15 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
 
 ## Current Phase
 
-**Alpha release candidate.** All Milestone 8 phases complete.
+**Alpha.** All Milestone 8 phases complete. M9.1–9.4, M10.1–10.7 complete. 667 tests passing.
 
 - Phase 0 (spec): complete.
 - Phase 1 (Python bootstrap compiler): complete. Milestones 1–7.5 done. Core prelude: 36 definitions, planvm-valid.
 - Phase 3 (self-hosting compiler, M8): complete through M8.8 Path B.
   - M8.1 utilities, M8.2 lexer, M8.3 parser, M8.4 scope resolver, M8.5 codegen, M8.6 emitter, M8.7 driver: all done.
-  - M8.8 self-hosting validation: Path B (harness) complete — GLS `emit_program` processes the full Compiler.gls module and produces correct Plan Assembler output. Path A (planvm byte-identical comparison) deferred pending cog wrapping.
+  - M8.8 self-hosting validation: Path B (harness) complete — GLS `emit_program` processes the full Compiler.gls module and produces correct Plan Assembler output. Path A (VM-executed) deferred pending upstream side-effects + virtualization API stabilization (see `IO.md`).
+- M9: fix expressions, tuples, mutual recursion (SCC), type checker SCCs — all complete.
+- M10: CPS effect handlers, pure builtin, do-notation, tag namespacing, integration test battery, GLS EFix — all complete.
 
 The bootstrap compiler compiles the **restricted dialect** of Gallowglass only.
 See `bootstrap/BOOTSTRAP.md` for what the restricted dialect permits.
@@ -145,7 +147,7 @@ sys.stdout.buffer.write(emit(compiled, 'Module.main'))
 " input.gls > output.seed
 
 # Run tests
-make test-bootstrap    # bootstrap compiler tests (569 passing)
+make test-bootstrap    # bootstrap compiler tests (482 passing)
 make test-prelude      # prelude tests (planvm, Docker)
 make test-compiler     # self-hosting compiler tests
 make test-selfhost     # M8.8 self-hosting validation
@@ -160,6 +162,7 @@ make test-selfhost     # M8.8 self-hosting validation
 - BLAKE3-256 is the hash algorithm everywhere. No exceptions.
 - `Show` and `Debug` are distinct typeclasses. Never conflate them.
 - Contracts must be statable from the mathematical specification alone.
+- Pin content is reduced to WHNF + law spine — **not** to full normal form. Do not assume or assert full normalization of pin contents.
 
 ## Bootstrap Codegen Pitfalls (read before touching `bootstrap/codegen.py`)
 

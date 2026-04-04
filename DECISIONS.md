@@ -21,6 +21,19 @@ PLAN was designed as a compile target for functional languages. Its properties a
 
 WASM was considered but rejected: it imposes semantic compromises (stack machine, no native content-addressing, no effect enforcement at the VM level) that would require constant workarounds.
 
+### Why use `Case_` (opcode 3) for pattern matching rather than `Hd`/`Sz`/`CaseN`/`Ix`?
+
+The current codegen uses the `Case_` opcode (opcode 3) directly for all pattern matching. This is the simplest mapping from Gallowglass match expressions to PLAN, but Sol (PLAN author) confirmed it is "extremely heavy."
+
+The preferred convention is:
+- `Hd` and `Sz` to identify which constructor branch was taken (lighter inspection)
+- `CaseN` jets to switch on N constructor tags
+- `Ix` to extract individual fields by index
+
+This approach is more efficient because `Case_` constructs a 6-arity dispatch closure per match site, whereas the `Hd`/`Sz`/`CaseN`/`Ix` approach targets existing jets without constructing dispatch closures.
+
+**Why not now?** The `Case_` encoding is correct and produces valid PLAN. Migrating to `Hd`/`Sz`/`CaseN`/`Ix` is a correctness-preserving optimization that requires significant changes to both the bootstrap codegen and the GLS self-hosting compiler. It is tracked as a post-1.0 item to be done alongside the jet registry and optimizer work, when the full set of `CaseN` jets is stable.
+
 ### Why a purpose-built Rust VM in addition to xocore?
 
 The Rust VM provides dual-VM CI: running the same program on both VMs and detecting divergence is the primary correctness mechanism for jet verification. It also becomes the primary runtime post-1.0, designed with snapshot retention and the debugger's needs in mind from the start.
@@ -57,7 +70,7 @@ The `once` modifier for shallow (single-shot) handling replaces the Koka deep/sh
 
 `Abort` signals that the program's own invariants are violated. `Exn` signals that an expected failure condition occurred. These are semantically distinct: an exception says "something went wrong that the caller might handle," while a contract violation says "the program has reached a state that should be statically impossible." Conflating them (as Python does with `StopIteration`) causes interference — a handler could accidentally swallow a contract violation, and the effect row fails to distinguish correctness guarantees from failure modes.
 
-`Abort` propagates to the cog supervisor, not to any user handler. It is structurally unhandleable. This is the Python/StopIteration problem avoided by construction.
+`Abort` propagates to the VM's virtualization supervisor, not to any user handler. It is structurally unhandleable. This is the Python/StopIteration problem avoided by construction.
 
 ### Why nominal records rather than structural?
 
