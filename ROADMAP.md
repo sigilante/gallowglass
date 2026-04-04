@@ -94,8 +94,21 @@ Tests confirmed nested lambda lifting across `ss ← get_st () in pp ← put_st 
 per-effect tag numbering. Two effects sharing a short op name produce a scope ambiguity error
 rather than silent mis-dispatch.
 
+**M10.6 — Integration test battery (`tests/bootstrap/test_programs.py`):**
+Fibonacci (self-recursive let + fix), Ackermann, Sudan function. 20 tests.
+All programs compile via Python bootstrap and evaluate against expected Nat
+outputs using the PLAN reference evaluator. ✅
+
+**M10.7 — GLS compiler: `EFix` + `TkFix` support:**
+Added `TkFix` token, `EFix Nat (Pair (List Nat) Expr)` AST constructor,
+keyword lexer recognition of `fix`, `parse_fix_body_pe`, `cg_compile_fix`.
+Updated `expr_tag`, `cg_cf_dispatch`, `cg_hv_dispatch`, `sr_dispatch`,
+`cg_compile_complex`, and `parse_expr_dispatch`. M8.8 self-hosting invariant
+preserved (667 tests passing). ✅
+
 **Remaining M10 scope:**
 - Full surface syntax integration with effect annotations in the prelude
+- GLS compiler: `DEff`/`EHandle`/`EDo` support (deferred to post-M10)
 - Runtime: no change — continuations are ordinary PLAN values
 
 **Unblocked by M10:** `IO`, `Exn`, `State`, `Generator` effects. The CSV and
