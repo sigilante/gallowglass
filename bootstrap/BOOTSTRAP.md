@@ -280,6 +280,17 @@ Tests: `tests/bootstrap/test_codegen.py` — 3 new tests (pure standalone, pure 
 a do chain, pure with return arm transform). 4 new tests including M10.4 state-threading
 validation below. 67 tests total.
 
+### ✅ Milestone 10.5: Per-effect tag namespacing
+
+`_resolve_handler_arm` in `scope.py` now resolves each `HandlerOp.op_name` to its FQ form
+(e.g. `"inc"` → `"Test.Counter.inc"`) before storing it in the AST. The codegen's
+`_lookup_op_tag` then does a direct FQ lookup in `effect_op_tags`, which is keyed on FQ names
+from `_register_eff`. Two effects with the same short op name are caught as an ambiguous
+reference at scope resolution, not silently mis-tagged.
+
+Tests: 1 new test (two effects with distinct op names each handled correctly). 462 bootstrap
+tests pass.
+
 ### ✅ Milestone 10.4: State-threading handler validation
 
 Multi-op do chain (`ss ← get_st () in pp ← put_st ss in pure ss`) with two-op effect

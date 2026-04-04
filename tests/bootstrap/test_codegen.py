@@ -998,3 +998,30 @@ let run = handle comp {
     # get_st returns 10, put_st discards, pure 10 goes to return rr → rr
     # so result = 10
     assert result == 10, f"expected 10, got {result}"
+
+
+def test_two_effects_distinct_names_no_collision():
+    """Two effects with different op names handled in separate blocks — no tag collision."""
+    src = '''
+eff Alpha {
+  fetch : Nat → Nat
+}
+
+eff Beta {
+  store : Nat → Nat
+}
+
+let ra = handle (fetch 3) {
+  | return rr → rr
+  | fetch vv kk → kk 99
+}
+
+let rb = handle (store 5) {
+  | return rr → rr
+  | store vv kk → kk 77
+}
+'''
+    ra = eval_val(src, 'ra')
+    rb = eval_val(src, 'rb')
+    assert ra == 99, f"expected 99, got {ra}"
+    assert rb == 77, f"expected 77, got {rb}"

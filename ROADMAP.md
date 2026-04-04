@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
 **Last updated:** 2026-04-04
-**Current status:** Alpha candidate — M8 complete (Path B), M8.8 Path A pending cog I/O. M9.1–9.4 complete. M10.1–10.4 complete.
+**Current status:** Alpha candidate — M8 complete (Path B), M8.8 Path A pending cog I/O. M9.1–9.4 complete. M10.1–10.5 complete.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -88,8 +88,13 @@ Enables do chains to terminate with a pure computed value.
 Multi-op do chains with captured free variables compile and evaluate correctly.
 Tests confirmed nested lambda lifting across `ss ← get_st () in pp ← put_st ss in pure ss`.
 
+### ✅ M10.5 — Per-effect tag namespacing
+
+`_resolve_handler_arm` resolves each `HandlerOp.op_name` to its FQ form so the codegen uses
+per-effect tag numbering. Two effects sharing a short op name produce a scope ambiguity error
+rather than silent mis-dispatch.
+
 **Remaining M10 scope:**
-- Per-effect tag namespacing (correctness for multi-effect programs with name-colliding ops)
 - Full surface syntax integration with effect annotations in the prelude
 - Runtime: no change — continuations are ordinary PLAN values
 
