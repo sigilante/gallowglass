@@ -734,3 +734,175 @@ def _run_tests():
 
 if __name__ == '__main__':
     _run_tests()
+
+
+# ---------------------------------------------------------------------------
+# M10.2 — Effect handlers: CPS compilation
+# ---------------------------------------------------------------------------
+
+def test_eff_op_compiles_to_3arg_law():
+    """Effect op compiles to a 3-arg law: (op_arg, dispatch, k) → dispatch(tag, op_arg, k)."""
+    src = '''
+eff Counter {
+  inc : Nat → Nat
+}
+'''
+    compiled = pipeline(src)
+    inc_law = compiled.get('Test.Counter.inc')
+    assert inc_law is not None, "Test.Counter.inc not in compiled"
+    assert is_law(inc_law), f"expected Law, got {type(inc_law)}"
+    assert inc_law.arity == 3, f"expected arity 3, got {inc_law.arity}"
+
+
+def test_handle_single_op_constant_return():
+    """handle (inc ()) { | return x → x | inc _ k → k 42 } evaluates to 42."""
+    src = '''
+eff Counter {
+  inc : () → Nat
+}
+
+let result = handle (inc ()) {
+  | return x → x
+  | inc _ kk → kk 42
+}
+'''
+    result = eval_val(src, 'result')
+    assert result == 42, f"expected 42, got {result}"
+
+
+def test_handle_op_arg_passed_through():
+    """Handler arm receives op_arg and can pass it to the continuation."""
+    src = '''
+eff Counter {
+  get_val : () → Nat
+}
+
+let result = handle (get_val ()) {
+  | return x → x
+  | get_val _ kk → kk 99
+}
+'''
+    result = eval_val(src, 'result')
+    assert result == 99, f"expected 99, got {result}"
+
+
+def test_handle_return_arm_receives_value():
+    """Return arm transforms the value before returning."""
+    src = '''
+eff Counter {
+  inc : () → Nat
+}
+
+let result = handle (inc ()) {
+  | return x → 100
+  | inc _ kk → kk 5
+}
+'''
+    result = eval_val(src, 'result')
+    assert result == 100, f"expected 100, got {result}"
+
+
+def test_handle_op_uses_op_arg():
+    """Dispatch arm can use the op_arg in its body."""
+    src = '''
+eff Counter {
+  echo : Nat → Nat
+}
+
+let result = handle (echo 77) {
+  | return x → x
+  | echo nn kk → kk nn
+}
+'''
+    result = eval_val(src, 'result')
+    assert result == 77, f"expected 77, got {result}"
+
+
+def test_handle_two_ops_first_arm():
+    """Two-op effect; first op is called; correct arm dispatches."""
+    src = '''
+eff Pair {
+  first  : () → Nat
+  second : () → Nat
+}
+
+let result = handle (first ()) {
+  | return x → x
+  | first  _ kk → kk 11
+  | second _ kk → kk 22
+}
+'''
+    result = eval_val(src, 'result')
+    assert result == 11, f"expected 11, got {result}"
+
+
+def test_handle_two_ops_second_arm():
+    """Two-op effect; second op is called; correct arm dispatches."""
+    src = '''
+eff Pair {
+  first  : () → Nat
+  second : () → Nat
+}
+
+let result = handle (second ()) {
+  | return x → x
+  | first  _ kk → kk 11
+  | second _ kk → kk 22
+}
+'''
+    result = eval_val(src, 'result')
+    assert result == 22, f"expected 22, got {result}"
+
+
+def test_do_sequence_two_ops():
+    """do xx ← inc () in inc xx chains two effect calls."""
+    src = '''
+eff Counter {
+  inc : () → Nat
+}
+
+let comp = xx ← inc () in inc xx
+
+let result = handle comp {
+  | return rr → rr
+  | inc _ kk → kk 7
+}
+'''
+    result = eval_val(src, 'result')
+    assert result == 7, f"expected 7, got {result}"
+
+
+def test_do_passes_arg_between_ops():
+    """Do notation passes the result of one op as arg to the next."""
+    src = '''
+eff Echo {
+  echo : Nat → Nat
+}
+
+let comp = nn ← echo 5 in echo nn
+
+let result = handle comp {
+  | return rr → rr
+  | echo vv kk → kk vv
+}
+'''
+    result = eval_val(src, 'result')
+    assert result == 5, f"expected 5, got {result}"
+
+
+def test_handle_captures_outer_local():
+    """Dispatch arm can reference an outer let binding."""
+    src = '''
+eff Greeter {
+  greet : () → Nat
+}
+
+let answer : Nat = 42
+
+let result = handle (greet ()) {
+  | return x → x
+  | greet _ kk → kk answer
+}
+'''
+    result = eval_val(src, 'result')
+    assert result == 42, f"expected 42, got {result}"

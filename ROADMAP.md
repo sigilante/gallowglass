@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
-**Last updated:** 2026-04-04
-**Current status:** Alpha candidate — M8 complete (Path B), M8.8 Path A pending cog I/O. M9.1–9.4 complete.
+**Last updated:** 2026-04-03
+**Current status:** Alpha candidate — M8 complete (Path B), M8.8 Path A pending cog I/O. M9.1–9.4 complete. M10.1–10.2 complete.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -61,14 +61,26 @@ The defining language feature. `handle` expressions with explicit `resume`
 continuations (Koka-style). Handlers compile using direct-style CPS: the
 continuation `k` in a handler arm is a partially applied PLAN law.
 
-Scope:
-- Parser: `handle expr { | return x → e | op args k → e }` syntax
-- Type checker: effect row unification, row polymorphism (`| r`)
-- Codegen: CPS transform for handler arms; continuation reification as PLAN laws
-- Runtime: no change — continuations are ordinary PLAN values
+### ✅ M10.1 — Effect row types in type checker
 
-This milestone touches every phase of the compiler. It is the largest single
-milestone post-alpha and is the prerequisite for the full effect-annotated prelude.
+`TRow(effects: dict, tail: TMeta)` and `TComp(row, ty)` added. Full row unification
+(flatten-and-distribute algorithm). `DeclEff` registers each op as
+`∀ params r. A → {E args | r} B`. `ExprHandle` checked against spec §5.1:
+computation type `{E, R} α`, return arm `x : α → β`, op arms `arg, k → β`, result `{R} β`.
+Tests: `tests/bootstrap/test_typecheck.py` (89 pass — 10 new).
+
+### ✅ M10.2 — Codegen: CPS transform for effect handlers
+
+`eff` ops compile to 3-arg CPS laws. `handle comp { arms }` assembles as
+`A(A(comp_val, dispatch_fn), return_fn)`. Do-notation `x ← rhs in body` compiles
+to a CPS bind via nested lambda-lifted laws. Outer local captures are lambda-lifted
+into both the dispatch law and the inner continuation law.
+Tests: `tests/bootstrap/test_codegen.py` (63 pass — 10 new).
+
+**Remaining M10 scope:**
+- Codegen: state-threading handlers (continuation k captures outer state)
+- Full surface syntax integration with effect annotations
+- Runtime: no change — continuations are ordinary PLAN values
 
 **Unblocked by M10:** `IO`, `Exn`, `State`, `Generator` effects. The CSV and
 calculator demos become interactive. The full surface syntax of SPEC.md §3.4

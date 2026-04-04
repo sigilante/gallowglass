@@ -17,11 +17,12 @@ from typing import Any
 
 from bootstrap.ast import (
     Program,
-    DeclLet, DeclType, DeclExt, DeclClass, DeclInst,
+    DeclLet, DeclType, DeclExt, DeclClass, DeclInst, DeclEff,
     Constructor,
     ExprVar, ExprApp, ExprLam, ExprLet, ExprMatch, ExprIf,
     ExprNat, ExprText, ExprBytes, ExprHexBytes, ExprUnit, ExprTuple,
     ExprPin, ExprOp, ExprUnary, ExprAnn, ExprFix,
+    ExprHandle, ExprDo, HandlerReturn, HandlerOp,
     PatVar, PatWild, PatCon, PatNat, PatTuple,
 )
 from dev.harness.plan import P, L, A, N, is_nat, is_pin, is_law, is_app
@@ -171,6 +172,8 @@ class Compiler:
         self.con_info: dict[str, ConInfo] = {}
         # global env (fills in as we compile)
         self.env = Env()
+        # effect op tag lookup: fq_op_name → tag (and short_name → tag)
+        self.effect_op_tags: dict[str, int] = {}
         # Register builtin constructors from scope resolver.
         # Bool: False = tag 0, True = tag 1 (conventional ordering)
         # These match the scope resolver's pre-declared 'True'/'False' bindings.
@@ -213,6 +216,11 @@ class Compiler:
         for decl in program.decls:
             if isinstance(decl, DeclExt):
                 self._register_ext(decl)
+
+        # Pass 2.5: register effect declarations as CPS laws
+        for decl in program.decls:
+            if isinstance(decl, DeclEff):
+                self._register_eff(decl)
 
         # Pass 3: compile let declarations in SCC topological order.
         # Single-definition SCCs (non-recursive or self-recursive) use the
@@ -317,6 +325,42 @@ class Compiler:
             self.env.globals[fq] = stub
 
     # -----------------------------------------------------------------------
+    # Effect declarations → CPS dispatch laws
+    # -----------------------------------------------------------------------
+
+    def _register_eff(self, decl: DeclEff) -> None:
+        """
+        Compile each effect operation as a 3-arg CPS law.
+
+        Each op compiles to: L(3, name, dispatch(tag, op_arg, k))
+        where the law body is:
+          N(1)=op_arg, N(2)=dispatch, N(3)=k
+          body = bapp(bapp(bapp(N(2), tag_val), N(1)), N(3))
+               = dispatch(tag, op_arg, k)
+
+        Calling `E.op arg` produces A(op_law, arg) — a 2-arg partial
+        application that is the CPS computation value for that operation.
+        """
+        fq_eff = f'{self.module}.{decl.name}'
+        dummy_env = Env(globals=self.env.globals, arity=3)
+        for tag, op in enumerate(decl.ops):
+            fq_op = f'{fq_eff}.{op.name}'
+            # Tag literal inside a 3-arg law body: quote if tag <= 3
+            tag_val = self._compile_nat_literal(tag, dummy_env)
+            # Body: dispatch(tag, op_arg, k)
+            # N(2)=dispatch, tag_val, N(1)=op_arg, N(3)=k
+            body = bapp(bapp(bapp(N(2), tag_val), N(1)), N(3))
+            name_nat = encode_name(op.name)
+            val = L(3, name_nat, body)
+            self.compiled[fq_op] = val
+            self.env.globals[fq_op] = val
+            # Also register under short name for same-module lookup
+            self.env.globals[op.name] = val
+            # Record tag for dispatch_fn construction
+            self.effect_op_tags[fq_op] = tag
+            self.effect_op_tags[op.name] = tag
+
+    # -----------------------------------------------------------------------
     # Let declarations
     # -----------------------------------------------------------------------
 
@@ -382,6 +426,12 @@ class Compiler:
 
         if isinstance(expr, ExprFix):
             return self._compile_fix(expr, env, name_hint)
+
+        if isinstance(expr, ExprHandle):
+            return self._compile_handle(expr, env, name_hint)
+
+        if isinstance(expr, ExprDo):
+            return self._compile_do(expr, env, name_hint)
 
         raise CodegenError(
             f'codegen: unsupported expression {type(expr).__name__}'
@@ -651,6 +701,21 @@ class Compiler:
                 if pn:
                     new_bound.add(pn)
             self._collect_free(body, new_bound, env, found)
+        elif isinstance(expr, ExprHandle):
+            self._collect_free(expr.comp, bound, env, found)
+            for arm in expr.arms:
+                if isinstance(arm, HandlerReturn):
+                    arm_bound = set(bound) | self._pat_binds(arm.pattern)
+                    self._collect_free(arm.body, arm_bound, env, found)
+                elif isinstance(arm, HandlerOp):
+                    arm_bound = set(bound) | {arm.resume}
+                    for p in arm.arg_pats:
+                        arm_bound |= self._pat_binds(p)
+                    self._collect_free(arm.body, arm_bound, env, found)
+        elif isinstance(expr, ExprDo):
+            self._collect_free(expr.rhs, bound, env, found)
+            new_bound = set(bound) | {expr.name}
+            self._collect_free(expr.body, new_bound, env, found)
 
     def _pat_binds(self, pat: Any) -> set:
         """Collect names bound by a pattern."""
@@ -1567,6 +1632,16 @@ class Compiler:
             self._collect_all_names(expr.rhs, names)
         elif isinstance(expr, ExprFix):
             self._collect_all_names(expr.lam.body, names)
+        elif isinstance(expr, ExprHandle):
+            self._collect_all_names(expr.comp, names)
+            for arm in expr.arms:
+                if isinstance(arm, HandlerReturn):
+                    self._collect_all_names(arm.body, names)
+                elif isinstance(arm, HandlerOp):
+                    self._collect_all_names(arm.body, names)
+        elif isinstance(expr, ExprDo):
+            self._collect_all_names(expr.rhs, names)
+            self._collect_all_names(expr.body, names)
 
     def _make_pred_succ_law(self, wild_body_expr: Any, wild_var: str, env: Env, name_hint: str) -> Any:
         """
@@ -1816,6 +1891,242 @@ class Compiler:
         else:
             return P(law)
 
+
+    # -----------------------------------------------------------------------
+    # Effect handlers (M10.2): ExprHandle and ExprDo
+    # -----------------------------------------------------------------------
+
+    def _compile_handle(self, expr: ExprHandle, env: Env, name_hint: str) -> Any:
+        """
+        Compile: handle comp { | return x → body_r | op args k → body_op }
+
+        Encoding (CPS):
+          dispatch_fn = L(3+n_cap, name, nat_dispatch_body)   -- (op_tag, op_arg, k)
+          return_fn   = L(1+n_cap, name, return_body)         -- (x)
+          result = A(A(comp_val, dispatch_fn), return_fn)     -- [top level]
+                 = bapp(bapp(comp_val, dispatch_fn), return_fn)  -- [law body]
+
+        When `comp` is an effect op call `E.op arg`, the assembly evaluates as:
+          op_law arg dispatch_fn return_fn
+          → dispatch_fn(tag, arg, return_fn)
+          → arm_body[arg_pats=arg, resume=return_fn]
+        """
+        comp_val = self._compile_expr(expr.comp, env, name_hint + '_comp')
+
+        return_arm = next((a for a in expr.arms if isinstance(a, HandlerReturn)), None)
+        op_arms    = [a for a in expr.arms if isinstance(a, HandlerOp)]
+
+        dispatch_fn = self._compile_dispatch_fn(op_arms, env, name_hint)
+        return_fn   = self._compile_return_fn(return_arm, env, name_hint)
+
+        if env.arity == 0:
+            return A(A(comp_val, dispatch_fn), return_fn)
+        else:
+            return bapp(bapp(comp_val, dispatch_fn), return_fn)
+
+    def _collect_free_for_handler(self, bodies: list, arm_bounds: list, env: Env) -> list:
+        """
+        Collect free variables (in env.locals) used by handler arm bodies,
+        excluding the arm-specific bound names.
+        Returns a list in env.locals key order.
+        """
+        combined: set = set()
+        for body, bound in zip(bodies, arm_bounds):
+            self._collect_free(body, bound, env, combined)
+        return [k for k in env.locals if k in combined]
+
+    def _compile_dispatch_fn(self, op_arms: list, env: Env, name_hint: str) -> Any:
+        """
+        Build the handler dispatch law: L(n_cap+3, name, body)
+        Law args: [cap_1..cap_n_cap] + [op_tag] + [op_arg] + [resume/k]
+
+        Dispatches on op_tag via nat ladder; each arm binds op_arg and resume.
+        Free outer locals are lambda-lifted as leading parameters.
+        """
+        if not op_arms:
+            # No op arms: unreachable dispatch; return a 3-arg stub
+            return P(L(3, encode_name(f'{name_hint}_dispatch'), body_nat(0, 3)))
+
+        # Collect free vars from all arm bodies (excluding arm-specific names)
+        all_bodies = []
+        all_bounds = []
+        for arm in op_arms:
+            arm_bound: set = {arm.resume}
+            for p in arm.arg_pats:
+                arm_bound |= self._pat_binds(p)
+            all_bodies.append(arm.body)
+            all_bounds.append(arm_bound)
+
+        free_locals = self._collect_free_for_handler(all_bodies, all_bounds, env)
+        n_cap = len(free_locals)
+
+        # Build dispatch_env: [caps...] + [op_tag] + [op_arg] + [resume]
+        dispatch_env = Env(globals=env.globals, arity=n_cap + 3,
+                           self_ref_name=env.self_ref_name)
+        for i, fv in enumerate(free_locals, 1):
+            dispatch_env.locals[fv] = i
+        op_tag_idx = n_cap + 1
+        op_arg_idx = n_cap + 2
+        k_idx      = n_cap + 3
+
+        # Compile each arm's body in arm_env (with op_arg and resume bound)
+        tag_val_pairs = []
+        for arm in op_arms:
+            tag = self._lookup_op_tag(arm.op_name)
+            arm_env = dispatch_env.child()
+            for p in arm.arg_pats:
+                pn = self._pat_var_name(p)
+                if pn not in ('_wild', '_pat', '__'):
+                    arm_env.locals[pn] = op_arg_idx
+            arm_env.locals[arm.resume] = k_idx
+            body_val = self._compile_expr(arm.body, arm_env, f'{name_hint}_op{tag}')
+            tag_val_pairs.append((tag, body_val))
+
+        tag_val_pairs.sort(key=lambda t: t[0])
+
+        dispatch_body = self._build_precompiled_nat_dispatch(
+            tag_val_pairs, None, None,
+            N(op_tag_idx), dispatch_env, f'{name_hint}_dispatch'
+        )
+
+        dispatch_law = P(L(n_cap + 3, encode_name(f'{name_hint}_dispatch'), dispatch_body))
+
+        # Partially apply to free_locals in outer env
+        if env.arity == 0:
+            result = dispatch_law
+            for fv in free_locals:
+                result = A(result, env.globals.get(fv, N(0)))
+        else:
+            result = dispatch_law
+            for fv in free_locals:
+                result = bapp(result, N(env.locals[fv]))
+        return result
+
+    def _compile_return_fn(self, return_arm: Any, env: Env, name_hint: str) -> Any:
+        """
+        Build the return handler: L(n_cap+1, name, body) where the last param
+        is the pure return value bound by the return pattern.
+        """
+        if return_arm is None:
+            return P(self._ID_LAW)  # identity by default
+
+        pat_names = self._pat_binds(return_arm.pattern)
+        free_locals = self._collect_free_for_handler(
+            [return_arm.body], [pat_names], env
+        )
+        n_cap = len(free_locals)
+
+        return_env = Env(globals=env.globals, arity=n_cap + 1,
+                         self_ref_name=env.self_ref_name)
+        for i, fv in enumerate(free_locals, 1):
+            return_env.locals[fv] = i
+        val_idx = n_cap + 1
+        # Bind return pattern variable (simple PatVar or PatWild only)
+        pat_name = self._pat_var_name(return_arm.pattern)
+        if pat_name not in ('_wild', '_pat'):
+            return_env.locals[pat_name] = val_idx
+
+        body_val = self._compile_expr(return_arm.body, return_env, f'{name_hint}_return')
+        return_law = P(L(n_cap + 1, encode_name(f'{name_hint}_return'), body_val))
+
+        if env.arity == 0:
+            result = return_law
+            for fv in free_locals:
+                result = A(result, env.globals.get(fv, N(0)))
+        else:
+            result = return_law
+            for fv in free_locals:
+                result = bapp(result, N(env.locals[fv]))
+        return result
+
+    def _lookup_op_tag(self, op_name: str) -> int:
+        """Look up the CPS tag for an effect operation by name."""
+        if op_name in self.effect_op_tags:
+            return self.effect_op_tags[op_name]
+        for k, v in self.effect_op_tags.items():
+            if k.endswith('.' + op_name):
+                return v
+        raise CodegenError(f'codegen: unknown effect operation {op_name!r}')
+
+    def _compile_do(self, expr: ExprDo, env: Env, name_hint: str) -> Any:
+        """
+        Compile: x ← rhs_comp; body_expr   (effectful bind)
+
+        Result is a CPS computation value (a 2-arg function taking dispatch and k).
+        Encoding: λ dispatch k_outer → rhs_comp dispatch (λ x → body_comp dispatch k_outer)
+
+        The inner continuation lambda captures dispatch and k_outer from the outer
+        2-arg law via lambda lifting.
+
+        Outer law (arity = n_cap+2):
+          [caps...] + [dispatch] + [k_outer]
+          body = rhs_val dispatch (inner_cont caps dispatch k_outer)
+
+        Inner continuation law (arity = n_cap+3):
+          [caps...] + [dispatch] + [k_outer] + [x]
+          body = body_comp dispatch k_outer  (with x bound)
+        """
+        # Collect free vars from rhs and body (excluding the do-bound name x)
+        all_free: set = set()
+        self._collect_free(expr.rhs, set(), env, all_free)
+        self._collect_free(expr.body, {expr.name}, env, all_free)
+        free_locals = [k for k in env.locals if k in all_free]
+        n_cap = len(free_locals)
+
+        # Indices in the outer (n_cap+2)-arg law
+        outer_dispatch_idx = n_cap + 1
+        outer_k_idx        = n_cap + 2
+
+        # Indices in the inner (n_cap+3)-arg continuation law
+        inner_dispatch_idx = n_cap + 1
+        inner_k_idx        = n_cap + 2
+        inner_x_idx        = n_cap + 3
+
+        # --- Build inner continuation law ---
+        inner_env = Env(globals=env.globals, arity=n_cap + 3,
+                        self_ref_name=env.self_ref_name)
+        for i, fv in enumerate(free_locals, 1):
+            inner_env.locals[fv] = i
+        inner_env.locals['__dispatch__'] = inner_dispatch_idx
+        inner_env.locals['__k__']        = inner_k_idx
+        inner_env.locals[expr.name]      = inner_x_idx  # do-bound variable
+
+        body_cps = self._compile_expr(expr.body, inner_env, name_hint + '_body')
+        # Apply body_cps to dispatch (N(inner_dispatch_idx)) and k_outer (N(inner_k_idx))
+        inner_body = bapp(bapp(body_cps, N(inner_dispatch_idx)), N(inner_k_idx))
+        inner_law  = P(L(n_cap + 3, encode_name(name_hint + '_cont'), inner_body))
+
+        # --- Build outer 2-arg (+ captures) law ---
+        outer_env = Env(globals=env.globals, arity=n_cap + 2,
+                        self_ref_name=env.self_ref_name)
+        for i, fv in enumerate(free_locals, 1):
+            outer_env.locals[fv] = i
+        outer_env.locals['__dispatch__'] = outer_dispatch_idx
+        outer_env.locals['__k__']        = outer_k_idx
+
+        rhs_val = self._compile_expr(expr.rhs, outer_env, name_hint + '_rhs')
+
+        # Partially apply inner_law to captures + dispatch + k_outer
+        inner_cont = inner_law
+        for i in range(1, n_cap + 1):
+            inner_cont = bapp(inner_cont, N(i))
+        inner_cont = bapp(inner_cont, N(outer_dispatch_idx))
+        inner_cont = bapp(inner_cont, N(outer_k_idx))
+
+        # Outer body: rhs_comp dispatch inner_cont
+        outer_body = bapp(bapp(rhs_val, N(outer_dispatch_idx)), inner_cont)
+        do_law     = L(n_cap + 2, encode_name(name_hint + '_do'), outer_body)
+
+        if env.arity == 0:
+            # At top level: partially apply to captures (usually none)
+            result = do_law
+            for fv in free_locals:
+                result = A(result, env.globals.get(fv, N(0)))
+        else:
+            result = P(do_law)
+            for fv in free_locals:
+                result = bapp(result, N(env.locals[fv]))
+        return result
 
     # -----------------------------------------------------------------------
     # Mutual recursion: dep-graph + Tarjan SCC
