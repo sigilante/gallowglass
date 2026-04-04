@@ -193,6 +193,11 @@ class Resolver:
             b = BindingCon(fq, ty, 0, Loc('<builtin>', 0, 0))
             self.env.bindings[fq] = b
             self.frames[0].bind(kw, fq)
+        # Pre-declare CPS builtins
+        # `pure v` wraps a pure value as a no-op CPS computation: λ dispatch k → k v
+        b_pure = BindingValue('pure', None, None, Loc('<builtin>', 0, 0))
+        self.env.bindings['pure'] = b_pure
+        self.frames[0].bind('pure', 'pure')
 
     # ------------------------------------------------------------------
     # Frame management

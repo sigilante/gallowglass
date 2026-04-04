@@ -184,7 +184,7 @@ class Compiler:
     # -----------------------------------------------------------------------
 
     def _register_builtins(self) -> None:
-        """Register builtin constructors (True, False, Unit, Never) in the global env."""
+        """Register builtin constructors and CPS helpers in the global env."""
         # Bool: False = 0 (tag 0), True = 1 (tag 1)
         # Scope resolver assigns FQ = bare name for builtins.
         builtins = {
@@ -197,6 +197,12 @@ class Compiler:
             self.con_info[name] = ConInfo(
                 tag=int(val), arity=0, fq_name=name
             )
+        # `pure v` — wrap a pure value as a no-op CPS computation.
+        # Law of arity 3: (value, dispatch, k) → k value
+        # N(1)=value, N(2)=dispatch (ignored), N(3)=k
+        # body = bapp(N(3), N(1)) = apply k to value
+        pure_law = L(3, encode_name('pure'), bapp(N(3), N(1)))
+        self.env.globals['pure'] = pure_law
 
     # -----------------------------------------------------------------------
     # Entry point

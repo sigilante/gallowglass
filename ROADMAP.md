@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
-**Last updated:** 2026-04-03
-**Current status:** Alpha candidate — M8 complete (Path B), M8.8 Path A pending cog I/O. M9.1–9.4 complete. M10.1–10.2 complete.
+**Last updated:** 2026-04-04
+**Current status:** Alpha candidate — M8 complete (Path B), M8.8 Path A pending cog I/O. M9.1–9.4 complete. M10.1–10.4 complete.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -77,9 +77,20 @@ to a CPS bind via nested lambda-lifted laws. Outer local captures are lambda-lif
 into both the dispatch law and the inner continuation law.
 Tests: `tests/bootstrap/test_codegen.py` (63 pass — 10 new).
 
+### ✅ M10.3 — `pure` for do-notation
+
+`pure v` registered as builtin CPS law `L(3, "pure", bapp(N(3), N(1)))`.
+`pure v` = `A(pure_law, v)` — a 2-arg partial application that calls `k v`.
+Enables do chains to terminate with a pure computed value.
+
+### ✅ M10.4 — State-threading handler validation
+
+Multi-op do chains with captured free variables compile and evaluate correctly.
+Tests confirmed nested lambda lifting across `ss ← get_st () in pp ← put_st ss in pure ss`.
+
 **Remaining M10 scope:**
-- Codegen: state-threading handlers (continuation k captures outer state)
-- Full surface syntax integration with effect annotations
+- Per-effect tag namespacing (correctness for multi-effect programs with name-colliding ops)
+- Full surface syntax integration with effect annotations in the prelude
 - Runtime: no change — continuations are ordinary PLAN values
 
 **Unblocked by M10:** `IO`, `Exn`, `State`, `Generator` effects. The CSV and

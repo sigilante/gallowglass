@@ -87,6 +87,7 @@ syntax (spec/06-surface-syntax.md).
 | `eff` declarations | Effect ops compile to 3-arg CPS laws; `handle`/do supported |
 | `handle` expressions | CPS dispatch: `comp dispatch_fn return_fn` |
 | do-notation (`x ← rhs in body`) | CPS bind: lambda-lifts continuation over captured locals |
+| `pure v` | No-op CPS computation: `λ dispatch k → k v`; terminates do chains |
 
 ### 2.2 Excluded (deferred to self-hosting compiler)
 
@@ -267,6 +268,24 @@ added to `bootstrap/codegen.py` and `bootstrap/scope.py`.
 
 Tests: `tests/bootstrap/test_codegen.py` (63 pass — 10 new tests for eff op compilation,
 single-op handle, two-op dispatch, do-notation sequencing, and outer local capture).
+
+### ✅ Milestone 10.3: `pure` for do-notation
+
+`pure v` registered as a builtin CPS law `L(3, "pure", bapp(N(3), N(1)))` in codegen and as
+a `BindingValue` in the scope resolver. `pure v` compiles to `A(pure_law, v_compiled)` — a
+2-arg partial application (CPS computation) that, when applied to any dispatch_fn and k,
+simply calls `k v`. Enables do chains to terminate with a pure computed value.
+
+Tests: `tests/bootstrap/test_codegen.py` — 3 new tests (pure standalone, pure terminating
+a do chain, pure with return arm transform). 4 new tests including M10.4 state-threading
+validation below. 67 tests total.
+
+### ✅ Milestone 10.4: State-threading handler validation
+
+Multi-op do chain (`ss ← get_st () in pp ← put_st ss in pure ss`) with two-op effect
+dispatches correctly through nested lambda-lifted continuation laws. Confirms that
+captured variables (`ss`) survive lambda lifting across nested do-binds. 461 bootstrap
+tests pass.
 
 ### ✅ Milestone 8: Self-hosting compiler — **ALPHA CANDIDATE**
 
