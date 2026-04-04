@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
-**Last updated:** 2026-04-03
-**Current status:** Alpha candidate — M8 complete (Path B), M8.8 Path A pending cog I/O.
+**Last updated:** 2026-04-04
+**Current status:** Alpha candidate — M8 complete (Path B), M8.8 Path A pending cog I/O. M9.1–9.4 complete.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -24,40 +24,34 @@ Everything below is post-alpha.
 
 ---
 
-## M9 — Restricted dialect improvements
+## ✅ M9 — Restricted dialect improvements
 
 Goal: make the restricted dialect useful for real programs before adding
-architectural complexity. All work is self-hosting: changes go into `Compiler.gls`
-first, then tested against itself.
+architectural complexity.
 
-### M9.1 — `fix` and `let rec` in surface syntax
+### ✅ M9.1 — `fix` expressions
 
-Currently, recursive functions work via the de Bruijn self-reference slot (index 0)
-but there is no surface syntax for anonymous recursion. `fix` and `let rec` both
-lower to the same Law encoding already used.
+`fix λ self args → body` surface syntax. First param maps to law self-ref (N(0));
+law arity = len(user_params). `_compile_fix` in `bootstrap/codegen.py`.
 
-### M9.2 — Tuples
+### ✅ M9.2 — Tuples
 
-Syntactic sugar for binary/unary constructor pairs. `(a, b)` desugars to `MkPair a b`
-in codegen. Pattern `(x, y)` desugars to a two-field match. No new PLAN encoding;
-purely a parser and codegen addition.
+`(a, b)` encodes as `A(tag_0, a, b)` using quote form for tag 0 in law bodies.
+`PatTuple` dispatches via `_compile_con_match_case3` with ConInfo(tag=0, arity=2).
 
-### M9.3 — Mutual recursion (SCC compilation)
+### ✅ M9.3 — Mutual recursion (SCC compilation)
 
-The spec and encoding are complete (`spec/02-mutual-recursion.md`). Currently the
-compiler rejects any SCC with more than one definition. This milestone implements
-the shared-pin encoding for mutually recursive groups. Unblocks a large class of
-real programs (e.g. even/odd, mutually recursive parsers, rose trees).
+Tarjan SCC detection in `compile()` pass 3. Multi-element SCCs use shared-pin row
+encoding (`spec/02-mutual-recursion.md`). Canonical SCC ordering: lexicographic.
 
-### M9.4 — Type checker
+### ✅ M9.4 — Type checker extensions
 
-The self-hosting compiler currently trusts well-typed input. This milestone adds
-restricted Hindley-Milner: type inference for the restricted dialect, monomorphic
-and simply-polymorphic (`∀ a.`) types. Effect rows are parsed but not unified (that
-comes in M10). No typeclasses yet.
+`ExprFix` now correctly infers the fix type `T` (not the lambda type `T→T`).
+`_check_decls` groups DeclLets into SCCs (Tarjan) and processes in topological order,
+deferring generalization for multi-member SCCs. 79 tests passing.
 
-**Ordering note:** M9.4 is a prerequisite for M10 (you need effect rows in the type
-checker before you can check handlers). The other M9 items are independent.
+**Ordering note:** M9.4 is a prerequisite for M10 (effect rows in the type checker
+before checking handlers). All other M9 items are independent.
 
 ---
 
