@@ -1,0 +1,132 @@
+-- Core.Text
+-- Text type and string operations.
+--
+-- Text is a builtin type encoded as A(byte_length, content_nat).
+-- This is a raw PLAN App of two Nats, NOT the GLS tagged-pair encoding.
+-- Field access and construction require the Core.Text.Prim externals,
+-- which are implemented directly in the bootstrap codegen as pre-built laws.
+--
+-- Core.Text.Prim.mk_text  : Nat → Nat → Text  — construct A(len, content)
+-- Core.Text.Prim.text_len : Text → Nat         — extract byte_length (App.fun)
+-- Core.Text.Prim.text_nat : Text → Nat         — extract content_nat (App.arg)
+--
+-- Dependencies:
+--   Core.Nat — nat_eq, nat_lt, add, mul, pred, is_zero, Eq class
+
+use Core.Nat { Eq, add, mul, nat_eq, nat_lt, pred, is_zero }
+
+external mod Core.Text.Prim {
+  mk_text  : Nat → Nat → Text
+  text_len : Text → Nat
+  text_nat : Text → Nat
+}
+
+-- text_length: number of bytes in the Text value
+let text_length : Text → Nat
+  = λ t → Core.Text.Prim.text_len t
+
+-- text_content: raw content packed as a little-endian nat
+let text_content : Text → Nat
+  = λ t → Core.Text.Prim.text_nat t
+
+-- text_is_empty: True if the text has zero bytes
+let text_is_empty : Text → Bool
+  = λ t → is_zero (Core.Text.Prim.text_len t)
+
+-- text_eq: structural equality (same byte_length and same content nat)
+let text_eq : Text → Text → Bool
+  = λ s t →
+      if nat_eq (Core.Text.Prim.text_len s) (Core.Text.Prim.text_len t)
+      then nat_eq (Core.Text.Prim.text_nat s) (Core.Text.Prim.text_nat t)
+      else False
+
+instance Eq Text {
+  eq = text_eq
+}
+
+-- pow2: 2^n (used by text_concat to shift content nats)
+let pow2 : Nat → Nat
+  = λ n → match n {
+    | 0 → 1
+    | k → mul 2 (pow2 k)
+  }
+
+-- text_concat: concatenate two Text values
+-- concat (l1,c1) (l2,c2) = (l1+l2,  c1 + c2 * 2^(l1*8))
+-- The second string's bytes are shifted left by l1 byte-positions.
+let text_concat : Text → Text → Text
+  = λ s t →
+      let ls = Core.Text.Prim.text_len s in
+      let cs = Core.Text.Prim.text_nat s in
+      let lt = Core.Text.Prim.text_len t in
+      let ct = Core.Text.Prim.text_nat t in
+      Core.Text.Prim.mk_text
+        (add ls lt)
+        (add cs (mul ct (pow2 (mul ls 8))))
+
+-- sub: saturating subtraction — sub m n = max(m − n, 0)
+let sub : Nat → Nat → Nat
+  = λ m n → match n {
+    | 0 → m
+    | k → sub (pred m) k
+  }
+
+-- div_nat: floor division (assumes n > 0; div_nat m 0 diverges)
+--
+-- Uses `match (is_zero (nat_lt m n)) { | 0 → trivial | k → recursive }` so
+-- the recursive call lands in the PatVar/succ arm, which the bootstrap compiles
+-- into a deferred law via _make_pred_succ_law.  The zero arm is trivial (return 0
+-- or return m), avoiding eager infinite recursion in the Python harness.
+-- See DECISIONS.md §Bootstrap.
+let div_nat : Nat → Nat → Nat
+  = λ m n →
+      match (is_zero (nat_lt m n)) {
+        | 0 → 0
+        | k → add 1 (div_nat (sub m n) n)
+      }
+
+-- mod_nat: remainder (assumes n > 0; mod_nat m 0 diverges)
+let mod_nat : Nat → Nat → Nat
+  = λ m n →
+      match (is_zero (nat_lt m n)) {
+        | 0 → m
+        | k → mod_nat (sub m n) n
+      }
+
+-- show_digit: convert 0–9 to its ASCII character as a single-byte Text
+-- ASCII digits: '0'=48, '1'=49, … '9'=57
+let show_digit : Nat → Text
+  = λ d → Core.Text.Prim.mk_text 1 (add 48 d)
+
+-- show_nat_rev: build decimal Text for n, prepending into accumulator acc.
+-- Processes digits from least-significant to most-significant, prepending
+-- each into acc so the final result is in correct (most-significant first) order.
+-- Zero arm (n < 10): trivial — renders single digit.
+-- Succ arm (n >= 10): recursive — deferred via PatVar k.
+let show_nat_rev : Nat → Text → Text
+  = λ n acc →
+      match (is_zero (nat_lt n 10)) {
+        | 0 → text_concat (show_digit n) acc
+        | k → show_nat_rev (div_nat n 10) (text_concat (show_digit (mod_nat n 10)) acc)
+      }
+
+-- show_nat: decimal text representation of a natural number
+let show_nat : Nat → Text
+  = λ n → show_nat_rev n ""
+
+-- Show typeclass: human-readable text representation
+class Show a {
+  show : a → Text
+}
+
+-- show_bool: "True" or "False"
+let show_bool : Bool → Text
+  = λ b → if b then "True" else "False"
+
+instance Show Bool {
+  show = show_bool
+}
+
+instance Show Nat {
+  show = show_nat
+}

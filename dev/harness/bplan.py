@@ -304,3 +304,71 @@ _COMPILER_JETS = {
     'Compiler.bytes_concat':  (2, _bytes_concat),
     'Compiler.bytes_singleton': (1, lambda b: A(A(0, 1), b & 255)),
 }
+
+
+# ---------------------------------------------------------------------------
+# Text helpers: Text = A(N(byte_length), N(content_nat))
+# ---------------------------------------------------------------------------
+
+def _text_len(t):
+    """Extract byte_length from a Text value A(N(len), N(content))."""
+    if isinstance(t, A) and is_nat(t.fun):
+        return t.fun
+    return 0
+
+
+def _text_nat(t):
+    """Extract content_nat from a Text value A(N(len), N(content))."""
+    if isinstance(t, A) and is_nat(t.arg):
+        return t.arg
+    return 0
+
+
+def _mk_text(length, content):
+    """Construct a Text value: A(N(length), N(content))."""
+    return A(length if is_nat(length) else 0, content if is_nat(content) else 0)
+
+
+# ---------------------------------------------------------------------------
+# Prelude jet table: Core.Nat.* and Core.Text.Prim.* operations.
+# These have the same implementations as their Compiler.* counterparts but
+# are registered under the Core.* FQ names so prelude tests can use bplan.
+# ---------------------------------------------------------------------------
+
+_PRELUDE_JETS = {
+    # Core.Nat arithmetic
+    'Core.Nat.add':     (2, lambda m, n: m + n),
+    'Core.Nat.mul':     (2, lambda m, n: m * n),
+    'Core.Nat.pred':    (1, lambda n: max(0, n - 1)),
+    'Core.Nat.is_zero': (1, lambda n: 1 if n == 0 else 0),
+    'Core.Nat.nat_eq':  (2, lambda m, n: 1 if m == n else 0),
+    'Core.Nat.nat_lt':  (2, lambda m, n: 1 if m < n else 0),
+
+    # Core.Text arithmetic helpers (also defined in Core.Text)
+    'Core.Text.sub':     (2, _sat_sub),
+    'Core.Text.pow2':    (1, lambda n: 1 << n),
+    'Core.Text.div_nat': (2, lambda a, b: a // b if b else 0),
+    'Core.Text.mod_nat': (2, lambda a, b: a % b if b else 0),
+
+    # Core.Text.Prim externals
+    'Core.Text.Prim.mk_text':  (2, _mk_text),
+    'Core.Text.Prim.text_len': (1, _text_len),
+    'Core.Text.Prim.text_nat': (1, _text_nat),
+}
+
+
+def register_prelude_jets(compiled_dict: dict) -> None:
+    """Register jets for Core.Nat.* and Core.Text.* into _JET_REGISTRY.
+
+    Must be called after register_jets (or instead of it when no Compiler.*
+    names are present).  Uses the same id-based dispatch as register_jets.
+    """
+    for fq_name, (arity, fn) in _PRELUDE_JETS.items():
+        val = compiled_dict.get(fq_name)
+        if val is None:
+            continue
+        jet = J(arity, fq_name, fn)
+        if isinstance(val, L):
+            _JET_REGISTRY[id(val)] = jet
+        elif isinstance(val, P) and isinstance(val.val, L):
+            _JET_REGISTRY[id(val.val)] = jet

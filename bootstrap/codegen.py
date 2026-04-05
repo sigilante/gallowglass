@@ -385,6 +385,60 @@ class Compiler:
         'Core.PLAN.force':   4,
     }
 
+    @staticmethod
+    def _make_core_text_primitives() -> dict:
+        """
+        Build pre-compiled PLAN laws for Core.Text.Prim operations.
+
+        Text encoding: A(byte_length, content_nat) — a raw App of two Nats.
+        This is NOT the GLS tagged-pair/tuple encoding A(A(0, a), b).
+
+        mk_text len content → A(len, content)
+          Law body (arity=2): bapp(N(1), N(2)) = A(A(N(0), N(1)), N(2))
+          In kal: apply(e[1], e[0]) = A(len_val, content_val) ✓
+
+        text_len t → byte_length
+          Law body (arity=1): Case_ dispatch; App branch returns first component.
+
+        text_nat t → content_nat
+          Law body (arity=1): Case_ dispatch; App branch returns second component.
+        """
+        # Helpers for Case_ construction inside a 1-arity law body
+        # const0_1: 1-arg law returning literal 0 (for pin/succ cases)
+        const0_1 = P(L(1, 0, A(N(0), N(0))))   # A(N(0),N(0)) in arity-1 body = quote(0) = N(0)
+        # const0_3: 3-arg law returning literal 0 (for law case)
+        const0_3 = P(L(3, 0, A(N(0), N(0))))
+        # app_fun: 2-arg law returning first arg (byte_length)
+        app_fun = P(L(2, 0, N(1)))
+        # app_arg: 2-arg law returning second arg (content_nat)
+        app_arg = P(L(2, 0, N(2)))
+        # zero_case: literal 0 inside arity-1 law body
+        zero_lit = A(N(0), N(0))
+
+        def make_text_field_law(field_selector) -> Any:
+            """Build a 1-arg law that extracts a field from a Text App value."""
+            body = bapp(P(N(3)), const0_1, const0_3, field_selector, zero_lit, const0_1, N(1))
+            return P(L(1, encode_name('text_field'), body))
+
+        # mk_text: arity-2, body = bapp(N(1), N(2)) = (0 1 2) in law body
+        mk_text_body = bapp(N(1), N(2))
+        mk_text_law = P(L(2, encode_name('mk_text'), mk_text_body))
+
+        return {
+            'Core.Text.Prim.mk_text':  mk_text_law,
+            'Core.Text.Prim.text_len': make_text_field_law(app_fun),
+            'Core.Text.Prim.text_nat': make_text_field_law(app_arg),
+        }
+
+    # Lazily initialized at first use to avoid issues at class definition time.
+    _CORE_TEXT_PRIMITIVES: dict | None = None
+
+    @classmethod
+    def _get_core_text_primitives(cls) -> dict:
+        if cls._CORE_TEXT_PRIMITIVES is None:
+            cls._CORE_TEXT_PRIMITIVES = cls._make_core_text_primitives()
+        return cls._CORE_TEXT_PRIMITIVES
+
     def _register_ext(self, decl: DeclExt) -> None:
         """Register external module items as opaque values."""
         mod_path = '.'.join(decl.module_path)
@@ -395,6 +449,8 @@ class Compiler:
             # Core.PLAN operations map directly to PLAN opcode pins.
             if fq in self._CORE_PLAN_OPCODES:
                 stub = P(N(self._CORE_PLAN_OPCODES[fq]))
+            elif fq in self._get_core_text_primitives():
+                stub = self._get_core_text_primitives()[fq]
             else:
                 # All other externals: opaque sentinel pin (placeholder).
                 stub = P(N(encode_name(fq)))
