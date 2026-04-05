@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
-**Last updated:** 2026-04-04
-**Current status:** Alpha — M8 complete (Path B). M9.1–9.4 complete. M10.1–10.7 complete. M11.1–11.4 complete. 694 tests passing.
+**Last updated:** 2026-04-05
+**Current status:** Alpha — M8 complete (Path B). M9.1–9.4 complete. M10.1–10.7 complete. M11.1–11.4 complete. M12 complete. 714 tests passing.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -183,19 +183,40 @@ standard prelude becomes expressible without explicit dictionary passing.
 
 ---
 
-## M12 — Module system
+## ✅ M12 — Module system
 
-Multi-file compilation, `use`/`import`, package identity.
+Multi-file compilation, `use` imports, dependency-ordered build.
 
-Scope:
-- Build system: dependency graph resolution (acyclic by construction)
-- `use Module.Path { names }` syntax and name resolution
-- Instance visibility: explicit instance imports (see `DECISIONS.md §"Why explicit
-  instance imports?"`)
-- Package identity: module PinIds are stable across renames
+`bootstrap/build.py` — `build_modules([(module_name, source_text), ...])`:
+- Parses all sources, scans `DeclUse` declarations to build a dependency graph.
+- Kahn's topological sort; raises `BuildError` on circular dependency or unknown module.
+- Compiles in dependency order, threading resolved `Env` objects forward for
+  scope resolution and pre-compiled PLAN values forward for codegen global lookup.
+- Source-list order is tiebreaker; callers may provide files in any order.
+
+`bootstrap/codegen.py` — `compile_program(..., pre_compiled=dict)`:
+- New optional parameter; pre-populates `Compiler.env.globals` with values from
+  upstream modules so cross-module `ExprVar` references resolve correctly.
+
+**Supported `use` forms:**
+- `use Mod` — qualified access only (`Mod.name`)
+- `use Mod { names }` — specific names bound in scope
+- `use Mod unqualified { names }` — names available without `Mod.` prefix
+
+**13 new tests** in `tests/bootstrap/test_modules.py`:
+unqualified/qualified/qualified-only imports, transitive three-module builds,
+source-order independence, cross-module algebraic types, cycle detection,
+unknown module error, single-module smoke test.
+
+**Deferred to post-M12:**
+- Package declarations (`package { version, depends }`) — reserved keywords only
+- Explicit `export { ... }` lists — all bindings implicitly exported
+- Cross-module typeclass instances (needs instance-import propagation in codegen)
+- Module PinId stability — seed format handles content-addressing implicitly
 
 **Unblocked by M12:** The full Core prelude can be split across files. Cross-module
-typeclass instances. The `mod` declaration syntax from `spec/06-surface-syntax.md §11`.
+typeclass instances (deferred above). The `mod` declaration syntax from
+`spec/06-surface-syntax.md §11`.
 
 ---
 

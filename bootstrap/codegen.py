@@ -176,7 +176,7 @@ class Compiler:
         # result: dict[str, Any]  (fq_name -> PLAN value)
     """
 
-    def __init__(self, module: str = 'Main'):
+    def __init__(self, module: str = 'Main', pre_compiled: dict | None = None):
         self.module = module
         # map fq_name → PLAN value (not pinned yet)
         self.compiled: dict[str, Any] = {}
@@ -194,6 +194,10 @@ class Compiler:
         # Bool: False = tag 0, True = tag 1 (conventional ordering)
         # These match the scope resolver's pre-declared 'True'/'False' bindings.
         self._register_builtins()
+        # Pre-populate globals with values from already-compiled upstream modules.
+        # This allows cross-module let references to resolve in _compile_var.
+        if pre_compiled:
+            self.env.globals.update(pre_compiled)
 
     # -----------------------------------------------------------------------
     # Builtins
@@ -2701,12 +2705,23 @@ class Compiler:
 # Public API
 # ---------------------------------------------------------------------------
 
-def compile_program(program: Program, module: str = 'Main') -> dict[str, Any]:
+def compile_program(
+    program: Program,
+    module: str = 'Main',
+    pre_compiled: dict | None = None,
+) -> dict[str, Any]:
     """
     Compile a resolved, type-checked program.
 
+    Parameters:
+        program:      Resolved Program AST.
+        module:       FQ module name, e.g. 'Core.Nat'.
+        pre_compiled: PLAN values from already-compiled upstream modules,
+                      made available as globals so cross-module references
+                      compile correctly.  Does NOT appear in the returned dict.
+
     Returns:
-        dict mapping FQ name → PLAN value
+        dict mapping FQ name → PLAN value (this module's definitions only)
     """
-    compiler = Compiler(module=module)
+    compiler = Compiler(module=module, pre_compiled=pre_compiled)
     return compiler.compile(program)

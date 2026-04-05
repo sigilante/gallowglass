@@ -1,6 +1,6 @@
 # Test Strategy
 
-**Last updated:** M11.4 — Core prelude Eq/Ord/Add typeclass instances (694 tests)
+**Last updated:** M12 — multi-module build system (714 tests)
 
 This document describes the test architecture, what each layer verifies,
 and the known gap between what is tested and what is not.
