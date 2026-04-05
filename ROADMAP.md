@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
 **Last updated:** 2026-04-05
-**Current status:** Alpha — M8 complete (Path B). M9.1–9.4 complete. M10.1–10.7 complete. M11.1–11.4 complete. M12 complete. 714 tests passing.
+**Current status:** Alpha — M8 complete (Path B). M9.1–9.4 complete. M10.1–10.7 complete. M11.1–11.5 complete. M12 complete. 734 tests passing.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -173,10 +173,17 @@ Instances: `Eq Nat`, `Ord Nat` (with `nat_lte`), `Add Nat`; `Eq Bool`.
 Planvm seed-loading tests added to `tests/prelude/test_core_nat.py` and `test_core_bool.py`.
 `Show` deferred: requires Text manipulation infrastructure not yet in the prelude.
 
+**M11.5 — GLS self-hosting compiler: `DeclClass`/`DeclInst` support:** ✅
+Added `TkClass`/`TkInstance` tokens, `DClass`/`DInst` AST constructors, `kw_class`/`kw_instance`
+keyword nats, `lex_classify_ident` keyword dispatch, `parse_class_decl`/`parse_inst_decl` parser,
+`sr_collect_globals` DInst method name collection, `sr_resolve_decls` DInst member body rewriting,
+`cg_compile_inst_members`/`cg_pass3` DInst codegen. Fixed `decl_is_let/type/ext/class/inst`
+predicates (wildcard-arm-drop bug: now use exhaustive 5-arm matches). 20 new tests in
+`tests/compiler/test_m11.py`. 734 tests passing.
+
 **Remaining M11 scope:**
 - Advanced type inference for dict insertion (non-Nat types, polymorphic call sites)
 - Superclass constraints (one constraint implies another)
-- GLS self-hosting compiler: `DeclClass`/`DeclInst` support (analogous to M10.7 for EFix)
 
 **Unblocked by M11:** `Show`, `Eq`, `Ord`, `Add`, `Serialize` instances. The
 standard prelude becomes expressible without explicit dictionary passing.

@@ -329,6 +329,26 @@ thence to `_compile_con_match_case3`.
 is only ever called from `_compile_con_match`) must pass the enclosing `wild_arm`. Do not
 add call sites that omit it.
 
+**Bug 0 — GLS `decl_is_*` predicates return 1 for all constructors (M11.5 fix).**
+
+In `Compiler.gls`, predicate functions like `decl_is_let`, `decl_is_type`, etc. were written as:
+```gallowglass
+let decl_is_let : Decl → Nat
+  = λ d → match d { | DLet _ _ → 1 | _ → 0 }
+```
+This is the wildcard-arm-drop pattern that triggers `_compile_con_body_extraction`. Since all
+Decl constructors have arity 2, the extraction always returns 1 (the non-wildcard body) for
+any App-constructor input. The predicates were effectively `λ _ → 1`.
+
+The existing cg_pass1/pass2 accidentally worked because their fallback behavior (calling
+`cg_register_type` or `cg_register_ext_items` with `Nil` cdefs/items) is a no-op. cg_pass3
+was silently broken (compiled DType/DExt as DLets with name=0), but this was undetected
+because the M8.8 Path B self-hosting test only exercises `emit_program`, not `compile_program`.
+
+**Fix (M11.5):** All 5 `decl_is_*` predicates now use exhaustive 5-arm matches (same
+pattern as `sr_collect_globals` and `sr_resolve_decls`). Each arm names its constructor
+explicitly; no wildcard arm is used.
+
 **Bug 2 — Binary path in `_build_app_handler` ignores unary arms.**
 
 The binary path (`max_arity == 2`) handles constructors where the outer_fun from Case_ App

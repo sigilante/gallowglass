@@ -474,6 +474,8 @@ type Token =
   | TkUnderscore
   | TkEof
   | TkErr Nat
+  | TkClass
+  | TkInstance
 
 -- AST types (parser output)
 -- Note: constructors are limited to arity ≤ 2 (bootstrap codegen restriction).
@@ -498,6 +500,8 @@ type Decl =
   | DLet Nat Expr
   | DType Nat (List ConDef)
   | DExt Nat (List Nat)
+  | DClass Nat (List Nat)
+  | DInst Nat (Pair Nat (List (Pair Nat Expr)))
 
 type ConDef =
   | MkConDef Nat Nat
@@ -623,6 +627,8 @@ let kw_backarrow_uni: Nat = 0x9086E2           -- "←"  (E2 86 90)
 let kw_forall_uni   : Nat = 0x8088E2           -- "∀"  (E2 88 80)
 let kw_underscore   : Nat = 0x5F               -- "_"
 let kw_fix          : Nat = 0x786966           -- "fix"
+let kw_class        : Nat = 0x7373616c63       -- "class"
+let kw_instance     : Nat = 0x65636e6174736e69 -- "instance"
 
 -- =====================================================================
 -- Section 12: LexPos Helpers
@@ -805,7 +811,15 @@ let lex_classify_ident : Nat → Nat → Token
                                                                         match (nat_eq ident_nat kw_underscore) {
                                                                           | 0 →
                                                                               match (nat_eq ident_nat kw_fix) {
-                                                                                | 0 → TkIdent ident_nat
+                                                                                | 0 →
+                                                                                    match (nat_eq ident_nat kw_class) {
+                                                                                      | 0 →
+                                                                                          match (nat_eq ident_nat kw_instance) {
+                                                                                            | 0 → TkIdent ident_nat
+                                                                                            | k → TkInstance
+                                                                                          }
+                                                                                      | k → TkClass
+                                                                                    }
                                                                                 | k → TkFix
                                                                               }
                                                                           | k → TkUnderscore
@@ -1713,6 +1727,150 @@ let parse_ext_decl : Nat → List Token → Pair Decl (List Token)
             MkPair (DExt mod_name names) (tok_tail toks2)
       }
 
+-- Precomputed name nat: "inst" (4 bytes) — prefix for instance dict names.
+-- Used as starting point for name_concat_under chains.
+let nn_inst : Nat = 0x74736e69  -- "inst"
+
+-- tok_is_class_member_start: 1 if next two tokens are TkIdent + TkColon
+-- (signals the start of a class method declaration)
+let tok_is_class_member_start : List Token → Nat
+  = λ toks →
+      match (tok_eat_ident toks) {
+        | MkPair 0 _ → 0
+        | MkPair _ rest → tok_is rest TkColon
+      }
+
+-- tok_skip_to_class_member: skip tokens until "ident :" or "}" is reached
+let tok_skip_to_class_member : List Token → List Token
+  = λ toks →
+      match (tok_is toks TkRBrace) {
+        | 0 →
+            match (tok_is_class_member_start toks) {
+              | 0 → tok_skip_to_class_member (tok_tail toks)
+              | k → toks
+            }
+        | k → toks
+      }
+
+-- parse_class_member_names: parse method names from { name : type \n ... }
+-- toks is positioned after the opening '{'.
+-- Returns (method_name_list, tokens_after_closing_}).
+let parse_class_member_names : List Token → Pair (List Nat) (List Token)
+  = λ toks →
+      match (tok_is toks TkRBrace) {
+        | 0 →
+            match (tok_eat_ident toks) {
+              | MkPair 0 _ → MkPair Nil (tok_tail toks)
+              | MkPair method_name rest →
+                  let rest2 = tok_skip_to_class_member (tok_tail rest) in
+                  match (parse_class_member_names rest2) {
+                    | MkPair names rest3 → MkPair (Cons method_name names) rest3
+                  }
+            }
+        | k → MkPair Nil (tok_tail toks)
+      }
+
+-- parse_class_decl: parse class body after 'class' keyword
+-- toks positioned on class name ident
+let parse_class_decl : List Token → Pair Decl (List Token)
+  = λ toks →
+      match (tok_eat_ident toks) {
+        | MkPair 0 _ → MkPair (DClass 0 Nil) toks
+        | MkPair class_name rest →
+            let rest2 = skip_type_params rest in
+            match (parse_class_member_names (tok_tail rest2)) {
+              | MkPair methods rest3 → MkPair (DClass class_name methods) rest3
+            }
+      }
+
+-- tok_is_inst_member_start: 1 if next two tokens are TkIdent + TkEqual
+-- (signals the start of an instance method binding)
+let tok_is_inst_member_start : List Token → Nat
+  = λ toks →
+      match (tok_eat_ident toks) {
+        | MkPair 0 _ → 0
+        | MkPair _ rest → tok_is rest TkEqual
+      }
+
+-- is_inst_arg_start: like is_atom_start but also stops at "ident =" boundary
+let is_inst_arg_start : List Token → Nat
+  = λ toks →
+      match (is_atom_start toks) {
+        | 0 → 0
+        | k →
+            match (tok_is_inst_member_start toks) {
+              | 0 → 1
+              | k → 0
+            }
+      }
+
+-- parse_inst_app_go_pe: application accumulator for instance bodies
+-- Like parse_app_go_pe but stops at "ident =" member separator
+let parse_inst_app_go_pe
+      : (List Token → Pair Expr (List Token)) → Expr → List Token → Pair Expr (List Token)
+  = λ pe acc toks →
+      match (is_inst_arg_start toks) {
+        | 0 → MkPair acc toks
+        | k →
+            match (parse_atom_expr_pe pe toks) {
+              | MkPair arg rest → parse_inst_app_go_pe pe (EApp acc arg) rest
+            }
+      }
+
+-- parse_inst_member_body_pe: parse one instance method body
+-- Handles λ-bodies and simple applications; stops before "ident =" or "}"
+let parse_inst_member_body_pe
+      : (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
+  = λ pe toks →
+      match (tok_is toks TkLambda) {
+        | 0 →
+            match (parse_atom_expr_pe pe toks) {
+              | MkPair head rest → parse_inst_app_go_pe pe head rest
+            }
+        | k →
+            match (parse_lambda_params (tok_tail toks)) {
+              | MkPair params toks2 → parse_lam_body_pe pe params toks2
+            }
+      }
+
+-- parse_inst_members: parse { method = body \n ... } block
+-- toks positioned after the opening '{'.
+-- Returns (member_list, tokens_after_closing_}).
+let parse_inst_members : List Token → Pair (List (Pair Nat Expr)) (List Token)
+  = λ toks →
+      match (tok_is toks TkRBrace) {
+        | 0 →
+            match (tok_eat_ident toks) {
+              | MkPair 0 _ → MkPair Nil (tok_tail toks)
+              | MkPair method_name rest →
+                  match (parse_inst_member_body_pe parse_expr (tok_tail rest)) {
+                    | MkPair body rest2 →
+                        match (parse_inst_members rest2) {
+                          | MkPair members rest3 →
+                              MkPair (Cons (MkPair method_name body) members) rest3
+                        }
+                  }
+            }
+        | k → MkPair Nil (tok_tail toks)
+      }
+
+-- parse_inst_decl: parse instance body after 'instance' keyword
+-- toks positioned on class name ident
+let parse_inst_decl : List Token → Pair Decl (List Token)
+  = λ toks →
+      match (tok_eat_ident toks) {
+        | MkPair 0 _ → MkPair (DInst 0 (MkPair 0 Nil)) toks
+        | MkPair class_name rest →
+            match (tok_eat_ident rest) {
+              | MkPair 0 _ → MkPair (DInst class_name (MkPair 0 Nil)) rest
+              | MkPair type_name rest2 →
+                  match (parse_inst_members (tok_tail rest2)) {
+                    | MkPair members rest3 →
+                        MkPair (DInst class_name (MkPair type_name members)) rest3
+                  }
+            }
+      }
+
 -- parse_decl: parse one top-level declaration
 -- Uses tok_is chain (1 named nat arm each) — avoids multi-nullary-arm pred_env bug.
 let parse_decl : List Token → Pair Decl (List Token)
@@ -1722,7 +1880,15 @@ let parse_decl : List Token → Pair Decl (List Token)
             match (tok_is toks TkType) {
               | 0 →
                   match (tok_is toks TkExternal) {
-                    | 0 → MkPair (DLet 0 (EVar 0)) (tok_tail toks)
+                    | 0 →
+                        match (tok_is toks TkClass) {
+                          | 0 →
+                              match (tok_is toks TkInstance) {
+                                | 0 → MkPair (DLet 0 (EVar 0)) (tok_tail toks)
+                                | k → parse_inst_decl (tok_tail toks)
+                              }
+                          | k → parse_class_decl (tok_tail toks)
+                        }
                     | k →
                         match (parse_qual_name (tok_tail (tok_tail toks))) {
                           | MkPair mod_name toks2 → parse_ext_decl mod_name toks2
@@ -2097,14 +2263,34 @@ let arm_get_con_body : MatchArm → Expr
 -- Layer 3c: Decl single-arm helpers
 -- -------------------------------------------------------------------
 
+-- Predicates use exhaustive 5-arm matches to avoid the wildcard-arm-drop
+-- bootstrap bug (| Con _ _ → 1 | _ → 0 matches all constructors as Con).
 let decl_is_let : Decl → Nat
-  = λ d → match d { | DLet _ _ → 1 | _ → 0 }
+  = λ d → match d {
+      | DLet _ _   → 1
+      | DType _ _  → 0
+      | DExt _ _   → 0
+      | DClass _ _ → 0
+      | DInst _ _  → 0
+    }
 
 let decl_is_type : Decl → Nat
-  = λ d → match d { | DType _ _ → 1 | _ → 0 }
+  = λ d → match d {
+      | DLet _ _   → 0
+      | DType _ _  → 1
+      | DExt _ _   → 0
+      | DClass _ _ → 0
+      | DInst _ _  → 0
+    }
 
 let decl_is_ext : Decl → Nat
-  = λ d → match d { | DExt _ _ → 1 | _ → 0 }
+  = λ d → match d {
+      | DLet _ _   → 0
+      | DType _ _  → 0
+      | DExt _ _   → 1
+      | DClass _ _ → 0
+      | DInst _ _  → 0
+    }
 
 let decl_get_let_name : Decl → Nat
   = λ d → match d { | DLet n _ → n | _ → 0 }
@@ -2123,6 +2309,39 @@ let decl_get_ext_mod : Decl → Nat
 
 let decl_get_ext_items : Decl → List Nat
   = λ d → match d { | DExt _ items → items | _ → Nil }
+
+let decl_is_class : Decl → Nat
+  = λ d → match d {
+      | DLet _ _   → 0
+      | DType _ _  → 0
+      | DExt _ _   → 0
+      | DClass _ _ → 1
+      | DInst _ _  → 0
+    }
+
+let decl_is_inst : Decl → Nat
+  = λ d → match d {
+      | DLet _ _   → 0
+      | DType _ _  → 0
+      | DExt _ _   → 0
+      | DClass _ _ → 0
+      | DInst _ _  → 1
+    }
+
+let decl_get_class_name : Decl → Nat
+  = λ d → match d { | DClass n _ → n | _ → 0 }
+
+let decl_get_class_methods : Decl → List Nat
+  = λ d → match d { | DClass _ ms → ms | _ → Nil }
+
+let decl_get_inst_class : Decl → Nat
+  = λ d → match d { | DInst cls _ → cls | _ → 0 }
+
+let decl_get_inst_body : Decl → Pair Nat (List (Pair Nat Expr))
+  = λ d → match d {
+      | DInst _ p → p
+      | _ → MkPair 0 Nil
+    }
 
 
 -- -------------------------------------------------------------------
@@ -3403,6 +3622,14 @@ let name_concat_dot : Nat → Nat → Nat
       let item_shifted = shift_left item_name (mul 8 (add blen 1)) in
       bit_or (bit_or mod_name dot) item_shifted
 
+-- name_concat_under: "a" ++ "_" ++ "b" as little-endian nat
+let name_concat_under : Nat → Nat → Nat
+  = λ a_name b_name →
+      let blen = nat_byte_len a_name in
+      let under = shift_left 0x5F (mul 8 blen) in
+      let b_shifted = shift_left b_name (mul 8 (add blen 1)) in
+      bit_or (bit_or a_name under) b_shifted
+
 -- Precomputed name nats for Core.PLAN opcodes
 -- These are int.from_bytes(s.encode('utf-8'), 'little') values
 let nn_Core_PLAN : Nat = 1443551261620241067843
@@ -3567,7 +3794,27 @@ let cg_compile_let_one : Nat → Expr → Nat → CEnv → List (Pair Nat (Pair 
       let new_env = cenv_bind_global env fq_name val in
       MkPair new_env (Cons (MkPair fq_name val) compiled)
 
--- cg_pass3: process DLet declarations
+-- cg_compile_inst_members: compile each method body in a DInst
+let cg_compile_inst_members
+      : List (Pair Nat Expr) → Nat → Nat → CEnv → List (Pair Nat (Pair Nat Nat)) → List (Pair Nat PlanVal)
+      → Pair CEnv (List (Pair Nat PlanVal))
+  = λ members inst_prefix mod_name env ctab compiled →
+      match members {
+        | Nil → MkPair env compiled
+        | Cons pair rest →
+            match pair {
+              | MkPair method_name body →
+                  let bare    = name_concat_under inst_prefix method_name in
+                  let fq_name = name_concat_dot mod_name bare in
+                  let fq_env  = cenv_set_self (cenv_set_arity env 0) (Some fq_name) in
+                  let val     = cg_compile_expr body fq_env ctab bare in
+                  let new_env = cenv_bind_global env fq_name val in
+                  cg_compile_inst_members rest inst_prefix mod_name new_env ctab
+                    (Cons (MkPair fq_name val) compiled)
+            }
+      }
+
+-- cg_pass3: process DLet and DInst declarations
 let cg_pass3 : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat Nat)) → List (Pair Nat PlanVal)
              → List (Pair Nat PlanVal)
   = λ decls mod_name env ctab compiled →
@@ -3580,7 +3827,21 @@ let cg_pass3 : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat Nat)) →
                                  (decl_get_let_name decl)
                                  (decl_get_let_body decl)
                                  mod_name env ctab compiled
-                           | _ → MkPair env compiled
+                           | _ →
+                               match (nat_eq (decl_is_inst decl) 0) {
+                                 | 0 →
+                                     match (decl_get_inst_body decl) {
+                                       | MkPair type_name members →
+                                           let inst_prefix =
+                                             name_concat_under
+                                               (name_concat_under nn_inst
+                                                  (decl_get_inst_class decl))
+                                               type_name in
+                                           cg_compile_inst_members members inst_prefix
+                                             mod_name env ctab compiled
+                                     }
+                                 | _ → MkPair env compiled
+                               }
                          } in
             match result {
               | MkPair new_env new_compiled →
@@ -3663,9 +3924,24 @@ let sr_collect_ext_items
               (assoc_insert item_name (name_concat_dot ext_mod item_name) acc)
       }
 
+-- sr_collect_inst_method_names: add inst method bare→fq entries to acc
+let sr_collect_inst_method_names
+      : List (Pair Nat Expr) → Nat → Nat → List (Pair Nat Nat) → List (Pair Nat Nat)
+  = λ members inst_prefix mod_name acc →
+      match members {
+        | Nil → acc
+        | Cons pair rest →
+            match pair {
+              | MkPair method_name _ →
+                  let bare = name_concat_under inst_prefix method_name in
+                  let fq   = name_concat_dot mod_name bare in
+                  sr_collect_inst_method_names rest inst_prefix mod_name
+                    (assoc_insert bare fq acc)
+            }
+      }
+
 -- sr_collect_globals: build the bare→fq table from all decls
--- Uses direct exhaustive 3-way match to avoid the bootstrap wildcard-arm-drop
--- bug that makes decl_is_let/decl_is_type/decl_is_ext return 1 for all Decls.
+-- Uses direct exhaustive 5-way match (all constructors have arity 2).
 let sr_collect_globals
       : List Decl → Nat → List (Pair Nat Nat) → List (Pair Nat Nat)
   = λ decls mod_name acc →
@@ -3679,6 +3955,16 @@ let sr_collect_globals
                              sr_collect_con_names cdefs mod_name acc
                          | DExt ext_mod items →
                              sr_collect_ext_items items ext_mod acc
+                         | DClass _ _ → acc
+                         | DInst class_name body_pair →
+                             match body_pair {
+                               | MkPair type_name members →
+                                   let inst_prefix =
+                                     name_concat_under
+                                       (name_concat_under nn_inst class_name)
+                                       type_name in
+                                   sr_collect_inst_method_names members inst_prefix mod_name acc
+                             }
                        } in
             sr_collect_globals rest mod_name acc2
       }
@@ -3862,8 +4148,22 @@ let sr_rewrite_expr
   = λ expr bound gtab →
       sr_dispatch sr_rewrite_expr expr bound gtab
 
--- sr_resolve_decls: rewrite DLet bodies; DType/DExt pass through unchanged
--- Uses direct exhaustive 3-way match to avoid wildcard-arm-drop bootstrap bug.
+-- sr_resolve_inst_members: resolve all member body exprs in a DInst
+let sr_resolve_inst_members
+      : List (Pair Nat Expr) → List (Pair Nat Nat) → List (Pair Nat Expr)
+  = λ members gtab →
+      match members {
+        | Nil → Nil
+        | Cons pair rest →
+            match pair {
+              | MkPair name body →
+                  Cons (MkPair name (sr_rewrite_expr body Nil gtab))
+                       (sr_resolve_inst_members rest gtab)
+            }
+      }
+
+-- sr_resolve_decls: rewrite bodies; DType/DExt/DClass pass through unchanged.
+-- Uses direct exhaustive 5-way match (all Decl constructors have arity 2).
 let sr_resolve_decls
       : List Decl → List (Pair Nat Nat) → List Decl
   = λ decls gtab →
@@ -3875,6 +4175,14 @@ let sr_resolve_decls
                                  DLet name (sr_rewrite_expr body Nil gtab)
                              | DType _ _ → decl
                              | DExt _ _  → decl
+                             | DClass _ _ → decl
+                             | DInst class_name body_pair →
+                                 match body_pair {
+                                   | MkPair type_name members →
+                                       DInst class_name
+                                         (MkPair type_name
+                                           (sr_resolve_inst_members members gtab))
+                                 }
                            } in
             Cons new_decl (sr_resolve_decls rest gtab)
       }

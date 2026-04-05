@@ -1,6 +1,6 @@
 # Test Strategy
 
-**Last updated:** M12 — multi-module build system (714 tests)
+**Last updated:** M11.5 — GLS DeclClass/DeclInst support (734 tests)
 
 This document describes the test architecture, what each layer verifies,
 and the known gap between what is tested and what is not.
@@ -155,6 +155,7 @@ tests/
     test_emit.py               ← M8.6 Plan Assembler emitter; 39 active (BPLAN harness)
     test_driver.py             ← M8.7 driver (main : Bytes → Bytes); 3 active + 3 skipped
     test_selfhost.py           ← M8.8 self-hosting; 17 active + 2 planvm-gated
+    test_m11.py                ← M11.5 GLS DeclClass/DeclInst support; 20 tests
 ```
 
 ---
