@@ -4,9 +4,28 @@
 -- Arithmetic requires Core.PLAN.inc (opcode 2 = increment).
 -- Structural recursion (match on n) uses opcode 3 (Case_) via the bootstrap
 -- pattern-match compiler, which now correctly binds the predecessor.
+--
+-- Typeclass declarations (module-local until M12 cross-module imports):
+--   Eq, Ord, Add — with Nat instances.
 
 external mod Core.PLAN {
   inc : Nat → Nat
+}
+
+-- Eq: structural equality
+class Eq a {
+  eq : a → a → Bool
+}
+
+-- Ord: total ordering
+class Ord a {
+  lt  : a → a → Bool
+  lte : a → a → Bool
+}
+
+-- Add: additive monoid operation
+class Add a {
+  add : a → a → a
 }
 
 -- pred: predecessor of n; pred 0 = 0
@@ -50,3 +69,23 @@ let mul : Nat → Nat → Nat
     | 0 → 0
     | k → add m (mul m k)
   }
+
+-- nat_lte: m ≤ n?
+let nat_lte : Nat → Nat → Bool
+  = λ m n → match m {
+    | 0 → True
+    | j → match n { | 0 → False | k → nat_lte j k }
+  }
+
+instance Eq Nat {
+  eq = nat_eq
+}
+
+instance Ord Nat {
+  lt  = nat_lt
+  lte = nat_lte
+}
+
+instance Add Nat {
+  add = add
+}

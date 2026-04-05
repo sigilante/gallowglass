@@ -358,6 +358,98 @@ let test_min2 : Nat = min_by 7 2
 
 
 # ---------------------------------------------------------------------------
+# M11.4: Core prelude instances (Python harness evaluation)
+# ---------------------------------------------------------------------------
+#
+# These tests compile the actual prelude files and verify the typeclass
+# instances evaluate correctly via the Python PLAN harness.
+
+def _load_prelude(filename: str, module: str) -> dict:
+    """Compile a prelude source file and return the compiled dict."""
+    import pathlib
+    src_path = pathlib.Path(__file__).parent.parent.parent / 'prelude' / 'src' / 'Core' / filename
+    with open(src_path) as f:
+        src = f.read()
+    prog = parse(lex(src, str(src_path)), str(src_path))
+    resolved, _ = resolve(prog, module, {}, str(src_path))
+    return compile_program(resolved, module)
+
+
+def test_prelude_nat_eq_instance_emitted():
+    """Core.Nat: inst_Eq_Nat is in the compiled output."""
+    c = _load_prelude('Nat.gls', 'Core.Nat')
+    assert 'Core.Nat.inst_Eq_Nat' in c
+    assert 'Core.Nat.inst_Eq_Nat_eq' in c
+
+
+def test_prelude_nat_eq_equal():
+    """Core.Nat inst_Eq_Nat: eq 3 3 = True (1)."""
+    c = _load_prelude('Nat.gls', 'Core.Nat')
+    fn = c['Core.Nat.inst_Eq_Nat_eq']
+    assert evaluate(apply(apply(fn, N(3)), N(3))) == 1
+
+
+def test_prelude_nat_eq_unequal():
+    """Core.Nat inst_Eq_Nat: eq 3 4 = False (0)."""
+    c = _load_prelude('Nat.gls', 'Core.Nat')
+    fn = c['Core.Nat.inst_Eq_Nat_eq']
+    assert evaluate(apply(apply(fn, N(3)), N(4))) == 0
+
+
+def test_prelude_nat_ord_lt():
+    """Core.Nat inst_Ord_Nat: lt 3 5 = True (1), lt 5 3 = False (0)."""
+    c = _load_prelude('Nat.gls', 'Core.Nat')
+    fn = c['Core.Nat.inst_Ord_Nat_lt']
+    assert evaluate(apply(apply(fn, N(3)), N(5))) == 1
+    assert evaluate(apply(apply(fn, N(5)), N(3))) == 0
+
+
+def test_prelude_nat_ord_lte():
+    """Core.Nat inst_Ord_Nat: lte 3 3 = True, lte 4 3 = False."""
+    c = _load_prelude('Nat.gls', 'Core.Nat')
+    fn = c['Core.Nat.inst_Ord_Nat_lte']
+    assert evaluate(apply(apply(fn, N(3)), N(3))) == 1
+    assert evaluate(apply(apply(fn, N(0)), N(0))) == 1
+    assert evaluate(apply(apply(fn, N(4)), N(3))) == 0
+
+
+def test_prelude_nat_add_instance():
+    """Core.Nat inst_Add_Nat: add 2 3 = 5."""
+    c = _load_prelude('Nat.gls', 'Core.Nat')
+    fn = c['Core.Nat.inst_Add_Nat']
+    assert evaluate(apply(apply(fn, N(2)), N(3))) == 5
+    assert evaluate(apply(apply(fn, N(0)), N(7))) == 7
+
+
+def test_prelude_bool_eq_instance_emitted():
+    """Core.Bool: inst_Eq_Bool is in the compiled output."""
+    c = _load_prelude('Bool.gls', 'Core.Bool')
+    assert 'Core.Bool.inst_Eq_Bool' in c
+    assert 'Core.Bool.inst_Eq_Bool_eq' in c
+
+
+def test_prelude_bool_eq_true_true():
+    """Core.Bool inst_Eq_Bool: eq True True = True (1)."""
+    c = _load_prelude('Bool.gls', 'Core.Bool')
+    fn = c['Core.Bool.inst_Eq_Bool_eq']
+    assert evaluate(apply(apply(fn, N(1)), N(1))) == 1
+
+
+def test_prelude_bool_eq_true_false():
+    """Core.Bool inst_Eq_Bool: eq True False = False (0)."""
+    c = _load_prelude('Bool.gls', 'Core.Bool')
+    fn = c['Core.Bool.inst_Eq_Bool_eq']
+    assert evaluate(apply(apply(fn, N(1)), N(0))) == 0
+
+
+def test_prelude_bool_eq_false_false():
+    """Core.Bool inst_Eq_Bool: eq False False = True (1)."""
+    c = _load_prelude('Bool.gls', 'Core.Bool')
+    fn = c['Core.Bool.inst_Eq_Bool_eq']
+    assert evaluate(apply(apply(fn, N(0)), N(0))) == 1
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 

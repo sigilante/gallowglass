@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
 **Last updated:** 2026-04-04
-**Current status:** Alpha — M8 complete (Path B). M9.1–9.4 complete. M10.1–10.7 complete. M11.1–11.3 complete. 684 tests passing.
+**Current status:** Alpha — M8 complete (Path B). M9.1–9.4 complete. M10.1–10.7 complete. M11.1–11.4 complete. 694 tests passing.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -162,8 +162,18 @@ subsequent lets can use the freshly emitted instance dicts at call sites.
 
 **17 new tests** in `tests/bootstrap/test_typeclasses.py`.
 
+### ✅ M11.4 — Core prelude `Eq`, `Ord`, `Add` instances
+
+`class Eq a { eq : a → a → Bool }`, `class Ord a { lt : a → a → Bool; lte : a → a → Bool }`,
+`class Add a { add : a → a → a }` declared in `prelude/src/Core/Nat.gls` and `Core/Bool.gls`.
+Scope resolver updated to allow a `DeclLet` to shadow a same-named `BindingClassMethod`
+(concrete implementation takes precedence without a duplicate-definition error).
+Instances: `Eq Nat`, `Ord Nat` (with `nat_lte`), `Add Nat`; `Eq Bool`.
+10 new Python harness evaluation tests in `tests/bootstrap/test_typeclasses.py`.
+Planvm seed-loading tests added to `tests/prelude/test_core_nat.py` and `test_core_bool.py`.
+`Show` deferred: requires Text manipulation infrastructure not yet in the prelude.
+
 **Remaining M11 scope:**
-- M11.4: Core prelude `Eq`, `Ord`, `Show`, `Add` instances in `prelude/src/Core/`
 - Advanced type inference for dict insertion (non-Nat types, polymorphic call sites)
 - Superclass constraints (one constraint implies another)
 - GLS self-hosting compiler: `DeclClass`/`DeclInst` support (analogous to M10.7 for EFix)

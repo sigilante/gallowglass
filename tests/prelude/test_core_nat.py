@@ -59,6 +59,26 @@ class TestCoreNatSeeds(unittest.TestCase):
     def test_mul_seed_loads(self):
         self.assertTrue(seed_loads(make_seed('mul')))
 
+    @requires_planvm
+    def test_nat_lte_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('nat_lte')))
+
+    @requires_planvm
+    def test_inst_eq_nat_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('inst_Eq_Nat')))
+
+    @requires_planvm
+    def test_inst_ord_nat_lt_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('inst_Ord_Nat_lt')))
+
+    @requires_planvm
+    def test_inst_ord_nat_lte_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('inst_Ord_Nat_lte')))
+
+    @requires_planvm
+    def test_inst_add_nat_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('inst_Add_Nat')))
+
 
 if __name__ == '__main__':
     unittest.main()

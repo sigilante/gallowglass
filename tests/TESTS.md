@@ -1,6 +1,6 @@
 # Test Strategy
 
-**Last updated:** M11.1–11.3 — typeclass dictionary construction and constrained function compilation (684 tests)
+**Last updated:** M11.4 — Core prelude Eq/Ord/Add typeclass instances (694 tests)
 
 This document describes the test architecture, what each layer verifies,
 and the known gap between what is tested and what is not.
@@ -28,7 +28,7 @@ lifting, etc.
 - `tests/sanity/test_seed.py` — seed format round-trip
 - `tests/bootstrap/test_*.py` — lexer, parser, scope, typecheck, codegen (462 tests)
 - `tests/bootstrap/test_programs.py` — integration battery: Fibonacci (self-recursive + fix), Ackermann, Sudan, even/odd (20 tests)
-- `tests/bootstrap/test_typeclasses.py` — M11 typeclass: DeclClass/DeclInst compilation, constrained let arity, call-site dict insertion, multi-method (17 tests)
+- `tests/bootstrap/test_typeclasses.py` — M11 typeclass: DeclClass/DeclInst compilation, constrained let arity, call-site dict insertion, multi-method, prelude Eq/Ord/Add instance evaluation (27 tests)
 
 **Limitation:** The harness is our own implementation of PLAN semantics. If the
 harness and the real planvm disagree on semantics (evaluation order, edge cases),
