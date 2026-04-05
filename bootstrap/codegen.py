@@ -176,7 +176,8 @@ class Compiler:
         # result: dict[str, Any]  (fq_name -> PLAN value)
     """
 
-    def __init__(self, module: str = 'Main', pre_compiled: dict | None = None):
+    def __init__(self, module: str = 'Main', pre_compiled: dict | None = None,
+                 pre_class_methods: dict | None = None):
         self.module = module
         # map fq_name → PLAN value (not pinned yet)
         self.compiled: dict[str, Any] = {}
@@ -198,6 +199,14 @@ class Compiler:
         # This allows cross-module let references to resolve in _compile_var.
         if pre_compiled:
             self.env.globals.update(pre_compiled)
+        # Pre-populate class metadata from upstream modules.
+        # pre_class_methods: {class_fq: set(method_fq_names)} (Env.class_methods format)
+        # Convert to {class_fq: [method_short_names]} (Compiler._class_methods format).
+        if pre_class_methods:
+            for class_fq, method_fqs in pre_class_methods.items():
+                if class_fq not in self._class_methods:
+                    shorts = [m.split('.')[-1] for m in sorted(method_fqs)]
+                    self._class_methods[class_fq] = shorts
 
     # -----------------------------------------------------------------------
     # Builtins
@@ -438,6 +447,22 @@ class Compiler:
         methods = [m.name for m in decl.members if isinstance(m, ClassMember)]
         self._class_methods[fq_cls] = methods
 
+    def _resolve_class_fq(self, class_short: str) -> str:
+        """Resolve a short class name to its defining-module FQ form.
+
+        Tries the current module first (single-module programs), then searches
+        all known classes for a match by short name (cross-module case).
+        Returns '{self.module}.{class_short}' as a final fallback so that
+        single-module programs that haven't pre-threaded class metadata still work.
+        """
+        local_fq = f'{self.module}.{class_short}'
+        if local_fq in self._class_methods:
+            return local_fq
+        for fq in self._class_methods:
+            if fq.split('.')[-1] == class_short:
+                return fq
+        return local_fq
+
     def _compile_inst(self, decl: DeclInst) -> None:
         """Compile instance methods and emit named dict values.
 
@@ -445,7 +470,7 @@ class Compiler:
           Module.inst_ClassName_TypeKey_method  — individual method law
           Module.inst_ClassName_TypeKey          — dict (= method law for single-method class)
         """
-        class_fq = f'{self.module}.{decl.class_name}'
+        class_fq = self._resolve_class_fq(decl.class_name)
         type_key = self._typearg_key(decl.type_args[0]) if decl.type_args else 'Unknown'
 
         methods = self._class_methods.get(class_fq, [])
@@ -548,9 +573,10 @@ class Compiler:
             # Record for call-site dict insertion
             constraint_info = []
             for class_short, _type_args in constraints:
-                class_fq = f'{self.module}.{class_short}'
+                class_fq = self._resolve_class_fq(class_short)
                 methods = self._class_methods.get(class_fq, [class_short])
-                method_fqs = [f'{self.module}.{m}' for m in methods]
+                class_module = class_fq.rsplit('.', 1)[0]
+                method_fqs = [f'{class_module}.{m}' for m in methods]
                 constraint_info.append((class_fq, method_fqs))
             self._constrained_lets[fq] = constraint_info
         else:
@@ -578,10 +604,11 @@ class Compiler:
         # Collect dict param FQ names (one per method per constraint, in order)
         dict_param_fqs: list[str] = []
         for class_short, _type_args in constraints:
-            class_fq = f'{self.module}.{class_short}'
+            class_fq = self._resolve_class_fq(class_short)
             methods = self._class_methods.get(class_fq, [class_short])
+            class_module = class_fq.rsplit('.', 1)[0]
             for m in methods:
-                dict_param_fqs.append(f'{self.module}.{m}')
+                dict_param_fqs.append(f'{class_module}.{m}')
 
         # Extract user params and body from the body expression
         if isinstance(decl.body, ExprLam):
@@ -850,10 +877,27 @@ class Compiler:
                 elif inst_dict_key in self.env.globals:
                     dict_val = self._compile_global_ref(inst_dict_key, env)
                 else:
-                    raise CodegenError(
-                        f'codegen: no instance {class_short} {type_key} '
-                        f'(looked for {inst_method_key!r})'
+                    # Cross-module fallback: search all globals for any module's
+                    # instance of this class+type combination.
+                    method_suffix = f'.inst_{class_short}_{type_key}_{method_short}'
+                    dict_suffix   = f'.inst_{class_short}_{type_key}'
+                    found_key = next(
+                        (k for k in self.env.globals if k.endswith(method_suffix)),
+                        None,
                     )
+                    if found_key is None:
+                        found_key = next(
+                            (k for k in self.env.globals if k.endswith(dict_suffix)
+                             and not k.split('.')[-1].startswith('inst_' + class_short + '_' + type_key + '_')),
+                            None,
+                        )
+                    if found_key is not None:
+                        dict_val = self._compile_global_ref(found_key, env)
+                    else:
+                        raise CodegenError(
+                            f'codegen: no instance {class_short} {type_key} '
+                            f'(looked for {inst_method_key!r} or cross-module equivalent)'
+                        )
                 if env.arity == 0:
                     result = A(result, dict_val)
                 else:
@@ -2709,19 +2753,25 @@ def compile_program(
     program: Program,
     module: str = 'Main',
     pre_compiled: dict | None = None,
+    pre_class_methods: dict | None = None,
 ) -> dict[str, Any]:
     """
     Compile a resolved, type-checked program.
 
     Parameters:
-        program:      Resolved Program AST.
-        module:       FQ module name, e.g. 'Core.Nat'.
-        pre_compiled: PLAN values from already-compiled upstream modules,
-                      made available as globals so cross-module references
-                      compile correctly.  Does NOT appear in the returned dict.
+        program:           Resolved Program AST.
+        module:            FQ module name, e.g. 'Core.Nat'.
+        pre_compiled:      PLAN values from already-compiled upstream modules,
+                           made available as globals so cross-module references
+                           compile correctly.  Does NOT appear in the returned dict.
+        pre_class_methods: class_fq → set(method_fq_names) from upstream module
+                           Env objects.  Enables cross-module instance resolution:
+                           constrained functions can reference classes and instances
+                           defined in other modules.
 
     Returns:
         dict mapping FQ name → PLAN value (this module's definitions only)
     """
-    compiler = Compiler(module=module, pre_compiled=pre_compiled)
+    compiler = Compiler(module=module, pre_compiled=pre_compiled,
+                        pre_class_methods=pre_class_methods)
     return compiler.compile(program)

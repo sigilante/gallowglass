@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
 **Last updated:** 2026-04-05
-**Current status:** Alpha — M8 complete (Path B). M9.1–9.4 complete. M10.1–10.7 complete. M11.1–11.5 complete. M12 complete. 734 tests passing.
+**Current status:** Alpha — M8 complete (Path B). M9.1–9.4 complete. M10.1–10.7 complete. M11.1–11.5 complete. M12 + M12.1 complete. 739 tests passing.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -215,10 +215,17 @@ unqualified/qualified/qualified-only imports, transitive three-module builds,
 source-order independence, cross-module algebraic types, cycle detection,
 unknown module error, single-module smoke test.
 
-**Deferred to post-M12:**
+**M12.1 — Cross-module typeclass instances** ✅
+- `scope.py` `_process_use`: merges `other_env.class_methods` into importing module's env; auto-imports class method bindings when a class is imported (`_import_class_methods`).
+- `codegen.py` `_resolve_class_fq`: resolves short class name to defining-module FQ; `_compile_inst`, constrained-let registration, `_compile_constrained_let`, `_compile_constrained_app` all use cross-module fallback (suffix search for `*.inst_ClassName_TypeKey`).
+- `build.py`: threads `pre_class_methods` (merged `Env.class_methods` from all upstream envs) to `compile_program`.
+- `Core.Bool`: now `use Core.Nat { Eq }` instead of re-declaring `Eq` locally.
+- **5 new tests** in `tests/bootstrap/test_modules.py`. 739 tests passing.
+
+**Deferred:**
 - Package declarations (`package { version, depends }`) — reserved keywords only
 - Explicit `export { ... }` lists — all bindings implicitly exported
-- Cross-module typeclass instances (needs instance-import propagation in codegen)
+- GLS self-hosting compiler: `DeclUse` support (requires multi-module pipeline in Compiler.gls)
 - Module PinId stability — seed format handles content-addressing implicitly
 
 **Unblocked by M12:** The full Core prelude can be split across files. Cross-module

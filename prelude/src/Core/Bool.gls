@@ -5,13 +5,10 @@
 -- The bootstrap compiler knows True and False as global constructors.
 -- if/then/else dispatches on Bool natively (via opcode 3 / Case_).
 --
--- Typeclass declarations (module-local until M12 cross-module imports):
---   Eq — with Bool instance.
+-- Imports Eq from Core.Nat so the single canonical Eq class is shared
+-- across all prelude modules.
 
--- Eq: structural equality
-class Eq a {
-  eq : a → a → Bool
-}
+use Core.Nat { Eq }
 
 -- Logical negation
 let not : Bool → Bool

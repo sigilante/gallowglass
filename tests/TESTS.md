@@ -1,6 +1,6 @@
 # Test Strategy
 
-**Last updated:** M11.5 — GLS DeclClass/DeclInst support (734 tests)
+**Last updated:** M12.1 — cross-module typeclass instances (739 tests)
 
 This document describes the test architecture, what each layer verifies,
 and the known gap between what is tested and what is not.
