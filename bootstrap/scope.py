@@ -503,6 +503,25 @@ class Resolver:
 
         return decl
 
+    def _import_class_methods(self, class_fq: str, other_env: 'Env') -> None:
+        """If class_fq is a typeclass, also import its method names into scope.
+
+        When a module writes `use Mod { Eq }`, this makes the method `eq`
+        available as a name inside constrained function bodies, just as if
+        the class were declared locally.
+        """
+        binding = other_env.bindings.get(class_fq)
+        if not isinstance(binding, BindingClass):
+            return
+        for method_fq in other_env.class_methods.get(class_fq, set()):
+            method_short = method_fq.split('.')[-1]
+            method_binding = other_env.bindings.get(method_fq)
+            if method_binding is not None:
+                self._bind_in_top(method_short, method_fq)
+                # Also store the full binding so constrained-let compilation finds it.
+                if method_fq not in self.env.bindings:
+                    self.env.bindings[method_fq] = method_binding
+
     def _process_use(self, decl: DeclUse) -> None:
         mod_path = '.'.join(decl.module_path)
         other_env = self.module_env.get(mod_path)
@@ -514,6 +533,13 @@ class Resolver:
         last = decl.module_path[-1]
         self.module_aliases[mod_path] = mod_path
         self.module_aliases[last] = mod_path
+
+        # Always propagate class metadata from the imported module, regardless
+        # of whether any names are imported.  This lets downstream modules
+        # declare instances of classes defined upstream (e.g. instance Eq Bool
+        # in Core.Bool when Eq is declared in Core.Nat).
+        for class_fq, method_fqs in other_env.class_methods.items():
+            self.env.class_methods.setdefault(class_fq, set()).update(method_fqs)
 
         if decl.spec is None:
             # use Mod  — qualified access only; no new unqualified names
@@ -533,6 +559,7 @@ class Resolver:
                         f"'{short}' is not exported by module '{mod_path}'",
                         decl.spec.loc)
                 self._bind_in_top(short, fq)
+                self._import_class_methods(fq, other_env)
         else:
             # use Mod { names... }  — bring module prefix into scope
             for item in decl.spec.names:
@@ -541,6 +568,7 @@ class Resolver:
                     continue
                 fq = f"{mod_path}.{short}"
                 self._bind_in_top(short, fq)
+                self._import_class_methods(fq, other_env)
 
     def _resolve_inst(self, decl: DeclInst) -> DeclInst:
         # Validate member names against the class declaration

@@ -270,6 +270,121 @@ def test_dep_after_dependent_in_input():
 
 
 # ---------------------------------------------------------------------------
+# Cross-module typeclass instances
+# ---------------------------------------------------------------------------
+
+# Class and its instance live in different modules.
+_CLASS_SRC = """\
+let nat_eq : Nat → Nat → Bool
+  = λ m n → match m {
+    | 0 → match n { | 0 → True  | _ → False }
+    | j → match n { | 0 → False | k → nat_eq j k }
+  }
+
+class Eq a {
+  eq : a → a → Bool
+}
+
+instance Eq Nat {
+  eq = nat_eq
+}
+"""
+
+_INST_SRC = """\
+use Classes { Eq }
+
+let bool_eq : Bool → Bool → Bool
+  = λ a b → if a then b else (if b then False else True)
+
+instance Eq Bool {
+  eq = bool_eq
+}
+"""
+
+_USER_SRC = """\
+use Classes { Eq }
+use Types   { bool_eq }
+
+let same : ∀ a. Eq a => a → a → Bool
+  = λ x y → eq x y
+"""
+
+
+def test_cross_module_class_and_instance():
+    """Class in A, instance in B: both instances accessible after build."""
+    compiled = build_modules([
+        ('Classes', _CLASS_SRC),
+        ('Types', _INST_SRC),
+    ])
+    assert 'Classes.inst_Eq_Nat' in compiled
+    assert 'Classes.inst_Eq_Nat_eq' in compiled
+    assert 'Types.inst_Eq_Bool' in compiled
+    assert 'Types.inst_Eq_Bool_eq' in compiled
+
+
+def test_cross_module_constrained_nat():
+    """Constrained function in a third module dispatches to Nat instance.
+
+    same is constrained so its compiled form has a leading dict param:
+      same = λ eq_dict x y → eq_dict x y
+    We apply the Nat instance dict manually from Python.
+    """
+    compiled = build_modules([
+        ('Classes', _CLASS_SRC),
+        ('Types', _INST_SRC),
+        ('User', _USER_SRC),
+    ])
+    same = compiled['User.same']
+    nat_eq_dict = compiled['Classes.inst_Eq_Nat']
+    assert evaluate(apply(apply(apply(same, nat_eq_dict), N(3)), N(3))) == 1
+    assert evaluate(apply(apply(apply(same, nat_eq_dict), N(3)), N(4))) == 0
+
+
+def test_cross_module_constrained_bool():
+    """Constrained function in a third module dispatches to Bool instance.
+
+    Apply the Bool instance dict manually from Python.
+    """
+    compiled = build_modules([
+        ('Classes', _CLASS_SRC),
+        ('Types', _INST_SRC),
+        ('User', _USER_SRC),
+    ])
+    same = compiled['User.same']
+    bool_eq_dict = compiled['Types.inst_Eq_Bool']
+    # True = 1, False = 0 in Bool encoding
+    assert evaluate(apply(apply(apply(same, bool_eq_dict), N(1)), N(1))) == 1   # True == True
+    assert evaluate(apply(apply(apply(same, bool_eq_dict), N(1)), N(0))) == 0   # True != False
+
+
+def test_cross_module_instance_without_class_import():
+    """Instance can be compiled even when class comes from another module."""
+    # Types doesn't re-declare Eq — it imports from Classes.
+    compiled = build_modules([
+        ('Classes', _CLASS_SRC),
+        ('Types', _INST_SRC),
+    ])
+    fn = compiled['Types.inst_Eq_Bool_eq']
+    assert evaluate(apply(apply(fn, N(1)), N(1))) == 1
+    assert evaluate(apply(apply(fn, N(0)), N(1))) == 0
+
+
+def test_prelude_core_bool_uses_core_nat_eq():
+    """Core.Bool can be compiled with Core.Nat as its upstream (prelude test)."""
+    import pathlib
+    core_dir = pathlib.Path(__file__).parent.parent.parent / 'prelude' / 'src' / 'Core'
+    with open(core_dir / 'Nat.gls') as f:
+        nat_src = f.read()
+    with open(core_dir / 'Bool.gls') as f:
+        bool_src = f.read()
+    compiled = build_modules([('Core.Nat', nat_src), ('Core.Bool', bool_src)])
+    assert 'Core.Bool.inst_Eq_Bool' in compiled
+    fn = compiled['Core.Bool.inst_Eq_Bool_eq']
+    assert evaluate(apply(apply(fn, N(1)), N(1))) == 1   # True == True
+    assert evaluate(apply(apply(fn, N(1)), N(0))) == 0   # True != False
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 

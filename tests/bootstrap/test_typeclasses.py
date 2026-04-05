@@ -375,6 +375,25 @@ def _load_prelude(filename: str, module: str) -> dict:
     return compile_program(resolved, module)
 
 
+def _load_prelude_with_deps(filename: str, module: str,
+                            deps: list[tuple[str, str]] | None = None) -> dict:
+    """Compile a prelude source file (with optional upstream deps) via build_modules.
+
+    deps: list of (dep_module_name, dep_filename) pairs that the target file depends on.
+    Returns the compiled dict for all modules merged; caller picks the right keys.
+    """
+    import pathlib
+    from bootstrap.build import build_modules
+    core_dir = pathlib.Path(__file__).parent.parent.parent / 'prelude' / 'src' / 'Core'
+    sources = []
+    for dep_mod, dep_file in (deps or []):
+        with open(core_dir / dep_file) as f:
+            sources.append((dep_mod, f.read()))
+    with open(core_dir / filename) as f:
+        sources.append((module, f.read()))
+    return build_modules(sources)
+
+
 def test_prelude_nat_eq_instance_emitted():
     """Core.Nat: inst_Eq_Nat is in the compiled output."""
     c = _load_prelude('Nat.gls', 'Core.Nat')
@@ -421,30 +440,33 @@ def test_prelude_nat_add_instance():
     assert evaluate(apply(apply(fn, N(0)), N(7))) == 7
 
 
+_BOOL_DEPS = [('Core.Nat', 'Nat.gls')]
+
+
 def test_prelude_bool_eq_instance_emitted():
     """Core.Bool: inst_Eq_Bool is in the compiled output."""
-    c = _load_prelude('Bool.gls', 'Core.Bool')
+    c = _load_prelude_with_deps('Bool.gls', 'Core.Bool', _BOOL_DEPS)
     assert 'Core.Bool.inst_Eq_Bool' in c
     assert 'Core.Bool.inst_Eq_Bool_eq' in c
 
 
 def test_prelude_bool_eq_true_true():
     """Core.Bool inst_Eq_Bool: eq True True = True (1)."""
-    c = _load_prelude('Bool.gls', 'Core.Bool')
+    c = _load_prelude_with_deps('Bool.gls', 'Core.Bool', _BOOL_DEPS)
     fn = c['Core.Bool.inst_Eq_Bool_eq']
     assert evaluate(apply(apply(fn, N(1)), N(1))) == 1
 
 
 def test_prelude_bool_eq_true_false():
     """Core.Bool inst_Eq_Bool: eq True False = False (0)."""
-    c = _load_prelude('Bool.gls', 'Core.Bool')
+    c = _load_prelude_with_deps('Bool.gls', 'Core.Bool', _BOOL_DEPS)
     fn = c['Core.Bool.inst_Eq_Bool_eq']
     assert evaluate(apply(apply(fn, N(1)), N(0))) == 0
 
 
 def test_prelude_bool_eq_false_false():
     """Core.Bool inst_Eq_Bool: eq False False = True (1)."""
-    c = _load_prelude('Bool.gls', 'Core.Bool')
+    c = _load_prelude_with_deps('Bool.gls', 'Core.Bool', _BOOL_DEPS)
     fn = c['Core.Bool.inst_Eq_Bool_eq']
     assert evaluate(apply(apply(fn, N(0)), N(0))) == 1
 

@@ -177,8 +177,17 @@ def build_modules(
         resolved, env = resolve(prog, module_name, module_envs, filename)
         module_envs[module_name] = env
 
-        # Compile — cross-module globals come from all_compiled
-        compiled = compile_program(resolved, module_name, pre_compiled=all_compiled)
+        # Collect class metadata from all already-resolved modules so the
+        # codegen can look up classes and instances defined upstream.
+        pre_class_methods: dict = {}
+        for mod_env in module_envs.values():
+            pre_class_methods.update(mod_env.class_methods)
+
+        # Compile — cross-module globals from all_compiled; class metadata from
+        # pre_class_methods enables cross-module instance and constraint resolution.
+        compiled = compile_program(resolved, module_name,
+                                   pre_compiled=all_compiled,
+                                   pre_class_methods=pre_class_methods)
 
         # Merge this module's output into the accumulator
         all_compiled.update(compiled)
