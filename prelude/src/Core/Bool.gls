@@ -4,6 +4,14 @@
 -- Bool is a builtin type: False = 0, True = 1.
 -- The bootstrap compiler knows True and False as global constructors.
 -- if/then/else dispatches on Bool natively (via opcode 3 / Case_).
+--
+-- Typeclass declarations (module-local until M12 cross-module imports):
+--   Eq — with Bool instance.
+
+-- Eq: structural equality
+class Eq a {
+  eq : a → a → Bool
+}
 
 -- Logical negation
 let not : Bool → Bool
@@ -29,3 +37,7 @@ let bool_eq : Bool → Bool → Bool
 -- (Equivalent to if/then/else as a first-class function)
 let bool_select : ∀ a. Bool → a → a → a
   = λ b t f → if b then t else f
+
+instance Eq Bool {
+  eq = bool_eq
+}

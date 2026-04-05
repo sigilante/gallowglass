@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
 **Last updated:** 2026-04-04
-**Current status:** Alpha — M8 complete (Path B). M9.1–9.4 complete. M10.1–10.7 complete. 667 tests passing.
+**Current status:** Alpha — M8 complete (Path B). M9.1–9.4 complete. M10.1–10.7 complete. M11.1–11.4 complete. 694 tests passing.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -132,12 +132,51 @@ becomes compilable.
 
 Implicit dictionary synthesis at call sites, instance declaration, coherence.
 
-Scope:
-- Parser: `class`, `instance`, constraint syntax (`Eq a =>`)
-- Type checker: constraint collection, instance resolution, dictionary elaboration
-- Codegen: constraints become explicit Law arguments (Glass IR explicit-dict form)
-- Coherence: enforced via content-addressing (no orphan instance problem by construction;
-  see `DECISIONS.md §"Why content-addressed identity?"`)
+### ✅ M11.1 — Codegen: DeclClass registration
+
+`_compile_class(decl: DeclClass)` stores `class_fq → [method_names]` in `_class_methods`.
+Class declarations produce no PLAN value; they are metadata for dictionary construction.
+
+### ✅ M11.2 — Codegen: DeclInst dictionary construction
+
+`_compile_inst(decl: DeclInst)` compiles each instance method body and emits named PLAN laws:
+- `Module.inst_ClassName_TypeKey_method` — individual method law
+- `Module.inst_ClassName_TypeKey` — dict shortcut for single-method classes
+
+**Named-law flat encoding** (Option 2): each method is a separate named PLAN law.
+Multi-method classes have one named law per method; constraints add one param per method
+to constrained function arities.
+
+### ✅ M11.3 — Codegen: constrained DeclLet and call-site dict insertion
+
+`_compile_constrained_let` adds one leading dict parameter per method per constraint.
+Inside constrained function bodies, class method vars map to de Bruijn dict params.
+
+`_compile_constrained_app` auto-inserts instance dicts at call sites using heuristic type
+inference: `ExprNat` → Nat, `ExprText` → Text, type-annotated let params (from the
+enclosing function's type annotation), explicit `ExprAnn` casts.
+
+**Encoding note:** declaration-order interleaving — instances are compiled inline as
+they appear in source, so instance method bodies can reference earlier lets and
+subsequent lets can use the freshly emitted instance dicts at call sites.
+
+**17 new tests** in `tests/bootstrap/test_typeclasses.py`.
+
+### ✅ M11.4 — Core prelude `Eq`, `Ord`, `Add` instances
+
+`class Eq a { eq : a → a → Bool }`, `class Ord a { lt : a → a → Bool; lte : a → a → Bool }`,
+`class Add a { add : a → a → a }` declared in `prelude/src/Core/Nat.gls` and `Core/Bool.gls`.
+Scope resolver updated to allow a `DeclLet` to shadow a same-named `BindingClassMethod`
+(concrete implementation takes precedence without a duplicate-definition error).
+Instances: `Eq Nat`, `Ord Nat` (with `nat_lte`), `Add Nat`; `Eq Bool`.
+10 new Python harness evaluation tests in `tests/bootstrap/test_typeclasses.py`.
+Planvm seed-loading tests added to `tests/prelude/test_core_nat.py` and `test_core_bool.py`.
+`Show` deferred: requires Text manipulation infrastructure not yet in the prelude.
+
+**Remaining M11 scope:**
+- Advanced type inference for dict insertion (non-Nat types, polymorphic call sites)
+- Superclass constraints (one constraint implies another)
+- GLS self-hosting compiler: `DeclClass`/`DeclInst` support (analogous to M10.7 for EFix)
 
 **Unblocked by M11:** `Show`, `Eq`, `Ord`, `Add`, `Serialize` instances. The
 standard prelude becomes expressible without explicit dictionary passing.

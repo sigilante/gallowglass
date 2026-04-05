@@ -453,10 +453,37 @@ class Parser:
             m_loc = self._loc()
             m_name = self._eat(KIND_SNAKE).value
             self._eat(KIND_PUNCT, '=')
-            m_body = self._parse_expr()
+            m_body = self._parse_inst_member_body()
             members.append(InstanceMember(m_name, m_body, m_loc))
         self._eat(KIND_PUNCT, '}')
         return DeclInst(constraints, name, type_args, members, loc)
+
+    def _parse_inst_member_body(self) -> Any:
+        """Parse an instance member body expression.
+
+        Like _parse_expr but stops application before consuming the next member's
+        name: a snake-case token followed by '=' is treated as a method separator,
+        not as a function argument.
+        """
+        # Allow full lambda / operator expressions
+        expr = self._parse_lambda_expr() if self._check(KIND_KEYWORD, 'λ') else None
+        if expr is None:
+            # Not a lambda: parse head then stop application at 'name =' boundaries
+            head = self._parse_app_head()
+            while self._is_app_arg_start():
+                # Stop if next token is 'snake =' — that's the next member
+                if self._check(KIND_SNAKE) and self._check2(KIND_PUNCT, '='):
+                    break
+                # Also stop at '}' (handled by outer while loop already, but be safe)
+                if self._check(KIND_PUNCT, '}'):
+                    break
+                arg = self._parse_app_arg()
+                head = ExprApp(head, arg, self._loc())
+            expr = head
+        # Wrap in operator / if-then-else if applicable (via _parse_expr structure)
+        # For simplicity, instance bodies do not support infix operators unless
+        # parenthesized. This matches common usage patterns.
+        return expr
 
     # =========================================================================
     # External mod

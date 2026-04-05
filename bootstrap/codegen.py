@@ -18,12 +18,13 @@ from typing import Any
 from bootstrap.ast import (
     Program,
     DeclLet, DeclType, DeclExt, DeclClass, DeclInst, DeclEff,
-    Constructor,
+    Constructor, ClassMember, InstanceMember,
     ExprVar, ExprApp, ExprLam, ExprLet, ExprMatch, ExprIf,
     ExprNat, ExprText, ExprBytes, ExprHexBytes, ExprUnit, ExprTuple,
     ExprPin, ExprOp, ExprUnary, ExprAnn, ExprFix,
     ExprHandle, ExprDo, HandlerReturn, HandlerOp,
     PatVar, PatWild, PatCon, PatNat, PatTuple,
+    TyConstrained,
 )
 from dev.harness.plan import P, L, A, N, is_nat, is_pin, is_law, is_app
 
@@ -110,10 +111,15 @@ class Env:
     # The FQ name of the function currently being compiled (for self-recursion).
     self_ref_name: str = ''
 
+    # Optional: maps local param name → type key string (e.g. "Nat", "Text").
+    # Used by _infer_type_key to determine instance dicts for constrained calls.
+    param_types: dict = field(default_factory=dict)
+
     def child(self) -> 'Env':
         """Return a shallow copy for a new scope."""
         return Env(globals=self.globals, locals=dict(self.locals), arity=self.arity,
-                   self_ref_name=self.self_ref_name)
+                   self_ref_name=self.self_ref_name,
+                   param_types=dict(self.param_types))
 
     def bind_param(self, name: str) -> 'Env':
         """Add a new parameter, incrementing arity.  Returns the new env."""
@@ -134,6 +140,12 @@ class Env:
         new_env.locals = dict(self.locals)
         new_env.locals[name] = self.arity + 1
         new_env.arity = self.arity + 1
+        return new_env
+
+    def bind_param_typed(self, name: str, type_key: str) -> 'Env':
+        """Like bind_param but also records the parameter's type key."""
+        new_env = self.bind_param(name)
+        new_env.param_types[name] = type_key
         return new_env
 
 
@@ -174,6 +186,10 @@ class Compiler:
         self.env = Env()
         # effect op tag lookup: fq_op_name → tag (and short_name → tag)
         self.effect_op_tags: dict[str, int] = {}
+        # Typeclass info: class_fq → ordered list of method short names
+        self._class_methods: dict[str, list[str]] = {}
+        # Constrained lets: fq → [(class_fq, [method_fq, ...])] per constraint
+        self._constrained_lets: dict[str, list] = {}
         # Register builtin constructors from scope resolver.
         # Bool: False = tag 0, True = tag 1 (conventional ordering)
         # These match the scope resolver's pre-declared 'True'/'False' bindings.
@@ -228,24 +244,66 @@ class Compiler:
             if isinstance(decl, DeclEff):
                 self._register_eff(decl)
 
-        # Pass 3: compile let declarations in SCC topological order.
-        # Single-definition SCCs (non-recursive or self-recursive) use the
-        # existing _compile_let path.  Multi-definition SCCs use the shared-pin
-        # mutual-recursion encoding from spec/02-mutual-recursion.md.
+        # Pass 2.6: register typeclass declarations (method name ordering)
+        for decl in program.decls:
+            if isinstance(decl, DeclClass):
+                self._compile_class(decl)
+
+        # Pass 3: compile let and instance declarations together in source order.
+        #
+        # DeclLet groups are processed in Tarjan SCC topological order so that
+        # mutually-recursive groups are compiled together and dependencies are
+        # compiled before dependents.  DeclInst declarations are compiled in-line
+        # (immediately when encountered in source order) so that instance method
+        # bodies can reference previously compiled lets, and subsequent lets can
+        # use the freshly emitted instance dicts at their call sites.
         let_decls = [d for d in program.decls if isinstance(d, DeclLet)]
         if let_decls:
             dep_graph = self._build_dep_graph(let_decls)
             sccs = self._tarjan_scc(dep_graph)
             decl_map = {f'{self.module}.{d.name}': d for d in let_decls}
-            for scc_names in sccs:
-                scc_let_names = [n for n in scc_names if n in decl_map]
-                if not scc_let_names:
-                    continue
-                if len(scc_let_names) == 1:
-                    self._compile_let(decl_map[scc_let_names[0]])
-                else:
-                    scc_decls = [decl_map[n] for n in scc_let_names]
-                    self._compile_mutual_scc(scc_let_names, scc_decls)
+
+            # Map each let fq-name → its SCC index in the topological order.
+            fq_to_scc_idx: dict[str, int] = {}
+            for idx, scc_names in enumerate(sccs):
+                for fq in scc_names:
+                    if fq in decl_map:
+                        fq_to_scc_idx[fq] = idx
+
+            compiled_scc_idxs: set[int] = set()
+
+            for decl in program.decls:
+                if isinstance(decl, DeclLet):
+                    fq = f'{self.module}.{decl.name}'
+                    scc_idx = fq_to_scc_idx.get(fq)
+                    if scc_idx is not None and scc_idx not in compiled_scc_idxs:
+                        compiled_scc_idxs.add(scc_idx)
+                        scc_names = sccs[scc_idx]
+                        scc_let_names = [n for n in scc_names if n in decl_map]
+                        if len(scc_let_names) == 1:
+                            self._compile_let(decl_map[scc_let_names[0]])
+                        else:
+                            scc_ds = [decl_map[n] for n in scc_let_names]
+                            self._compile_mutual_scc(scc_let_names, scc_ds)
+                elif isinstance(decl, DeclInst):
+                    self._compile_inst(decl)
+
+            # Compile any SCCs not yet triggered (e.g., out-of-order declarations)
+            for scc_idx, scc_names in enumerate(sccs):
+                if scc_idx not in compiled_scc_idxs:
+                    scc_let_names = [n for n in scc_names if n in decl_map]
+                    if scc_let_names:
+                        compiled_scc_idxs.add(scc_idx)
+                        if len(scc_let_names) == 1:
+                            self._compile_let(decl_map[scc_let_names[0]])
+                        else:
+                            scc_ds = [decl_map[n] for n in scc_let_names]
+                            self._compile_mutual_scc(scc_let_names, scc_ds)
+        else:
+            # No lets — just compile instances
+            for decl in program.decls:
+                if isinstance(decl, DeclInst):
+                    self._compile_inst(decl)
 
         return self.compiled
 
@@ -367,6 +425,108 @@ class Compiler:
             self.effect_op_tags[op.name] = tag
 
     # -----------------------------------------------------------------------
+    # Typeclass declarations
+    # -----------------------------------------------------------------------
+
+    def _compile_class(self, decl: DeclClass) -> None:
+        """Register typeclass method names (no PLAN value emitted for the class itself)."""
+        fq_cls = f'{self.module}.{decl.name}'
+        methods = [m.name for m in decl.members if isinstance(m, ClassMember)]
+        self._class_methods[fq_cls] = methods
+
+    def _compile_inst(self, decl: DeclInst) -> None:
+        """Compile instance methods and emit named dict values.
+
+        Naming convention:
+          Module.inst_ClassName_TypeKey_method  — individual method law
+          Module.inst_ClassName_TypeKey          — dict (= method law for single-method class)
+        """
+        class_fq = f'{self.module}.{decl.class_name}'
+        type_key = self._typearg_key(decl.type_args[0]) if decl.type_args else 'Unknown'
+
+        methods = self._class_methods.get(class_fq, [])
+        compiled_methods: dict[str, Any] = {}
+
+        for member in decl.members:
+            if not isinstance(member, InstanceMember):
+                continue
+            env = Env(globals=self.env.globals, arity=0)
+            # Instance methods may reference earlier lets (e.g., recursive via
+            # the module-level self-ref mechanism is not needed here; the body
+            # is a standalone expression).
+            val = self._compile_expr(member.body, env, name_hint=member.name)
+            method_fq = f'{self.module}.inst_{decl.class_name}_{type_key}_{member.name}'
+            self.compiled[method_fq] = val
+            self.env.globals[method_fq] = val
+            compiled_methods[member.name] = val
+
+        # For single-method classes: the dict IS the one method.
+        # For multi-method classes: each method has its own named law; the
+        # dict FQ is not emitted as a bundle (methods are passed flat).
+        ordered_vals = [compiled_methods[m] for m in methods if m in compiled_methods]
+        if len(ordered_vals) == 1:
+            dict_fq = f'{self.module}.inst_{decl.class_name}_{type_key}'
+            self.compiled[dict_fq] = ordered_vals[0]
+            self.env.globals[dict_fq] = ordered_vals[0]
+
+    def _typearg_key(self, type_arg: Any) -> str:
+        """Convert a type argument AST node to a stable string key for instance names."""
+        if isinstance(type_arg, str):
+            return type_arg
+        if hasattr(type_arg, 'name'):   # TyCon, TyVar, TyApp with .name
+            return str(type_arg.name)
+        if hasattr(type_arg, 'fun'):    # TyApp
+            return self._typearg_key(type_arg.fun) + '_' + self._typearg_key(type_arg.arg)
+        return str(type_arg)
+
+    def _extract_param_types(self, ty: Any) -> list[str | None] | None:
+        """Extract ordered parameter type keys from a function type annotation.
+
+        Returns a list like ["Nat", "Nat", None] for `Nat → Nat → a → ...`.
+        Returns None if the annotation is not a function type or has no params.
+        Only resolves concrete type constructors; type variables become None.
+        """
+        from bootstrap.ast import TyForall, TyArr as AstTyArr, TyCon as AstTyCon
+        # Peel forall/constrained wrappers
+        while ty is not None:
+            if isinstance(ty, TyConstrained):
+                ty = ty.ty
+            elif isinstance(ty, TyForall):
+                ty = ty.body
+            else:
+                break
+        if ty is None:
+            return None
+        result = []
+        while isinstance(ty, AstTyArr):
+            dom = ty.from_
+            if isinstance(dom, AstTyCon):
+                result.append(dom.name)
+            else:
+                result.append(None)
+            ty = ty.to_
+        return result if result else None
+
+    def _extract_constraints(self, ty: Any) -> list:
+        """Extract constraint list from a (possibly nested) type annotation.
+
+        Unwraps TyForall, TyConstrained wrappers.
+        Returns list of (class_name_short, type_args_list) tuples.
+        """
+        from bootstrap.ast import TyForall
+        constraints = []
+        # Peel TyForall and TyConstrained layers
+        while ty is not None:
+            if isinstance(ty, TyConstrained):
+                constraints.extend(ty.constraints)
+                ty = ty.ty
+            elif isinstance(ty, TyForall):
+                ty = ty.body
+            else:
+                break
+        return constraints
+
+    # -----------------------------------------------------------------------
     # Let declarations
     # -----------------------------------------------------------------------
 
@@ -376,10 +536,69 @@ class Compiler:
         env = Env(globals=self.env.globals, arity=0)
         env.self_ref_name = fq
 
-        val = self._compile_expr(decl.body, env, name_hint=decl.name)
+        # Check for typeclass constraints in the type annotation
+        constraints = self._extract_constraints(decl.type_ann) if decl.type_ann is not None else []
+
+        if constraints:
+            val = self._compile_constrained_let(decl, fq, env, constraints)
+            # Record for call-site dict insertion
+            constraint_info = []
+            for class_short, _type_args in constraints:
+                class_fq = f'{self.module}.{class_short}'
+                methods = self._class_methods.get(class_fq, [class_short])
+                method_fqs = [f'{self.module}.{m}' for m in methods]
+                constraint_info.append((class_fq, method_fqs))
+            self._constrained_lets[fq] = constraint_info
+        else:
+            # Extract param type hints from the type annotation for constrained call-site inference
+            param_types = self._extract_param_types(decl.type_ann) if decl.type_ann is not None else None
+            if param_types and isinstance(decl.body, ExprLam):
+                user_params = self._flatten_params(decl.body)
+                body_expr = self._lambda_body(decl.body)
+                name_nat = encode_name(decl.name)
+                val = self._compile_lam_as_law(user_params, body_expr, env, decl.name,
+                                               param_types=param_types)
+            else:
+                val = self._compile_expr(decl.body, env, name_hint=decl.name)
 
         self.compiled[fq] = val
         self.env.globals[fq] = val
+
+    def _compile_constrained_let(self, decl: DeclLet, fq: str, env: Env,
+                                  constraints: list) -> Any:
+        """Compile a let declaration that has typeclass constraints.
+
+        Adds one leading parameter per method per constraint (flat dict passing).
+        Inside the body, class method FQ names are bound to their dict params.
+        """
+        # Collect dict param FQ names (one per method per constraint, in order)
+        dict_param_fqs: list[str] = []
+        for class_short, _type_args in constraints:
+            class_fq = f'{self.module}.{class_short}'
+            methods = self._class_methods.get(class_fq, [class_short])
+            for m in methods:
+                dict_param_fqs.append(f'{self.module}.{m}')
+
+        # Extract user params and body from the body expression
+        if isinstance(decl.body, ExprLam):
+            user_params = self._flatten_params(decl.body)
+            body_expr = self._lambda_body(decl.body)
+        else:
+            user_params = []
+            body_expr = decl.body
+
+        # Build body_env: dict params first (bound by method FQ name), then user params
+        body_env = Env(globals=env.globals, arity=0, self_ref_name=fq)
+        for method_fq in dict_param_fqs:
+            body_env = body_env.bind_param(method_fq)
+        for pat in user_params:
+            param_name = self._pat_var_name(pat)
+            body_env = body_env.bind_param(param_name)
+
+        body_val = self._compile_expr(body_expr, body_env, fq)
+        total_arity = len(dict_param_fqs) + len(user_params)
+        name_nat = encode_name(decl.name)
+        return L(total_arity, name_nat, body_val)
 
     # -----------------------------------------------------------------------
     # Expression compilation
@@ -539,7 +758,22 @@ class Compiler:
         raise CodegenError(f'codegen: unbound variable {fq!r}')
 
     def _compile_app(self, expr: ExprApp, env: Env, name_hint: str) -> Any:
-        """Compile function application."""
+        """Compile function application.
+
+        If the outermost function is a constrained let applied to its first
+        user argument (bare ExprVar call), insert the resolved dict args first.
+        """
+        # Detect: ExprApp(ExprVar(constrained_fn), first_user_arg)
+        # We check if the direct function (not a chain) is a bare constrained let.
+        # Walk to the root of the application chain.
+        root = expr.fun
+        while isinstance(root, ExprApp):
+            root = root.fun
+        if isinstance(root, ExprVar):
+            root_fq = str(root.name)
+            if root_fq in self._constrained_lets:
+                return self._compile_constrained_app(expr, env, name_hint)
+
         fn_val = self._compile_expr(expr.fun, env)
         arg_val = self._compile_expr(expr.arg, env)
 
@@ -549,6 +783,109 @@ class Compiler:
         else:
             # Inside a law body: use bapp notation (0 f x)
             return bapp(fn_val, arg_val)
+
+    def _compile_constrained_app(self, expr: ExprApp, env: Env, name_hint: str) -> Any:
+        """Compile a call to a constrained function, auto-inserting dict args.
+
+        Unwraps the full application chain f a1 a2 ... aN, inserts dict args
+        between f and the user args, then recompiles the full chain.
+        """
+        # Unwrap application chain: collect args, find root function
+        args: list = []
+        node: Any = expr
+        while isinstance(node, ExprApp):
+            args.append(node.arg)
+            node = node.fun
+        args.reverse()
+        fn_expr = node  # ExprVar(constrained_fn_fq)
+        fq = str(fn_expr.name)
+
+        constraint_info = self._constrained_lets[fq]  # [(class_fq, [method_fq, ...])]
+
+        # Infer type key from the first user arg (for instance lookup)
+        type_key = self._infer_type_key(args[0], env) if args else None
+
+        # Compile function reference
+        fn_val = self._compile_global_ref(fq, env)
+        result = fn_val
+
+        # Apply dict args (one per method per constraint)
+        for class_fq, method_fqs in constraint_info:
+            class_short = class_fq.split('.')[-1]
+            if type_key is None:
+                raise CodegenError(
+                    f'codegen: cannot determine instance type for constraint {class_short!r} '
+                    f'at call to {fq!r} — use explicit dict passing'
+                )
+            for method_fq in method_fqs:
+                method_short = method_fq.split('.')[-1]
+                inst_method_key = f'{self.module}.inst_{class_short}_{type_key}_{method_short}'
+                inst_dict_key = f'{self.module}.inst_{class_short}_{type_key}'
+                if inst_method_key in self.env.globals:
+                    dict_val = self._compile_global_ref(inst_method_key, env)
+                elif inst_dict_key in self.env.globals:
+                    dict_val = self._compile_global_ref(inst_dict_key, env)
+                else:
+                    raise CodegenError(
+                        f'codegen: no instance {class_short} {type_key} '
+                        f'(looked for {inst_method_key!r})'
+                    )
+                if env.arity == 0:
+                    result = A(result, dict_val)
+                else:
+                    result = bapp(result, dict_val)
+
+        # Apply user args
+        for arg_expr in args:
+            arg_val = self._compile_expr(arg_expr, env)
+            if env.arity == 0:
+                result = A(result, arg_val)
+            else:
+                result = bapp(result, arg_val)
+
+        return result
+
+    def _compile_global_ref(self, fq: str, env: Env) -> Any:
+        """Compile a reference to a global value, respecting body vs. top-level context."""
+        val = self.env.globals.get(fq)
+        if val is None:
+            raise CodegenError(f'codegen: unknown global {fq!r}')
+        if env.arity == 0:
+            return val
+        if is_nat(val):
+            return self._compile_nat_literal(val, env)
+        return P(val) if not is_pin(val) else val
+
+    def _infer_type_key(self, expr: Any, env: Env) -> str | None:
+        """Heuristically determine the type key of an expression for instance lookup.
+
+        Covers: literal Nats/Text, locals with tracked param types, explicit type
+        annotations, and some global value checks.
+        Returns None if the type cannot be determined.
+        """
+        if isinstance(expr, ExprNat):
+            return 'Nat'
+        if isinstance(expr, ExprText):
+            return 'Text'
+        if isinstance(expr, ExprVar):
+            fq = str(expr.name)
+            # Check env.param_types (set from type annotations on outer let declarations)
+            short = fq.split('.')[-1]
+            if short in env.param_types:
+                return env.param_types[short]
+            if fq in env.param_types:
+                return env.param_types[fq]
+            # Check if it's a global with known Nat value
+            val = self.env.globals.get(fq)
+            if val is not None and is_nat(val):
+                return 'Nat'
+        if isinstance(expr, ExprAnn):
+            # Explicit type annotation: (expr : Type)
+            from bootstrap.ast import TyCon as AstTyCon
+            if isinstance(expr.ty, AstTyCon):
+                return expr.ty.name
+            return self._infer_type_key(expr.expr, env)
+        return None
 
     def _compile_lam(self, expr: ExprLam, env: Env, name_hint: str) -> Any:
         """
@@ -588,13 +925,23 @@ class Compiler:
             inner = inner.body
         return inner
 
-    def _compile_lam_as_law(self, params: list, body_expr: Any, env: Env, name_hint: str) -> Any:
-        """Compile params + body as a top-level (named) law."""
+    def _compile_lam_as_law(self, params: list, body_expr: Any, env: Env, name_hint: str,
+                             param_types: list | None = None) -> Any:
+        """Compile params + body as a top-level (named) law.
+
+        param_types: optional list of type-key strings (one per param, in order).
+        When provided, param type info is recorded in the body env for constrained
+        call-site dict insertion.
+        """
         # Build body env with params bound
-        body_env = Env(globals=env.globals, arity=0, self_ref_name=env.self_ref_name)
-        for pat in params:
+        body_env = Env(globals=env.globals, arity=0, self_ref_name=env.self_ref_name,
+                       param_types=dict(env.param_types))
+        for i, pat in enumerate(params):
             param_name = self._pat_var_name(pat)
-            body_env = body_env.bind_param(param_name)
+            if param_types and i < len(param_types) and param_types[i] is not None:
+                body_env = body_env.bind_param_typed(param_name, param_types[i])
+            else:
+                body_env = body_env.bind_param(param_name)
 
         body_val = self._compile_expr(body_expr, body_env, name_hint)
         name_nat = encode_name(name_hint) if name_hint else 0

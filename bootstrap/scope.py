@@ -318,8 +318,12 @@ class Resolver:
             fq = f"{mod}.{decl.name}"
             b = BindingValue(fq, decl.type_ann, decl, decl.loc)
             if fq in self.env.bindings:
-                raise ScopeError(
-                    f"duplicate definition of '{decl.name}'", decl.loc)
+                # A let may shadow a class method declaration at the same name:
+                # the let provides the concrete implementation that the instance
+                # will reference.  All other duplicates are errors.
+                if not isinstance(self.env.bindings[fq], BindingClassMethod):
+                    raise ScopeError(
+                        f"duplicate definition of '{decl.name}'", decl.loc)
             self.env.bindings[fq] = b
             self.env.module_exports.setdefault(self.module_name, set()).add(fq)
             if top_level:
