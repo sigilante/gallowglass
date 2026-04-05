@@ -118,6 +118,79 @@ def test_literal_bignat():
 
 
 # ---------------------------------------------------------------------------
+# Text / Bytes literal compilation
+# ---------------------------------------------------------------------------
+# Text and Bytes are encoded as A(byte_length, content_nat) per spec §6.
+# content_nat = little-endian interpretation of the UTF-8/raw byte sequence.
+
+def test_text_empty():
+    """Empty text literal encodes as A(0, 0)."""
+    v = val_of('let main = ""', 'main')
+    assert is_app(v), f"expected App, got {v!r}"
+    bl, cn = v.fun, v.arg
+    assert is_nat(bl) and bl == 0
+    assert is_nat(cn) and cn == 0
+
+
+def test_text_single_char():
+    """Single ASCII char: byte_length=1, content_nat=ord(c)."""
+    v = val_of('let main = "A"', 'main')
+    assert is_app(v)
+    bl, cn = v.fun, v.arg
+    assert is_nat(bl) and bl == 1
+    assert is_nat(cn) and cn == ord('A')  # 65
+
+
+def test_text_hello():
+    '"hello": byte_length=5, content_nat=little-endian of UTF-8 bytes.'
+    b = "hello".encode('utf-8')
+    expected_cn = int.from_bytes(b, 'little')
+    v = val_of('let main = "hello"', 'main')
+    assert is_app(v)
+    bl, cn = v.fun, v.arg
+    assert is_nat(bl) and bl == 5
+    assert is_nat(cn) and cn == expected_cn
+
+
+def test_text_in_lambda_body():
+    """Text literal inside a lambda (law body arity>0) still encodes as pair."""
+    from dev.harness.plan import apply
+    v = val_of('let get_greeting : Nat → Text = λ _ → "hi"', 'get_greeting')
+    assert is_law(v)
+    result = evaluate(apply(v, N(0)))
+    assert is_app(result)
+    bl, cn = result.fun, result.arg
+    b = "hi".encode('utf-8')
+    assert is_nat(bl) and bl == 2
+    assert is_nat(cn) and cn == int.from_bytes(b, 'little')
+
+
+def test_text_two_values_differ():
+    """Two different text literals compile to structurally different values."""
+    v1 = val_of('let main = "abc"', 'main')
+    v2 = val_of('let main = "xyz"', 'main')
+    assert v1 != v2
+
+
+def test_text_byte_length_accessor():
+    """byte_length field (fun of App) equals len(utf-8 bytes)."""
+    src = 'let msg = "hello world"'
+    v = val_of(src, 'msg')
+    assert is_app(v)
+    assert v.fun == 11  # len("hello world".encode()) == 11
+
+
+def test_bytes_literal():
+    """Bytes literal x\"48656c6c6f\" ('Hello') encodes as (5, content_nat) pair."""
+    v = val_of('let main = x"48656c6c6f"', 'main')
+    assert is_app(v)
+    bl, cn = v.fun, v.arg
+    assert is_nat(bl) and bl == 5   # 5 bytes
+    b = bytes.fromhex('48656c6c6f')
+    assert is_nat(cn) and cn == int.from_bytes(b, 'little')
+
+
+# ---------------------------------------------------------------------------
 # Constructor compilation
 # ---------------------------------------------------------------------------
 

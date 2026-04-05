@@ -678,7 +678,21 @@ class Compiler:
         return N(value)
 
     def _compile_bytes_literal(self, expr: Any, env: Env) -> Any:
-        """Compile a bytes/text literal to a nat (little-endian encoding)."""
+        """Compile a bytes/text literal to a (byte_length, content_nat) PLAN pair.
+
+        Text encoding per spec §6 / spec/00-primitives.md §6:
+          Text = A(byte_length : Nat, content_nat : Nat)
+        where content_nat is the UTF-8 byte sequence as a little-endian nat.
+
+        Bytes uses the same structural pair encoding (no UTF-8 invariant).
+
+        At top level (env.arity == 0):
+          A(N(byte_length), N(content_nat))
+
+        Inside a law body (env.arity > 0):
+          bapp(body_nat(byte_length), body_nat(content_nat))
+          which evaluates to A(byte_length_val, content_nat_val).
+        """
         if isinstance(expr, ExprText):
             if isinstance(expr.value, str):
                 b = expr.value.encode('utf-8')
@@ -689,8 +703,14 @@ class Compiler:
             b = expr.value
         else:
             b = b''
-        value = int.from_bytes(b, 'little') if b else 0
-        return self._compile_nat_literal(value, env)
+        byte_length = len(b)
+        content = int.from_bytes(b, 'little') if b else 0
+        bl_val = self._compile_nat_literal(byte_length, env)
+        cn_val = self._compile_nat_literal(content, env)
+        if env.arity == 0:
+            return A(N(byte_length), N(content))
+        else:
+            return bapp(bl_val, cn_val)
 
     def _compile_var(self, expr: ExprVar, env: Env) -> Any:
         """Compile a variable reference."""
