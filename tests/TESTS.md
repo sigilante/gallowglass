@@ -1,6 +1,6 @@
 # Test Strategy
 
-**Last updated:** M12.1 — cross-module typeclass instances (739 tests)
+**Last updated:** Core.Text — Show typeclass, prelude jets (783 tests)
 
 This document describes the test architecture, what each layer verifies,
 and the known gap between what is tested and what is not.
@@ -48,8 +48,12 @@ Law body. This makes O(n) recursive arithmetic (add, mul, bit_or, shift_left, �
 run in O(1), eliminating the Python recursion-depth limit that previously blocked
 ~24 compiler emitter tests.
 
-**Jets:** `add`, `sub`, `mul`, `div_nat`, `mod_nat`, `pow2`, `bit_or`, `bit_and`,
+**Jets (Compiler.*):** `add`, `sub`, `mul`, `div_nat`, `mod_nat`, `pow2`, `bit_or`, `bit_and`,
 `shift_left`, `shift_right`, `nat_eq`, `nat_lt`, `lte`, `gte`, `max_nat`, `min_nat`.
+
+**Jets (Core.Nat.* / Core.Text.*):** `Core.Nat.{add,mul,pred,is_zero,nat_eq,nat_lt}`,
+`Core.Text.{sub,pow2,div_nat,mod_nat}`, `Core.Text.Prim.{mk_text,text_len,text_nat}`.
+Registered via `register_prelude_jets(compiled_dict)` in prelude test suites.
 
 **Coverage:**
 - `tests/compiler/test_emit.py` — all 39 M8.6 emitter tests (was: 15 active, 24 skipped)
@@ -149,6 +153,7 @@ tests/
     test_core_nat.py           ← 7 definitions (pred, is_zero, nat_eq, nat_lt, add, mul)
     test_core_option.py        ← 7 definitions
     test_core_list.py          ← 11 definitions
+    test_core_text.py          ← 44 harness (bplan jets) + 15 planvm seed tests
   compiler/                    ← Milestone 8
     __init__.py
     test_utils.py              ← M8.1 utilities (nat/list/byte ops); 45 tests + planvm seeds

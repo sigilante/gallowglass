@@ -112,7 +112,7 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
 
 ## Current Phase
 
-**Alpha.** All Milestone 8 phases complete. M9.1–9.4, M10.1–10.7, M11.1–11.5, M12, M12.1 complete. 739 tests passing.
+**Alpha.** All Milestone 8 phases complete. M9.1–9.4, M10.1–10.7, M11.1–11.5, M12, M12.1 complete. Core.Text + Show typeclass added to prelude. 783 tests passing.
 
 - Phase 0 (spec): complete.
 - Phase 1 (Python bootstrap compiler): complete. Milestones 1–7.5 done. Core prelude: 36 definitions, planvm-valid.
