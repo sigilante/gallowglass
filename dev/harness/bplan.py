@@ -171,6 +171,12 @@ def _bjudge(args, ie, body):
 
 
 def _bmatch(p, l, a, z, m, o):
+    # Force the scrutinee to WHNF before dispatching, matching planvm's
+    # Case_ semantics.  Without this, an unevaluated App A(ctor_law, field)
+    # would dispatch as a generic App (fun=ctor_law, arg=field) rather than
+    # as the evaluated constructor form A(Nat(tag), field), producing wrong
+    # results for any constructor whose tag is encoded as a non-trivial law.
+    o = bevaluate(o)
     if is_pin(o):
         return _bapply(p, o.val)
     if is_law(o):
