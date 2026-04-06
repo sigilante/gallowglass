@@ -216,11 +216,14 @@ monolithic file with clearly marked sections.
 | M8.5: Codegen | **COMPLETE** | Section 24 |
 | M8.6: Seed emitter | **COMPLETE** | Section 25 |
 | M8.7: Driver/main | **COMPLETE** | Section 26 |
-| M8.8: Self-hosting validation | **PARTIAL** | `tests/compiler/test_selfhost.py` |
+| M8.8: Self-hosting validation | **COMPLETE (Path B + Path A entry point)** | `tests/compiler/test_selfhost.py` |
 
-M8.8 status: Path B (harness) complete — 17 tests pass.
-Path A (planvm functional, byte-identical self-hosting) deferred until cog
-infrastructure is in place. See `test_selfhost.py` for details.
+M8.8 status:
+- Path B (harness) complete — 17 tests pass.
+- Path A CLI entry point (`run_main`) implemented in Section 27; 5 planvm-gated tests added.
+  `run_main : Nat → Nat` takes argVec (planvm CLI arg → P(src_nat)), unpins to get
+  src_nat, constructs Bytes, calls main, writes output to stdout via WriteOp (P(N(9))).
+  Full byte-identical comparison runs under Docker CI (`make test-ci`).
 
 The `compile_program : List Decl → Nat → List (Pair Nat PlanVal)` entry point is
 exported and verified to compile. It performs three passes over a pre-resolved
@@ -322,15 +325,20 @@ i.e. `int.from_bytes(b'Compiler', 'little')`). Tests: `tests/compiler/test_drive
   4. Assertions: non-empty, starts with `(#bind "`, correct bind count (one per
      definition), contains `Compiler.main` binding, all lines are bind forms.
 
-**Path A (planvm functional, deferred):**
+**Path A (planvm functional):**
 
-  1. Compile `compiler/src/Compiler.gls` with Python bootstrap → `compiler.seed`
-  2. Run `planvm compiler.seed` with `Compiler.gls` as input → Plan Assembler bytes
+  1. Compile `Compiler.run_main` with Python bootstrap → `run_main.seed`
+  2. Run `planvm run_main.seed <source_text>` (source text as CLI arg) → Plan Assembler bytes
   3. Assert output equals Path B output (byte-identical)
 
-  Path A requires `Compiler.main` to be wrapped as a planvm cog (reads stdin,
-  writes stdout). This cog wrapping is not yet implemented. The `@requires_planvm`
-  tests in `test_selfhost.py` currently only validate seed loading.
+  `Compiler.run_main` is Section 27 of `Compiler.gls`:
+  - Takes argVec from planvm (forces to `P(src_nat)`)
+  - Unpins via `Core.PLAN.unpin` → named law "Unpin" (findop.table jet)
+  - Computes byte length via `nat_byte_len`
+  - Constructs `Bytes = MkPair len src_nat`, calls `main`
+  - Writes output via `WriteOp (P(N(9)))` — takes size-4 Closure `(fd, buf, count, 0)`
+    created by `_write_pack` (5-arity dummy applied to 4 args)
+  Tests in `TestSelfhostPathA` and `test_compiler_run_main_seed_loads` are planvm-gated.
 
 Step 3 (byte-identical planvm output vs Path B) is the definitive self-hosting gate.
 
@@ -394,5 +402,5 @@ tests/compiler/
   test_scope.py        ← M8.4 scope tests (15 passed)
   test_emit.py         ← M8.6 emitter tests (38 passed, 1 planvm-gated skip)
   test_driver.py       ← M8.7 driver tests (3 passed, 3 skipped)
-  test_selfhost.py     ← M8.8 self-hosting validation (17 passed, 2 planvm-gated skips)
+  test_selfhost.py     ← M8.8 self-hosting validation (17 passed, 5 planvm-gated: seed loads + Path A)
 ```

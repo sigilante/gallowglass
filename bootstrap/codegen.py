@@ -385,6 +385,19 @@ class Compiler:
         'Core.PLAN.force':   4,
     }
 
+    # Core.PLAN named jets: planvm jet-dispatches these by law name (findop.table).
+    # Maps FQ name → (arity, law_name_string).
+    # The law body N(1) is a placeholder; planvm never interprets it.
+    _CORE_PLAN_NAMED_JETS: dict[str, tuple] = {
+        'Core.PLAN.unpin': (1, 'Unpin'),  # opunpin: extract inner value from Pin
+    }
+
+    # Core.IO.Prim: I/O primitives mapped to planvm jet.primtab entries.
+    # write_op = P(N(9)) = WriteOp; takes a size-4 closure (fd, buf, count, offset).
+    _CORE_IO_PRIMITIVES: dict[str, Any] = {
+        'Core.IO.Prim.write_op': P(N(9)),
+    }
+
     @staticmethod
     def _make_core_text_primitives() -> dict:
         """
@@ -449,6 +462,12 @@ class Compiler:
             # Core.PLAN operations map directly to PLAN opcode pins.
             if fq in self._CORE_PLAN_OPCODES:
                 stub = P(N(self._CORE_PLAN_OPCODES[fq]))
+            elif fq in self._CORE_PLAN_NAMED_JETS:
+                arity, law_name = self._CORE_PLAN_NAMED_JETS[fq]
+                # Named law: planvm jet-dispatches by name; body N(1) is a placeholder.
+                stub = P(L(arity, encode_name(law_name), N(1)))
+            elif fq in self._CORE_IO_PRIMITIVES:
+                stub = self._CORE_IO_PRIMITIVES[fq]
             elif fq in self._get_core_text_primitives():
                 stub = self._get_core_text_primitives()[fq]
             else:
