@@ -9,7 +9,12 @@
 -- External ops deferred to optimization pass after self-hosting.
 
 external mod Core.PLAN {
-  inc : Nat → Nat
+  inc   : Nat → Nat
+  unpin : Nat → Nat
+}
+
+external mod Core.IO.Prim {
+  write_op : Nat → Nat
 }
 
 -- =====================================================================
@@ -4571,4 +4576,52 @@ let main : Bytes → Bytes
 
 -- =====================================================================
 -- End of M8.7: Driver
+-- =====================================================================
+
+-- =====================================================================
+-- Section 27: M8.8 Path A — planvm CLI entry point
+-- =====================================================================
+--
+-- run_main: entry point for planvm CLI execution.
+--
+-- planvm passes the source text as a CLI argument (a strnat — little-endian
+-- Nat encoding of the UTF-8 bytes).  boot.c builds argVec as:
+--   Closure(head=N(0)=Pin, args=[src_nat])
+-- which forces to P(src_nat).  Core.PLAN.unpin extracts src_nat.
+--
+-- We then compute the byte length via nat_byte_len, construct a Bytes value,
+-- run main, and write the output to stdout (fd=1) via WriteOp.
+--
+-- WriteOp (P(N(9))) requires its argument to be a size-4 Closure:
+--   (fd, buf_nat, byte_count, offset)
+-- _write_pack is a 5-arity dummy law; applying it to 4 args creates that
+-- Closure, which WriteOp's unpackop.sized(closure, 4) can unpack.
+--
+-- run_main : Nat → Nat
+--   Takes the raw argVec (forces to P(src_nat)).
+--   Returns 0 (exit code).
+-- =====================================================================
+
+-- _write_pack: 5-arity dummy; applying to 4 args creates size-4 Closure
+-- for WriteOp.  The body returns the last arg (never reached via jet).
+let _write_pack : Nat → Nat → Nat → Nat → Nat → Nat
+  = λ a b c d e → e
+
+-- write_fd: write buf_nat (count bytes) to file descriptor fd at offset 0
+let write_fd : Nat → Nat → Nat → Nat
+  = λ fd buf count → write_op (_write_pack fd buf count 0)
+
+-- run_main: planvm CLI entry point
+let run_main : Nat → Nat
+  = λ argVec →
+      let src_nat   = Core.PLAN.unpin argVec in
+      let src_len   = nat_byte_len src_nat in
+      let src_bytes = MkPair src_len src_nat in
+      let output    = main src_bytes in
+      let out_len   = bytes_length output in
+      let out_nat   = bytes_content output in
+      write_fd 1 out_nat out_len
+
+-- =====================================================================
+-- End of M8.8: Path A CLI entry point
 -- =====================================================================

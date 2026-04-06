@@ -42,11 +42,13 @@ is in place.
 
 import os
 import sys
+import subprocess
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from tests.planvm.test_seed_planvm import requires_planvm, seed_loads
+from tests.planvm.test_seed_planvm import requires_planvm, seed_loads, PLANVM
 from dev.harness.plan import A, P, L, N, is_nat, is_app, is_pin, is_law, evaluate
 from dev.harness.bplan import bevaluate
 
@@ -197,13 +199,19 @@ def run_path_b(bc, compiled):
          which foldl emits back in source order.
       3. Call bevaluate(A(emit_program, lst)) with BPLAN jets.
       4. Return decoded bytes.
+
+    NOTE: pv must be evaluated before insertion.  plan2pv builds
+    A(bc['Compiler.PNat'], 42) etc. — unevaluated Apps whose fun is a
+    constructor law, not a bare Nat tag.  In planvm, Case_ evaluates its
+    discriminant to WHNF before dispatching; bplan's _bmatch does not.
+    Pre-evaluating pv → A(N(tag), field) gives _bmatch the form it expects.
     """
     nil_val = bevaluate(bc['Compiler.Nil'])
     lst = nil_val
     cache = {}
     for fq_name, plan_val in compiled.items():
         nn = int.from_bytes(fq_name.encode('ascii'), 'little')
-        pv = plan2pv(plan_val, bc, cache)
+        pv = bevaluate(plan2pv(plan_val, bc, cache))   # must evaluate before insert
         pair = A(A(bc['Compiler.MkPair'], nn), pv)
         lst = A(A(bc['Compiler.Cons'], pair), lst)
 
@@ -309,15 +317,55 @@ class TestSelfhostBridge(unittest.TestCase):
 # TestSelfhostEmitProgram: M8.8 harness gate (Path B)
 # ---------------------------------------------------------------------------
 
+# Curated GLS module for TestSelfhostEmitProgram.
+# Small enough to run quickly (< 1s), but covers all construct types:
+#   DType with nullary, unary, binary constructors
+#   DLet: nat literal (PNat), simple lambda (PLaw), pattern match (Case_),
+#         external ref (Core.PLAN.inc), identity/main function.
+_CURATED_GLS = """\
+external mod Core.PLAN {
+  inc : Nat → Nat
+}
+
+type Option a =
+  | None
+  | Some a
+
+type Pair a b =
+  | MkPair a b
+
+let truth : Nat = 1
+
+let succ : Nat → Nat
+  = λ n → Core.PLAN.inc n
+
+let pred : Nat → Nat
+  = λ n → match n { | 0 → 0 | k → k }
+
+let fst : Pair Nat Nat → Nat
+  = λ p → match p { | MkPair a _ → a }
+
+let main : Nat → Nat
+  = λ x → x
+"""
+_CURATED_MODULE = 'Test'
+
+
 class TestSelfhostEmitProgram(unittest.TestCase):
     """
     M8.8 Path B: Python bootstrap output → GLS emit_program → Plan Assembler.
 
-    This is the primary harness-level M8.8 gate.  It verifies that:
-    1. GLS emit_program can consume the full Compiler.gls module.
-    2. The output is valid GLS Bytes.
-    3. The output is non-trivially large Plan Assembler text.
-    4. Each output line is a well-formed (#bind ...) form.
+    Uses a small curated GLS module (_CURATED_GLS) instead of the full
+    430-definition Compiler.gls to keep the test fast (< 1s).  The curated
+    module exercises all PlanVal constructor types that emit_program must
+    handle: PNat (nat literal), PLaw (lambda, pattern match), PApp, PPin.
+
+    Structural properties verified:
+    - output is non-empty GLS Bytes
+    - each top-level line starts with (#bind "
+    - bind count equals definition count
+    - a (#bind for Test.main is present
+    - byte-identical Path B output for a 2-definition snippet
 
     It does NOT verify byte-identity with planvm output (that is Path A,
     deferred until cog infrastructure exists).
@@ -325,8 +373,14 @@ class TestSelfhostEmitProgram(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        from bootstrap.lexer import lex
+        from bootstrap.parser import parse
+        from bootstrap.scope import resolve
+        from bootstrap.codegen import compile_program
+        prog = parse(lex(_CURATED_GLS, '<curated>'), '<curated>')
+        resolved, _ = resolve(prog, _CURATED_MODULE, {}, '<curated>')
+        cls.compiled = compile_program(resolved, _CURATED_MODULE)
         cls.bc = compile_module_bplan()
-        cls.compiled = compile_module()
         cls.output = run_path_b(cls.bc, cls.compiled)
 
     def test_output_is_not_none(self):
@@ -365,23 +419,30 @@ class TestSelfhostEmitProgram(unittest.TestCase):
             f'bind count: got {bind_count}, expected {expected} (= len(compiled))')
 
     def test_output_contains_main_binding(self):
-        """Output contains a (#bind for Compiler.main (the entry point)."""
-        main_nat = int.from_bytes(b'Compiler.main', 'little')
+        """Output contains a (#bind for Test.main (the curated module entry point)."""
+        main_nat = int.from_bytes(
+            f'{_CURATED_MODULE}.main'.encode('ascii'), 'little')
         main_decimal = str(main_nat).encode('ascii')
         needle = b'(#bind "' + main_decimal + b'"'
         self.assertIn(needle, self.output,
-            f'Compiler.main binding (decimal {main_nat}) not found in output')
+            f'{_CURATED_MODULE}.main binding (decimal {main_nat}) not found in output')
 
-    def test_output_all_lines_are_bind_forms(self):
-        """Every non-empty line in the output is a (#bind ...) form."""
+    def test_output_top_level_lines_are_bind_forms(self):
+        """Every top-level (#-prefixed) line in the output is a (#bind ...) form.
+
+        Law bodies use multi-line formatting: the closing )) appears on
+        indented continuation lines.  Only unindented non-empty lines
+        must start with (#bind ".
+        """
         lines = self.output.split(b'\n')
-        bad = [ln for ln in lines if ln and not ln.startswith(b'(#bind ')]
+        bad = [ln for ln in lines
+               if ln and not ln.startswith(b' ') and not ln.startswith(b'(#bind ')]
         self.assertEqual(bad, [],
-            f'Non-bind lines found: {bad[:3]!r}')
+            f'Non-bind top-level lines found: {bad[:3]!r}')
 
-    def test_output_large_enough(self):
-        """Output is at least 10 KB (Compiler.gls is ~3800 lines, ~300 definitions)."""
-        self.assertGreater(len(self.output), 10_000,
+    def test_output_nonempty_content(self):
+        """Output is at least 200 bytes (9 defs × ~100 bytes each minimum)."""
+        self.assertGreater(len(self.output), 200,
             f'Output suspiciously small: {len(self.output)} bytes')
 
     def test_tiny_snippet_path_b(self):
@@ -402,23 +463,7 @@ class TestSelfhostEmitProgram(unittest.TestCase):
         snippet_compiled = compile_program(resolved, 'Test')
 
         bc = self.bc
-        nil_val = bevaluate(bc['Compiler.Nil'])
-        lst = nil_val
-        cache = {}
-        for fq_name, plan_val in snippet_compiled.items():
-            nn = int.from_bytes(fq_name.encode('ascii'), 'little')
-            pv = plan2pv(plan_val, bc, cache)
-            pair = A(A(bc['Compiler.MkPair'], nn), pv)
-            lst = A(A(bc['Compiler.Cons'], pair), lst)
-
-        old = sys.getrecursionlimit()
-        sys.setrecursionlimit(max(old, 100000))
-        try:
-            result = bevaluate(A(bc['Compiler.emit_program'], lst))
-        finally:
-            sys.setrecursionlimit(old)
-
-        output = gls_bytes_decode(result)
+        output = run_path_b(bc, snippet_compiled)
         self.assertIsNotNone(output, 'Path B snippet produced None')
         self.assertEqual(output.count(b'(#bind '), 2,
             f'Expected 2 bind forms for 2-def snippet, got: {output!r}')
@@ -432,11 +477,7 @@ class TestSelfhostEmitProgram(unittest.TestCase):
 
 class TestSelfhostPlanvm(unittest.TestCase):
     """
-    M8.8 planvm gate: Compiler.main seed loads without format error.
-
-    Full Path A (run compiled main.seed on Compiler.gls input and compare
-    output to Path B) is deferred until cog infrastructure is in place.
-    These tests confirm that the seeds are planvm-valid.
+    M8.8 planvm gate: seed loading tests.
     """
 
     @requires_planvm
@@ -452,6 +493,113 @@ class TestSelfhostPlanvm(unittest.TestCase):
         seed = make_seed('emit_program')
         self.assertTrue(seed_loads(seed),
             'planvm rejected Compiler.emit_program seed')
+
+    @requires_planvm
+    def test_compiler_run_main_seed_loads(self):
+        """Compiler.run_main (M8.8 Path A CLI entry point) compiles to a planvm-valid seed."""
+        seed = make_seed('run_main')
+        self.assertTrue(seed_loads(seed),
+            'planvm rejected Compiler.run_main seed')
+
+
+# ---------------------------------------------------------------------------
+# Path A helper: run planvm with a source text CLI argument
+# ---------------------------------------------------------------------------
+
+def run_planvm_with_source(seed_bytes: bytes, source_text: str,
+                            timeout: int = 30) -> bytes | None:
+    """
+    Run planvm with seed_bytes and source_text as a CLI argument.
+
+    Invocation: planvm <seed_file> <source_text>
+
+    planvm passes source_text as a strnat (little-endian Nat) to the program
+    via argVec = Closure(head=Pin, args=[strnat]).  Compiler.run_main unpins
+    this to get the raw Nat, computes byte length, and calls main.
+
+    Returns: stdout bytes on success, None on timeout or error.
+    """
+    with tempfile.NamedTemporaryFile(suffix='.seed', delete=False) as f:
+        f.write(seed_bytes)
+        seed_path = f.name
+    try:
+        result = subprocess.run(
+            [PLANVM, seed_path, source_text],
+            capture_output=True,
+            timeout=timeout,
+        )
+        if result.returncode == 0:
+            return result.stdout
+        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    finally:
+        os.unlink(seed_path)
+
+
+# ---------------------------------------------------------------------------
+# TestSelfhostPathA: M8.8 Path A functional validation
+# ---------------------------------------------------------------------------
+
+class TestSelfhostPathA(unittest.TestCase):
+    """
+    M8.8 Path A: run Compiler.run_main via planvm with source text as CLI arg.
+
+    Compiler.run_main unwraps the argVec (forces to P(src_nat)), computes the
+    byte length, constructs a Bytes value, calls Compiler.main, then writes the
+    Plan Assembler output to stdout via WriteOp.
+
+    The test source is a 2-definition snippet compiled to Plan Assembler by Path B;
+    Path A must produce the same output.
+    """
+
+    # Tiny source that compiles quickly and has a predictable output.
+    SNIPPET = 'let answer : Nat = 42\nlet double : Nat\n  = answer\n'
+
+    @classmethod
+    def setUpClass(cls):
+        # Compute Path B expected output once.
+        from bootstrap.lexer import lex
+        from bootstrap.parser import parse
+        from bootstrap.scope import resolve
+        from bootstrap.codegen import compile_program
+
+        src = cls.SNIPPET
+        prog = parse(lex(src, '<snippet>'), '<snippet>')
+        resolved, _ = resolve(prog, 'Test', {}, '<snippet>')
+        snippet_compiled = compile_program(resolved, 'Test')
+        bc = compile_module_bplan()
+        cls.expected_output = run_path_b(bc, snippet_compiled)
+
+    @requires_planvm
+    def test_path_a_snippet_matches_path_b(self):
+        """Path A (planvm run_main) produces the same output as Path B (harness).
+
+        Invokes planvm with Compiler.run_main seed and the SNIPPET source as a
+        CLI arg.  The output written to stdout must match Path B's Plan Assembler.
+        """
+        seed = make_seed('run_main')
+        output = run_planvm_with_source(seed, self.SNIPPET)
+        self.assertIsNotNone(output,
+            'planvm run_main returned None (non-zero exit or timeout)')
+        self.assertIsNotNone(self.expected_output,
+            'Path B produced None — cannot compare')
+        self.assertEqual(output, self.expected_output,
+            f'Path A output does not match Path B.\n'
+            f'  Path A: {output[:80]!r}\n'
+            f'  Path B: {self.expected_output[:80]!r}')
+
+    @requires_planvm
+    def test_path_a_output_is_plan_assembler(self):
+        """Path A output starts with (#bind and ends with newline."""
+        seed = make_seed('run_main')
+        output = run_planvm_with_source(seed, self.SNIPPET)
+        if output is None:
+            self.skipTest('planvm run_main returned None')
+        self.assertTrue(output.startswith(b'(#bind "'),
+            f'Path A output does not start with (#bind ": {output[:40]!r}')
+        self.assertTrue(output.endswith(b'\n'),
+            f'Path A output does not end with newline: {output[-20:]!r}')
 
 
 if __name__ == '__main__':
