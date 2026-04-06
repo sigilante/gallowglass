@@ -1,6 +1,6 @@
 # Test Strategy
 
-**Last updated:** M8.8 Path A CLI entry point — run_main, WriteOp, unpin (783 tests)
+**Last updated:** M8.8 emit_program jets + bevaluate O(N) optimization (783 tests)
 
 This document describes the test architecture, what each layer verifies,
 and the known gap between what is tested and what is not.
@@ -49,7 +49,8 @@ run in O(1), eliminating the Python recursion-depth limit that previously blocke
 ~24 compiler emitter tests.
 
 **Jets (Compiler.*):** `add`, `sub`, `mul`, `div_nat`, `mod_nat`, `pow2`, `bit_or`, `bit_and`,
-`shift_left`, `shift_right`, `nat_eq`, `nat_lt`, `lte`, `gte`, `max_nat`, `min_nat`.
+`shift_left`, `shift_right`, `nat_eq`, `nat_lt`, `lte`, `gte`, `max_nat`, `min_nat`,
+`emit_bind`, `emit_program` (Plan Assembler emitter — avoids O(n²) bigint accumulation).
 
 **Jets (Core.Nat.* / Core.Text.*):** `Core.Nat.{add,mul,pred,is_zero,nat_eq,nat_lt}`,
 `Core.Text.{sub,pow2,div_nat,mod_nat}`, `Core.Text.Prim.{mk_text,text_len,text_nat}`.
@@ -159,7 +160,7 @@ tests/
     test_utils.py              ← M8.1 utilities (nat/list/byte ops); 45 tests + planvm seeds
     test_emit.py               ← M8.6 Plan Assembler emitter; 39 active (BPLAN harness)
     test_driver.py             ← M8.7 driver (main : Bytes → Bytes); 3 active + 3 skipped
-    test_selfhost.py           ← M8.8 self-hosting; 17 active + 5 planvm-gated (incl. Path A)
+    test_selfhost.py           ← M8.8 self-hosting; 17 active + 5 planvm-gated (incl. Path A); uses curated 9-def module for Path B speed
     test_m11.py                ← M11.5 GLS DeclClass/DeclInst support; 20 tests
 ```
 

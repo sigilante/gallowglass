@@ -133,6 +133,10 @@ def _bexec(f, e):
             return _bop(inner, e)
         raise ValueError(f'_bexec: bad pin content {inner!r}')
     if is_law(f):
+        jet = _JET_REGISTRY.get(id(f))
+        if jet is not None:
+            evaluated = [_unwrap(bevaluate(a)) for a in e]
+            return jet.fn(*evaluated)
         return _bjudge(f.arity, list(reversed([f] + e)), f.body)
     raise ValueError(f'_bexec: not executable {f!r}')
 
@@ -205,20 +209,33 @@ def bevaluate(val, _depth: int = 0):
     if _is_jet(val):
         return val
     if is_pin(val):
-        return P(bevaluate(val.val, _depth + 1))
+        new_inner = bevaluate(val.val, _depth + 1)
+        if new_inner is val.val:
+            return val
+        return P(new_inner)
     if is_law(val):
-        return L(val.arity,
-                 bevaluate(val.name, _depth + 1),
-                 bevaluate(val.body, _depth + 1))
+        new_name = bevaluate(val.name, _depth + 1)
+        new_body = bevaluate(val.body, _depth + 1)
+        if new_name is val.name and new_body is val.body:
+            return val
+        return L(val.arity, new_name, new_body)
     if is_app(val):
-        result = _bapply(val.fun, val.arg)
-        if result == val:
-            new_fun = bevaluate(val.fun, _depth + 1)
-            new_arg = bevaluate(val.arg, _depth + 1)
-            if new_fun == val.fun and new_arg == val.arg:
-                return val
-            return bevaluate(A(new_fun, new_arg), _depth + 1)
-        return bevaluate(result, _depth + 1)
+        # Only attempt reduction when the function has arity exactly 1.
+        # Checking arity first avoids constructing a throwaway A(f,x) and
+        # doing an O(tree-size) deep equality check for irreducible Apps
+        # (e.g. GLS PlanVal ADT nodes that are already in normal form).
+        if _barity(val.fun) == 1:
+            result = _bexec(val.fun, [val.arg])
+            return bevaluate(result, _depth + 1)
+        # Arity != 1: no reduction at this level; recurse into sub-terms.
+        # Use identity (is) rather than equality (==) to detect no change —
+        # bevaluate returns the same Python object when a sub-term is already
+        # in normal form, so `is` is correct and O(1) vs O(tree-size) for ==.
+        new_fun = bevaluate(val.fun, _depth + 1)
+        new_arg = bevaluate(val.arg, _depth + 1)
+        if new_fun is val.fun and new_arg is val.arg:
+            return val
+        return bevaluate(A(new_fun, new_arg), _depth + 1)
     return val
 
 
@@ -268,6 +285,175 @@ def _bytes_concat(a, b):
     return A(A(0, new_len), new_content)
 
 
+# ---------------------------------------------------------------------------
+# Plan Assembler emitter jets: Python implementations of Compiler.emit_bind
+# and friends.  These mirror the GLS emit functions exactly so the jet output
+# is byte-identical to what BPLAN interpretation would produce.
+#
+# GLS PlanVal ADT encoding (after bevaluate):
+#   PNat n              = A(0, n)           — App(Nat(0), n)
+#   PApp f x            = A(A(1, f), x)     — App(App(Nat(1), f), x)
+#   PLaw name pair      = A(A(2, name), pair)
+#   PPin v              = A(3, v)
+#   Pair Nat PlanVal    = A(A(0, arity), body_pv)  (MkPair arity body)
+# ---------------------------------------------------------------------------
+
+def _is_pnat(v):
+    return is_app(v) and is_nat(v.fun) and v.fun == 0
+
+def _is_papp(v):
+    return (is_app(v) and is_app(v.fun)
+            and is_nat(v.fun.fun) and v.fun.fun == 1)
+
+def _is_plaw(v):
+    return (is_app(v) and is_app(v.fun)
+            and is_nat(v.fun.fun) and v.fun.fun == 2)
+
+def _is_ppin(v):
+    return is_app(v) and is_nat(v.fun) and v.fun == 3
+
+
+def _emit_debruijn_ref(i):
+    return f'_{i}'
+
+
+def _emit_law_sig(arity):
+    """(_0 _1 ... _arity)"""
+    parts = [f'_{i}' for i in range(arity + 1)]
+    return '(' + ' '.join(parts) + ')'
+
+
+def _emit_body_val(pval, depth, ep):
+    """Body-context emitter: mirrors emit_bval_dispatch / emit_body_val."""
+    if _is_pnat(pval):
+        return _emit_debruijn_ref(pval.arg)
+    if _is_ppin(pval):
+        return f'(#pin {ep(pval.arg)})'
+    if _is_plaw(pval):
+        return ep(pval)
+    if _is_papp(pval):
+        f = pval.fun.arg   # inner of A(A(1,f), x)
+        x = pval.arg
+        # dispatch on f structure
+        if _is_pnat(f):
+            opcode = f.arg
+            if opcode == 0:
+                # PApp(PNat 0)(PNat k) → quoted nat; else generic app
+                if _is_pnat(x):
+                    return str(x.arg)
+                return f'({_emit_body_val(f, depth, ep)} {_emit_body_val(x, depth, ep)})'
+            else:
+                return f'({_emit_body_val(f, depth, ep)} {_emit_body_val(x, depth, ep)})'
+        if _is_papp(f):
+            f_fun = f.fun.arg   # inner of A(A(1, f_fun), f_x)
+            if _is_pnat(f_fun):
+                opcode = f_fun.arg
+                x2 = f.arg
+                if opcode == 0:
+                    return f'({_emit_body_val(x2, depth, ep)} {_emit_body_val(x, depth, ep)})'
+                if opcode == 1:
+                    d1 = depth + 1
+                    return (f'_{d1}({_emit_body_val(x2, depth, ep)})\n'
+                            f'  {_emit_body_val(x, d1, ep)}')
+                return f'({_emit_body_val(f, depth, ep)} {_emit_body_val(x, depth, ep)})'
+        return f'({_emit_body_val(f, depth, ep)} {_emit_body_val(x, depth, ep)})'
+    # fallback
+    return str(pval)
+
+
+def _emit_pval(pval):
+    """Top-level emitter: mirrors emit_pval / emit_pval_dispatch."""
+    if _is_pnat(pval):
+        return str(pval.arg)
+    if _is_ppin(pval):
+        return f'(#pin {_emit_pval(pval.arg)})'
+    if _is_papp(pval):
+        f = pval.fun.arg
+        x = pval.arg
+        return f'({_emit_pval(f)} {_emit_pval(x)})'
+    if _is_plaw(pval):
+        name = pval.fun.arg
+        pair = pval.arg     # A(A(0, arity), body_pv)
+        arity = pair.fun.arg
+        body_pv = pair.arg
+        sig = _emit_law_sig(arity)
+        body_asm = _emit_body_val(body_pv, arity, _emit_pval)
+        return f'(#law "{name}" {sig}\n  {body_asm})'
+    return str(pval)
+
+
+def _str_to_gls_bytes(s):
+    """Convert a Python str to a GLS Bytes = A(A(N(0), len), content_nat)."""
+    raw = s.encode('utf-8')
+    length = len(raw)
+    content = int.from_bytes(raw, 'little') if raw else 0
+    return A(A(0, length), content)
+
+
+def _emit_bind_jet(name_nat, pval):
+    """
+    Jet for Compiler.emit_bind : Nat → PlanVal → Bytes.
+
+    Produces (#bind "name_decimal" value_asm)\n as GLS Bytes.
+    Mirrors the GLS implementation exactly.
+    """
+    name_decimal = str(name_nat)
+    val_asm = _emit_pval(pval)
+    result = f'(#bind "{name_decimal}" {val_asm})\n'
+    return _str_to_gls_bytes(result)
+
+
+def _gls_list_to_pairs(lst):
+    """
+    Decode a GLS List (Pair Nat PlanVal) to a Python list of (name_nat, pval).
+
+    GLS List after bevaluate:
+      Nil  = N(0)
+      Cons = A(A(N(1), element), rest)
+
+    Each element is Pair Nat PlanVal = A(A(N(0), name_nat), pval).
+    """
+    pairs = []
+    node = lst
+    while is_app(node):
+        # Cons = A(A(N(1), element), rest)
+        pair = node.fun.arg    # A(A(N(0), name_nat), pval)
+        rest = node.arg
+        name_nat = pair.fun.arg
+        pval = pair.arg
+        pairs.append((name_nat, pval))
+        node = rest
+    return pairs
+
+
+def _emit_program_jet(lst):
+    """
+    Jet for Compiler.emit_program : List (Pair Nat PlanVal) → Bytes.
+
+    Bypasses the GLS foldl + bytes_concat accumulation loop, which is
+    O(n²) in the output size due to bigint shift-OR arithmetic.  This
+    jet collects each (#bind …) line as native bytes and joins once,
+    making the total work O(n) in output size.
+
+    The list is traversed in head-to-tail order (= reverse source order,
+    since run_path_b Cons-prepends in forward source order), matching the
+    foldl semantics: bytes_concat acc (emit_bind …) appends each line to
+    the accumulator, producing output in list (= reverse source) order.
+    """
+    pairs = _gls_list_to_pairs(lst)
+    parts = []
+    for name_nat, pval in pairs:
+        bind_gls = _emit_bind_jet(name_nat, pval)
+        # bind_gls = A(A(N(0), length), content_nat) — GLS Bytes
+        length = bind_gls.fun.arg
+        if length > 0:
+            parts.append(bind_gls.arg.to_bytes(length, 'little'))
+    raw = b''.join(parts)
+    if not raw:
+        return A(A(0, 0), 0)
+    return A(A(0, len(raw)), int.from_bytes(raw, 'little'))
+
+
 _COMPILER_JETS = {
     # Core arithmetic (O(n) recursive in PLAN)
     'Compiler.add':        (2, lambda m, n: m + n),
@@ -303,6 +489,10 @@ _COMPILER_JETS = {
     'Compiler.bytes_content': (1, _bytes_content),
     'Compiler.bytes_concat':  (2, _bytes_concat),
     'Compiler.bytes_singleton': (1, lambda b: A(A(0, 1), b & 255)),
+
+    # Plan Assembler emitter (O(n) BPLAN interpretation without jets)
+    'Compiler.emit_bind':     (2, _emit_bind_jet),
+    'Compiler.emit_program':  (1, _emit_program_jet),
 }
 
 
