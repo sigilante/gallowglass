@@ -780,6 +780,156 @@ let mod3_is_2 = λ n → match n {
 
 
 # ---------------------------------------------------------------------------
+# Mixed-arity constructor match (unary tag>0 in binary path)
+# ---------------------------------------------------------------------------
+# These tests exercise the `max_arity == 2` path in `_build_app_handler` when
+# the type has both binary (arity=2) and unary (arity=1, tag>0) constructors.
+# The canonical example is PlanVal: PNat(unary,tag=0), PApp(binary,tag=1),
+# PLaw(binary,tag=2), PPin(unary,tag=3).
+
+_PLANVAL_SRC = '''
+type PlanVal =
+  | PNat Nat
+  | PApp Nat Nat
+  | PLaw Nat Nat
+  | PPin Nat
+'''
+
+
+def test_match_mixed_arity_pnat_arm():
+    """PNat arm fires correctly (unary tag=0 — baseline for the binary path)."""
+    src = _PLANVAL_SRC + '''
+let tag_of = λ v → match v {
+  | PNat n   → 10
+  | PApp f x → 20
+  | PLaw n p → 30
+  | PPin w   → 40
+}
+let main = tag_of (PNat 99)
+'''
+    v = eval_val(src, 'main')
+    assert v == 10, f'expected 10 (PNat arm), got {v}'
+
+
+def test_match_mixed_arity_papp_arm():
+    """PApp arm fires correctly (binary tag=1)."""
+    src = _PLANVAL_SRC + '''
+let tag_of = λ v → match v {
+  | PNat n   → 10
+  | PApp f x → 20
+  | PLaw n p → 30
+  | PPin w   → 40
+}
+let main = tag_of (PApp 1 2)
+'''
+    v = eval_val(src, 'main')
+    assert v == 20, f'expected 20 (PApp arm), got {v}'
+
+
+def test_match_mixed_arity_plaw_arm():
+    """PLaw arm fires correctly (binary tag=2)."""
+    src = _PLANVAL_SRC + '''
+let tag_of = λ v → match v {
+  | PNat n   → 10
+  | PApp f x → 20
+  | PLaw n p → 30
+  | PPin w   → 40
+}
+let main = tag_of (PLaw 5 6)
+'''
+    v = eval_val(src, 'main')
+    assert v == 30, f'expected 30 (PLaw arm), got {v}'
+
+
+def test_match_mixed_arity_ppin_arm():
+    """PPin arm fires correctly (unary tag=3 — the formerly-deferred path)."""
+    src = _PLANVAL_SRC + '''
+let tag_of = λ v → match v {
+  | PNat n   → 10
+  | PApp f x → 20
+  | PLaw n p → 30
+  | PPin w   → 40
+}
+let main = tag_of (PPin 7)
+'''
+    v = eval_val(src, 'main')
+    assert v == 40, f'expected 40 (PPin arm), got {v}'
+
+
+def test_match_mixed_arity_ppin_field_captured():
+    """PPin arm body can access the field variable correctly."""
+    src = _PLANVAL_SRC + '''
+let unwrap_pin = λ v → match v {
+  | PNat n   → 0
+  | PApp f x → 0
+  | PLaw n p → 0
+  | PPin w   → w
+}
+let main = unwrap_pin (PPin 99)
+'''
+    v = eval_val(src, 'main')
+    assert v == 99, f'expected 99 (PPin field), got {v}'
+
+
+def test_match_mixed_arity_pnat_field_captured():
+    """PNat arm body can access its field (unary tag=0, sanity check)."""
+    src = _PLANVAL_SRC + '''
+let unwrap_nat = λ v → match v {
+  | PNat n   → n
+  | PApp f x → 0
+  | PLaw n p → 0
+  | PPin w   → 0
+}
+let main = unwrap_nat (PNat 77)
+'''
+    v = eval_val(src, 'main')
+    assert v == 77, f'expected 77 (PNat field), got {v}'
+
+
+def test_match_mixed_arity_papp_fields_captured():
+    """PApp arm body can access both binary fields."""
+    src = _PLANVAL_SRC + '''
+let get_papp_fst = λ v → match v {
+  | PNat n   → 0
+  | PApp f x → f
+  | PLaw n p → 0
+  | PPin w   → 0
+}
+let main = get_papp_fst (PApp 11 22)
+'''
+    v = eval_val(src, 'main')
+    assert v == 11, f'expected 11 (PApp first field), got {v}'
+
+
+def test_match_mixed_arity_with_outer_capture():
+    """PPin arm body can reference outer-scope variables (free variable capture)."""
+    src = _PLANVAL_SRC + '''
+let add_outer = λ base v → match v {
+  | PNat n   → base
+  | PApp f x → base
+  | PLaw n p → base
+  | PPin w   → w
+}
+let main = add_outer 100 (PPin 42)
+'''
+    v = eval_val(src, 'main')
+    assert v == 42, f'expected 42 (PPin field with outer capture), got {v}'
+
+
+def test_match_mixed_arity_wildcard_fires():
+    """Wildcard arm fires for constructors not listed in the match."""
+    src = _PLANVAL_SRC + '''
+let partial = λ v → match v {
+  | PNat n → n
+  | _      → 999
+}
+let main = partial (PPin 7)
+'''
+    v = eval_val(src, 'main')
+    assert v == 999, f'expected 999 (wildcard), got {v}'
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 

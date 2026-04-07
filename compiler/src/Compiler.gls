@@ -2937,17 +2937,31 @@ let cg_build_precompiled_nat_dispatch : List (Pair Nat PlanVal) → Option (Pair
         | Cons pair0 rest →
             match pair0 {
               | MkPair tag0 zero_val →
-                  let succ = match rest {
-                                | Nil →
-                                    cg_make_wild_succ wild env ce ctab hint
-                                | Cons _ _ →
-                                    let g = cenv_globals env in
-                                    let pred_env = cenv_make g Nil 1 None in
-                                    let normalized = cg_normalize_pv_tags rest tag0 in
-                                    let inner = cg_build_precompiled_nat_dispatch normalized wild (PNat 1) pred_env ce ctab hint in
-                                    PPin (PLaw 0 (MkPair 1 inner))
-                              } in
-                  cg_build_op2 zero_val succ scr (cenv_arity env)
+                  let g = cenv_globals env in
+                  let pred_env = cenv_make g Nil 1 None in
+                  match rest {
+                    | Nil →
+                        -- Single entry. tag0=0: standard z dispatch.
+                        -- tag0>0: build succ chain so zero_val fires at pred=tag0.
+                        match (nat_eq tag0 0) {
+                          | 0 →
+                              -- tag0 > 0: shift by 1 and recurse to build succ chain
+                              let shifted = Cons (MkPair (sub tag0 1) zero_val) Nil in
+                              let inner = cg_build_precompiled_nat_dispatch shifted wild (PNat 1) pred_env ce ctab hint in
+                              let succ = PPin (PLaw 0 (MkPair 1 inner)) in
+                              let fallback = cg_quote_nat 0 (cenv_arity env) in
+                              cg_build_op2 fallback succ scr (cenv_arity env)
+                          | _ →
+                              -- tag0 = 0: standard z dispatch
+                              let succ = cg_make_wild_succ wild env ce ctab hint in
+                              cg_build_op2 zero_val succ scr (cenv_arity env)
+                        }
+                    | Cons _ _ →
+                        let normalized = cg_normalize_pv_tags rest tag0 in
+                        let inner = cg_build_precompiled_nat_dispatch normalized wild (PNat 1) pred_env ce ctab hint in
+                        let succ = PPin (PLaw 0 (MkPair 1 inner)) in
+                        cg_build_op2 zero_val succ scr (cenv_arity env)
+                  }
             }
       }
 
@@ -3125,6 +3139,95 @@ let cg_build_unary_handler_body : List MatchArm → Option (Pair (Option Nat) Ex
             }
       }
 
+-- cg_build_unary_z_body: compile the z handler for a unary (arity=1) arm with tag=0.
+-- outer_fun = Nat 0 for such constructors → outer Case_ z fires.
+-- The arm's field is bound to arg_idx (= outer_arg) in henv.
+-- Falls back to constant 0 if no such arm exists.
+let cg_build_unary_z_body : List MatchArm → CEnv → Nat
+                             → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                             → List (Pair Nat (Pair Nat Nat)) → PlanVal
+  = λ field_arms henv arg_idx ce ctab →
+      let tag0_arms = filter (λ arm →
+                                match (nat_eq (cg_arm_con_arity arm) 1) {
+                                  | 0 → 0
+                                  | _ → match (contab_lookup ctab (arm_get_con_name arm)) {
+                                          | None → 0
+                                          | Some p → nat_eq (contab_tag p) 0
+                                        }
+                                }) field_arms in
+      match tag0_arms {
+        | Nil → cg_quote_nat 0 (cenv_arity henv)
+        | Cons arm _ →
+            let fields = arm_get_con_fields arm in
+            let ae = match fields {
+                       | Nil → henv
+                       | Cons f _ → cenv_bind_local henv f arg_idx
+                     } in
+            ce (arm_get_con_body arm) ae ctab 0
+      }
+
+-- cg_build_unary_m_body: compile the m (succ) handler for unary (arity=1) arms with tag>0.
+-- outer_fun = Nat(tag) → outer Case_ m fires with pred = tag-1.
+-- Builds a succ law that dispatches on pred using cg_build_precompiled_nat_dispatch.
+-- Each arm's field is bound to arg_idx (= outer_arg) in the extended env.
+let cg_build_unary_m_body : List MatchArm → Option (Pair (Option Nat) Expr) → CEnv → Nat
+                             → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+                             → List (Pair Nat (Pair Nat Nat)) → PlanVal
+  = λ field_arms wild henv arg_idx ce ctab →
+      let const2_pin = PPin const2_law in
+      let unary_gt0 = filter (λ arm →
+                                match (nat_eq (cg_arm_con_arity arm) 1) {
+                                  | 0 → 0
+                                  | _ → match (contab_lookup ctab (arm_get_con_name arm)) {
+                                          | None → 0
+                                          | Some p →
+                                              match (nat_eq (contab_tag p) 0) {
+                                                | 0 → 1
+                                                | _ → 0
+                                              }
+                                        }
+                                }) field_arms in
+      match unary_gt0 {
+        | Nil →
+            -- No unary arms with tag>0: fall to constant-0 or wild
+            match wild {
+              | None →
+                  match (nat_eq (cenv_arity henv) 0) {
+                    | 0 → cg_bapp const2_pin (PPin (PNat 0))
+                    | _ → PApp const2_pin (PNat 0)
+                  }
+              | Some p →
+                  match p {
+                    | MkPair _ wb →
+                        let n_cap = cenv_arity henv in
+                        let m_ext_env = cenv_set_arity henv (add n_cap 1) in
+                        let m_compiled = ce wb m_ext_env ctab 0 in
+                        let m_law = PPin (PLaw 0 (MkPair (add n_cap 1) m_compiled)) in
+                        cg_apply_params m_law 1 n_cap
+                  }
+            }
+        | Cons _ _ →
+            -- Build a succ law: arity = n_cap+1 (captures + pred)
+            -- Each arm's body compiled with field bound to arg_idx in m_ext_env
+            let n_cap = cenv_arity henv in
+            let pred_idx = add n_cap 1 in
+            let m_ext_env = cenv_set_arity henv pred_idx in
+            let m_pairs = cg_sort_pv_pairs (map (λ arm →
+                let fields = arm_get_con_fields arm in
+                let ae = match fields {
+                           | Nil → m_ext_env
+                           | Cons f _ → cenv_bind_local m_ext_env f arg_idx
+                         } in
+                let tag = match (contab_lookup ctab (arm_get_con_name arm)) {
+                            | None → 0
+                            | Some p → contab_tag p
+                          } in
+                MkPair (sub tag 1) (ce (arm_get_con_body arm) ae ctab 0)) unary_gt0) in
+            let m_dispatch = cg_build_precompiled_nat_dispatch m_pairs wild (PNat pred_idx) m_ext_env ce ctab 0 in
+            let m_succ_law = PPin (PLaw 0 (MkPair pred_idx m_dispatch)) in
+            cg_apply_params m_succ_law 1 n_cap
+      }
+
 -- cg_build_binary_handler_body: handler body for arity-2 field arms
 -- Receives uses_self and free_locals pre-computed by cg_build_app_handler
 let cg_build_binary_handler_body : List MatchArm → Option (Pair (Option Nat) Expr)
@@ -3205,8 +3308,13 @@ let cg_build_binary_handler_body : List MatchArm → Option (Pair (Option Nat) E
                  | 0 → cg_bapp r2 (PNat arg_idx)
                  | _ → PApp r2 (PNat arg_idx)
                } in
-      -- Build outer Case_ on outer_fun (N(fun_idx)) with r3 as app handler
-      cg_build_reflect_app r3 (cg_quote_nat 0 (cenv_arity henv)) (PNat fun_idx) (cenv_arity henv)
+      -- Build outer Case_ on outer_fun (N(fun_idx)) with r3 as app handler.
+      -- Unary arms (arity=1) never reach the inner law: outer_fun is a bare Nat.
+      --   tag=0 → outer z fires (handled by cg_build_unary_z_body)
+      --   tag>0 → outer m fires with pred=tag-1 (handled by cg_build_unary_m_body)
+      let z_body = cg_build_unary_z_body field_arms henv arg_idx ce ctab in
+      let m_body = cg_build_unary_m_body field_arms wild henv arg_idx ce ctab in
+      cg_build_reflect_dispatch r3 z_body m_body (PNat fun_idx) (cenv_arity henv)
 
 -- cg_bodies_use_self: check if any body in list uses self-ref
 let cg_bodies_use_self : List Expr → CEnv → Nat

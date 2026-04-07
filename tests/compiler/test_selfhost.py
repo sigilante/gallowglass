@@ -200,18 +200,17 @@ def run_path_b(bc, compiled):
       3. Call bevaluate(A(emit_program, lst)) with BPLAN jets.
       4. Return decoded bytes.
 
-    NOTE: pv must be evaluated before insertion.  plan2pv builds
-    A(bc['Compiler.PNat'], 42) etc. — unevaluated Apps whose fun is a
-    constructor law, not a bare Nat tag.  In planvm, Case_ evaluates its
-    discriminant to WHNF before dispatching; bplan's _bmatch does not.
-    Pre-evaluating pv → A(N(tag), field) gives _bmatch the form it expects.
+    NOTE: pv is pre-evaluated as a performance optimisation (avoids repeated
+    evaluation if the same value appears multiple times).  _bmatch now forces
+    its scrutinee unconditionally, so pre-evaluation is no longer required for
+    correctness.
     """
     nil_val = bevaluate(bc['Compiler.Nil'])
     lst = nil_val
     cache = {}
     for fq_name, plan_val in compiled.items():
         nn = int.from_bytes(fq_name.encode('ascii'), 'little')
-        pv = bevaluate(plan2pv(plan_val, bc, cache))   # must evaluate before insert
+        pv = bevaluate(plan2pv(plan_val, bc, cache))   # pre-evaluate for performance
         pair = A(A(bc['Compiler.MkPair'], nn), pv)
         lst = A(A(bc['Compiler.Cons'], pair), lst)
 
@@ -469,6 +468,175 @@ class TestSelfhostEmitProgram(unittest.TestCase):
             f'Expected 2 bind forms for 2-def snippet, got: {output!r}')
         self.assertTrue(output.startswith(b'(#bind "'),
             f'Snippet output does not start with (#bind ": {output!r}')
+
+
+# ---------------------------------------------------------------------------
+# Mixed-arity type: behavioral and emit tests (M8.8 revisit)
+# ---------------------------------------------------------------------------
+
+# GLS module with a 3-constructor mixed-arity type:
+#   Leaf Nat    — unary, tag=0 → outer Case_ z fires
+#   Node Nat Nat — binary, tag=1 → outer Case_ app fires
+#   Wrap Nat    — unary, tag=2 → outer Case_ m fires (non-zero unary tag)
+#
+# Wrap exercises the non-zero-unary-tag path fixed in cg_build_unary_m_body
+# and cg_build_precompiled_nat_dispatch.
+_MIXED_GLS = """\
+type Tree =
+  | Leaf Nat
+  | Node Nat Nat
+  | Wrap Nat
+
+let tree_val : Tree → Nat
+  = λ t → match t {
+      | Leaf x   → x
+      | Node l _ → l
+      | Wrap w   → w
+    }
+
+let tree_tag : Tree → Nat
+  = λ t → match t {
+      | Leaf _   → 0
+      | Node _ _ → 1
+      | Wrap _   → 2
+    }
+"""
+_MIXED_MODULE = 'Test'
+
+# Module-level cache for the mixed-arity compiled dict.
+_MIXED_COMPILED = None
+
+
+def compile_mixed():
+    global _MIXED_COMPILED
+    if _MIXED_COMPILED is not None:
+        return _MIXED_COMPILED
+    from bootstrap.lexer import lex
+    from bootstrap.parser import parse
+    from bootstrap.scope import resolve
+    from bootstrap.codegen import compile_program
+    prog = parse(lex(_MIXED_GLS, '<mixed>'), '<mixed>')
+    resolved, _ = resolve(prog, _MIXED_MODULE, {}, '<mixed>')
+    _MIXED_COMPILED = compile_program(resolved, _MIXED_MODULE)
+    return _MIXED_COMPILED
+
+
+class TestMixedArityBehavioral(unittest.TestCase):
+    """
+    Behavioral correctness for mixed-arity type pattern matches
+    (Python-bootstrap-compiled).
+
+    Tree has three constructors:
+      Leaf Nat     (unary, tag=0) — outer Case_ z fires
+      Node Nat Nat (binary, tag=1) — outer Case_ app fires, inner dispatch
+      Wrap Nat     (unary, tag=2) — outer Case_ m fires (non-zero unary tag)
+
+    Before the M8.8 revisit fix, Wrap returned 0 instead of the field value.
+    The fix: cg_build_unary_z_body / cg_build_unary_m_body + the
+    cg_build_precompiled_nat_dispatch non-zero first-tag branch.
+
+    Note: these tests verify the PYTHON BOOTSTRAP codegen, which was also
+    fixed with an equivalent patch (see tests/bootstrap/test_codegen.py).
+    Testing the GLS self-hosting codegen requires planvm (Path A, deferred).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.c = compile_mixed()
+
+    def _make(self, con_name, *args):
+        """Construct a Tree value (constructor applied to fields)."""
+        val = self.c[f'{_MIXED_MODULE}.{con_name}']
+        for arg in args:
+            val = A(val, arg)
+        return val
+
+    def _call(self, fn_name, *args):
+        fn = self.c[f'{_MIXED_MODULE}.{fn_name}']
+        return eval_bplan(fn, *args)
+
+    # --- tree_val: return the first (or only) field ---
+
+    def test_tree_val_leaf(self):
+        """tree_val (Leaf 42) = 42  [unary tag=0, outer-z path]."""
+        self.assertEqual(self._call('tree_val', self._make('Leaf', 42)), 42)
+
+    def test_tree_val_node(self):
+        """tree_val (Node 7 99) = 7  [binary tag=1, app path]."""
+        self.assertEqual(self._call('tree_val', self._make('Node', 7, 99)), 7)
+
+    def test_tree_val_wrap(self):
+        """tree_val (Wrap 55) = 55  [unary tag=2, non-zero outer-m path]."""
+        self.assertEqual(self._call('tree_val', self._make('Wrap', 55)), 55)
+
+    # --- tree_tag: return the constructor index ---
+
+    def test_tree_tag_leaf(self):
+        """tree_tag (Leaf 0) = 0."""
+        self.assertEqual(self._call('tree_tag', self._make('Leaf', 0)), 0)
+
+    def test_tree_tag_node(self):
+        """tree_tag (Node 0 0) = 1."""
+        self.assertEqual(self._call('tree_tag', self._make('Node', 0, 0)), 1)
+
+    def test_tree_tag_wrap(self):
+        """tree_tag (Wrap 0) = 2."""
+        self.assertEqual(self._call('tree_tag', self._make('Wrap', 0)), 2)
+
+
+class TestMixedArityEmit(unittest.TestCase):
+    """
+    Path B for the mixed-arity module: GLS emit_program serializes the
+    Python-bootstrap-compiled Tree functions to valid Plan Assembler text.
+
+    This exercises emit_body_val / emit_bval_dispatch on the PlanVal IR
+    produced from a mixed-arity match — in particular PNat and PPin values
+    that arise from the unary constructor arms.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.compiled = compile_mixed()
+        cls.bc = compile_module_bplan()
+        cls.output = run_path_b(cls.bc, cls.compiled)
+
+    def test_output_not_none(self):
+        self.assertIsNotNone(self.output,
+            'run_path_b returned None for mixed-arity module')
+
+    def test_output_is_bytes(self):
+        self.assertIsInstance(self.output, bytes)
+
+    def test_output_nonempty(self):
+        self.assertGreater(len(self.output), 0)
+
+    def test_output_bind_count(self):
+        """Number of (#bind lines equals number of compiled definitions."""
+        bind_count = self.output.count(b'(#bind ')
+        self.assertEqual(bind_count, len(self.compiled),
+            f'bind count: got {bind_count}, expected {len(self.compiled)}')
+
+    def test_output_has_tree_val(self):
+        """Output contains a (#bind for Test.tree_val."""
+        nn = int.from_bytes(f'{_MIXED_MODULE}.tree_val'.encode('ascii'), 'little')
+        needle = b'(#bind "' + str(nn).encode('ascii') + b'"'
+        self.assertIn(needle, self.output,
+            f'{_MIXED_MODULE}.tree_val binding not found in output')
+
+    def test_output_has_tree_tag(self):
+        """Output contains a (#bind for Test.tree_tag."""
+        nn = int.from_bytes(f'{_MIXED_MODULE}.tree_tag'.encode('ascii'), 'little')
+        needle = b'(#bind "' + str(nn).encode('ascii') + b'"'
+        self.assertIn(needle, self.output,
+            f'{_MIXED_MODULE}.tree_tag binding not found in output')
+
+    def test_output_top_level_lines_are_bind_forms(self):
+        """Every non-indented non-empty line is a (#bind ...) form."""
+        lines = self.output.split(b'\n')
+        bad = [ln for ln in lines
+               if ln and not ln.startswith(b' ') and not ln.startswith(b'(#bind ')]
+        self.assertEqual(bad, [],
+            f'Non-bind top-level lines: {bad[:3]!r}')
 
 
 # ---------------------------------------------------------------------------

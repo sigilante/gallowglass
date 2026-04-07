@@ -358,16 +358,61 @@ Before the fix, z_body was `body_nat(0, handler_env.arity)` = `P(0)` — a wrong
 
 For the unary arm with tag=0 (PNat): outer_fun=0 → inner Case_ z fires. The fix compiles
 the unary arm body in `handler_env` with `field = N(arg_idx)` (the outer_arg) and uses it
-as z_body. Unary arms with tag>0 (like PPin=3) require a lambda-lifted m_body sub-law;
-this is deferred until PPin emitter tests are written.
+as z_body.
 
-**Constraint:** The binary path assumes PlanVal-style types where:
-- Unary arm tag=0 exists (e.g. PNat) — handled by z_body
-- Binary arms have tags 1+ — handled by App dispatch and inner_law
-- Unary arms with tag>0 (e.g. PPin=3) — currently fall to m=const(0); tests are skipped
+Unary arms with tag>0 (like PPin=3) are handled by the `unary_arms_gt0` block: a
+lambda-lifted `m_succ_law` (arity = handler_env.arity + 1) is built and partially applied
+with N(1)..N(handler_env.arity) from the handler env, leaving one slot for the predecessor.
+Inside the succ law, `N(arg_idx)` correctly refers to `outer_arg` because the partial
+application passes it through. A `_build_precompiled_nat_dispatch` succ chain fires the
+arm body when the predecessor equals (tag − 1). **Fixed and tested (M8.8 revisit).**
 
-When writing a type with multiple unary tags >0, extend the fix to build a proper
-lambda-lifted m_body sub-law capturing free variables from handler_env.
+**Constraint:** The binary path handles PlanVal-style types with any combination of
+unary (arity=1) and binary (arity=2) constructors. Tags must be contiguous starting at 0
+(enforced by tag assignment in scope resolution).
+
+### GLS self-hosting compiler: binary handler and precompiled dispatch fixes (M8.8 revisit)
+
+*These are the direct GLS mirrors of Python Bug 2 above. Fixed in M8.8 revisit.*
+
+**Bug A — `cg_build_precompiled_nat_dispatch` fails for non-zero first tag.**
+
+`cg_build_precompiled_nat_dispatch` builds a Case_ Nat dispatch chain from pre-compiled
+`(tag, PlanVal)` pairs. The original single-entry branch assumed tag=0, so a call with
+pairs = `[(2, pval)]` produced a chain that never fired at tag=2.
+
+**Fix:** Added a single-entry non-zero-first-tag branch (at lines ~2940–2963 in Compiler.gls).
+When tag0 ≠ 0, it creates `shifted = [(tag0-1, pval)]` and recurses, then wraps the inner
+dispatch in `PPin (PLaw 0 (MkPair 1 inner))` — the succ law — to produce the correct chain
+that fires after `tag0` applications of m.
+
+**Bug B — `cg_build_binary_handler_body` ignored unary constructor arms.**
+
+The binary path (`max_arity=2`) built an inner law for binary constructor dispatch but passed
+constant-0 as the z and m bodies for the outer Case_ on outer_fun. When the scrutinee was
+a unary constructor, outer_fun is a bare Nat (tag), not an App — so outer Case_ fired z
+(tag=0) or m (tag>0), both returning 0 instead of the correct field value.
+
+**Fix:** Added `cg_build_unary_z_body` (lines ~3142–3167) and `cg_build_unary_m_body`
+(lines ~3169–3228) helpers:
+- `cg_build_unary_z_body`: compiles the body for the unary arm with tag=0, binding its
+  field to `arg_idx` (= outer_arg from the outer Case_ App). Used as z_body in the
+  outer `cg_build_reflect_dispatch` call.
+- `cg_build_unary_m_body`: for unary arms with tag>0, builds a lambda-lifted succ law
+  (arity = n_cap+1) that dispatches on the predecessor via `cg_build_precompiled_nat_dispatch`.
+  Uses `cg_apply_params` to pass captured outer-env locals through as partial application.
+
+`cg_build_binary_handler_body` (line ~3315) now calls `cg_build_reflect_dispatch` with the
+helpers' results instead of `cg_build_reflect_app` (which hardcoded z=0, m=const2(0)).
+
+**Impact:** Without the fix, any GLS match over a mixed-arity type produces incorrect code
+when compiled by the GLS self-hosting compiler. The most prominent affected type is `PlanVal`
+itself (PNat/PPin unary, PApp/PLaw binary).
+
+**Testing:** `tests/compiler/test_selfhost.py::TestMixedArityBehavioral` verifies the Python
+bootstrap (same fix) handles all Tree constructor cases. `TestMixedArityEmit` verifies
+emit_program serializes mixed-arity IR without errors. Full GLS codegen correctness requires
+planvm (Path A, deferred).
 
 **Root cause shared by both bugs:** The bootstrap codegen was designed incrementally.
 The prelude only uses types where (a) matches are exhaustive over 2 arms, (b) all
