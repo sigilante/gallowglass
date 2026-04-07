@@ -112,7 +112,7 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
 
 ## Current Phase
 
-**Alpha.** All Milestone 8 phases complete. M9–M14 complete. 111 prelude definitions across 8 modules. Eq/Ord/Show/Debug typeclasses with constrained instances. 1007 tests passing.
+**Alpha.** All Milestone 8 phases complete. M9–M14 complete. 111 prelude definitions across 8 modules. Eq/Ord/Show/Debug typeclasses with constrained instances. 1024 tests passing.
 
 - Phase 0 (spec): complete.
 - Phase 1 (Python bootstrap compiler): complete. Milestones 1–7.5 done. Core prelude: 111 definitions, planvm-valid.
@@ -142,6 +142,7 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
 - M15.5: Guards in match arms — complete (scope-level desugaring to if-else + re-match).
 - M15.6: String interpolation — complete (parser-level desugaring to text_concat/show chain).
 - M15.1: Records — complete (scope-level desugaring: DeclRecord→DeclType, ExprRecord→constructor apps, ExprRecordUpdate→match+rebuild, PatRecord→PatCon).
+- M15.7: GLS compiler parity — partial (7a–7d complete: type aliases, list/cons syntax, or-patterns, guards; 7e–7f deferred: string interpolation, records).
 
 The bootstrap compiler compiles the **restricted dialect** of Gallowglass only.
 See `bootstrap/BOOTSTRAP.md` for what the restricted dialect permits.
