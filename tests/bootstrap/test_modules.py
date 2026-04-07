@@ -378,7 +378,8 @@ def test_prelude_core_bool_uses_core_nat_eq():
     with open(core_dir / 'Bool.gls') as f:
         bool_src = f.read()
     compiled = build_modules([('Core.Nat', nat_src), ('Core.Bool', bool_src)])
-    assert 'Core.Bool.inst_Eq_Bool' in compiled
+    assert 'Core.Bool.inst_Eq_Bool_eq' in compiled
+    assert 'Core.Bool.inst_Eq_Bool_neq' in compiled
     fn = compiled['Core.Bool.inst_Eq_Bool_eq']
     assert evaluate(apply(apply(fn, N(1)), N(1))) == 1   # True == True
     assert evaluate(apply(apply(fn, N(1)), N(0))) == 0   # True != False

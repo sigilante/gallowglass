@@ -1,0 +1,38 @@
+-- Core.Pair
+-- Product type: holds two values.
+--
+-- Encoding: MkPair a b = A(A(tag=0, a), b).
+-- Single constructor, so tag is always 0.
+
+type Pair a b =
+  | MkPair a b
+
+-- fst: extract the first component
+let fst : ∀ a b. Pair a b → a
+  = λ p → match p {
+    | MkPair x _ → x
+  }
+
+-- snd: extract the second component
+let snd : ∀ a b. Pair a b → b
+  = λ p → match p {
+    | MkPair _ y → y
+  }
+
+-- map_fst: apply f to the first component
+let map_fst : ∀ a b c. (a → c) → Pair a b → Pair c b
+  = λ f p → match p {
+    | MkPair x y → MkPair (f x) y
+  }
+
+-- map_snd: apply f to the second component
+let map_snd : ∀ a b c. (b → c) → Pair a b → Pair a c
+  = λ f p → match p {
+    | MkPair x y → MkPair x (f y)
+  }
+
+-- swap: exchange the two components
+let swap : ∀ a b. Pair a b → Pair b a
+  = λ p → match p {
+    | MkPair x y → MkPair y x
+  }

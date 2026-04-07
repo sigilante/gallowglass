@@ -187,54 +187,55 @@ class TestCoreTextHarness(unittest.TestCase):
         result = evaluate(apply(apply(self.fn('text_concat'), text_plan('4')), text_plan('2')))
         self.assertTrue(check_text(result, '42'))
 
-    # --- sub ---
+    # --- sub, div_nat, mod_nat (now in Core.Nat, imported by Core.Text) ---
+
+    def nat_fn(self, name):
+        fq = f'Core.Nat.{name}'
+        self.assertIn(fq, self.compiled, f"'{fq}' not compiled")
+        return self.compiled[fq]
 
     def test_sub_zero(self):
-        result = evaluate(apply(apply(self.fn('sub'), N(5)), N(0)))
+        result = evaluate(apply(apply(self.nat_fn('sub'), N(5)), N(0)))
         self.assertEqual(result, 5)
 
     def test_sub_basic(self):
-        result = evaluate(apply(apply(self.fn('sub'), N(10)), N(3)))
+        result = evaluate(apply(apply(self.nat_fn('sub'), N(10)), N(3)))
         self.assertEqual(result, 7)
 
     def test_sub_saturating(self):
-        result = evaluate(apply(apply(self.fn('sub'), N(2)), N(5)))
+        result = evaluate(apply(apply(self.nat_fn('sub'), N(2)), N(5)))
         self.assertEqual(result, 0)
 
-    # --- div_nat ---
-
     def test_div_nat_zero(self):
-        result = evaluate(apply(apply(self.fn('div_nat'), N(0)), N(3)))
+        result = evaluate(apply(apply(self.nat_fn('div_nat'), N(0)), N(3)))
         self.assertEqual(result, 0)
 
     def test_div_nat_basic(self):
-        result = evaluate(apply(apply(self.fn('div_nat'), N(10)), N(3)))
+        result = evaluate(apply(apply(self.nat_fn('div_nat'), N(10)), N(3)))
         self.assertEqual(result, 3)
 
     def test_div_nat_exact(self):
-        result = evaluate(apply(apply(self.fn('div_nat'), N(12)), N(4)))
+        result = evaluate(apply(apply(self.nat_fn('div_nat'), N(12)), N(4)))
         self.assertEqual(result, 3)
 
     def test_div_nat_by_ten(self):
-        result = evaluate(apply(apply(self.fn('div_nat'), N(42)), N(10)))
+        result = evaluate(apply(apply(self.nat_fn('div_nat'), N(42)), N(10)))
         self.assertEqual(result, 4)
 
-    # --- mod_nat ---
-
     def test_mod_nat_zero(self):
-        result = evaluate(apply(apply(self.fn('mod_nat'), N(0)), N(7)))
+        result = evaluate(apply(apply(self.nat_fn('mod_nat'), N(0)), N(7)))
         self.assertEqual(result, 0)
 
     def test_mod_nat_basic(self):
-        result = evaluate(apply(apply(self.fn('mod_nat'), N(10)), N(3)))
+        result = evaluate(apply(apply(self.nat_fn('mod_nat'), N(10)), N(3)))
         self.assertEqual(result, 1)
 
     def test_mod_nat_exact(self):
-        result = evaluate(apply(apply(self.fn('mod_nat'), N(12)), N(4)))
+        result = evaluate(apply(apply(self.nat_fn('mod_nat'), N(12)), N(4)))
         self.assertEqual(result, 0)
 
     def test_mod_nat_by_ten(self):
-        result = evaluate(apply(apply(self.fn('mod_nat'), N(42)), N(10)))
+        result = evaluate(apply(apply(self.nat_fn('mod_nat'), N(42)), N(10)))
         self.assertEqual(result, 2)
 
     # --- show_digit ---
@@ -305,16 +306,40 @@ class TestCoreTextHarness(unittest.TestCase):
         result = evaluate(apply(fn, N(42)))
         self.assertTrue(check_text(result, '42'))
 
+    # --- Debug class ---
+
+    def test_debug_nat(self):
+        fn = self.compiled.get('Core.Text.inst_Debug_Nat_debug')
+        self.assertIsNotNone(fn, 'Core.Text.inst_Debug_Nat_debug not found')
+        result = evaluate(apply(fn, N(42)))
+        self.assertTrue(check_text(result, '42'))
+
+    def test_debug_bool_true(self):
+        fn = self.compiled.get('Core.Text.inst_Debug_Bool_debug')
+        self.assertIsNotNone(fn, 'Core.Text.inst_Debug_Bool_debug not found')
+        result = evaluate(apply(fn, N(1)))
+        self.assertTrue(check_text(result, 'True'))
+
+    def test_debug_bool_false(self):
+        fn = self.compiled.get('Core.Text.inst_Debug_Bool_debug')
+        self.assertIsNotNone(fn, 'Core.Text.inst_Debug_Bool_debug not found')
+        result = evaluate(apply(fn, N(0)))
+        self.assertTrue(check_text(result, 'False'))
+
 
 # ---------------------------------------------------------------------------
 # Layer 2: planvm seed loading
 # ---------------------------------------------------------------------------
 
 def _make_seed(name):
-    from bootstrap.build import build_modules
     from bootstrap.emit import emit
     compiled = _load_text()
     return emit(compiled, f'{MODULE}.{name}')
+
+def _make_nat_seed(name):
+    from bootstrap.emit import emit
+    compiled = _load_text()
+    return emit(compiled, f'Core.Nat.{name}')
 
 
 class TestCoreTextSeeds(unittest.TestCase):
@@ -336,8 +361,12 @@ class TestCoreTextSeeds(unittest.TestCase):
         self.assertTrue(seed_loads(_make_seed('text_eq')))
 
     @requires_planvm
-    def test_inst_eq_text_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Eq_Text')))
+    def test_inst_eq_text_eq_seed_loads(self):
+        self.assertTrue(seed_loads(_make_seed('inst_Eq_Text_eq')))
+
+    @requires_planvm
+    def test_inst_eq_text_neq_seed_loads(self):
+        self.assertTrue(seed_loads(_make_seed('inst_Eq_Text_neq')))
 
     @requires_planvm
     def test_pow2_seed_loads(self):
@@ -349,15 +378,15 @@ class TestCoreTextSeeds(unittest.TestCase):
 
     @requires_planvm
     def test_sub_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('sub')))
+        self.assertTrue(seed_loads(_make_nat_seed('sub')))
 
     @requires_planvm
     def test_div_nat_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('div_nat')))
+        self.assertTrue(seed_loads(_make_nat_seed('div_nat')))
 
     @requires_planvm
     def test_mod_nat_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('mod_nat')))
+        self.assertTrue(seed_loads(_make_nat_seed('mod_nat')))
 
     @requires_planvm
     def test_show_digit_seed_loads(self):
@@ -378,6 +407,22 @@ class TestCoreTextSeeds(unittest.TestCase):
     @requires_planvm
     def test_inst_show_nat_seed_loads(self):
         self.assertTrue(seed_loads(_make_seed('inst_Show_Nat')))
+
+    @requires_planvm
+    def test_debug_nat_seed_loads(self):
+        self.assertTrue(seed_loads(_make_seed('debug_nat')))
+
+    @requires_planvm
+    def test_debug_bool_seed_loads(self):
+        self.assertTrue(seed_loads(_make_seed('debug_bool')))
+
+    @requires_planvm
+    def test_inst_debug_nat_seed_loads(self):
+        self.assertTrue(seed_loads(_make_seed('inst_Debug_Nat_debug')))
+
+    @requires_planvm
+    def test_inst_debug_bool_seed_loads(self):
+        self.assertTrue(seed_loads(_make_seed('inst_Debug_Bool_debug')))
 
 
 if __name__ == '__main__':

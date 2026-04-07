@@ -20,3 +20,15 @@ let compose : ∀ a b c. (b → c) → (a → b) → a → c
 -- Apply: apply a function to an argument (useful as higher-order combinator)
 let apply : ∀ a b. (a → b) → a → b
   = λ f x → f x
+
+-- Pipe: reverse application — pipe x f = f x
+-- The function-as-operator form |> is surface syntax sugar for this.
+let pipe : ∀ a b. a → (a → b) → b
+  = λ x f → f x
+
+-- fixpoint: fixed-point combinator — fixpoint f = f (fixpoint f)
+-- Enables general recursion as a value. PLAN's laziness ensures this
+-- terminates when f is productive (e.g., fixpoint (λrec n → ...)).
+-- Named fixpoint because fix is a reserved keyword (fix expressions).
+let fixpoint : ∀ a. (a → a) → a
+  = λ f → f (fixpoint f)

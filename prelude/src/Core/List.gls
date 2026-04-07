@@ -2,6 +2,12 @@
 -- Singly-linked list type.
 --
 -- Encoding: Nil = 0 (bare nat tag), Cons x rest = A(A(tag=1, x), rest).
+--
+-- Dependencies:
+--   Core.Nat — Eq class
+
+use Core.Nat { Eq }
+use Core.Text { Show, Debug, text_concat }
 
 type List a =
   | Nil
@@ -69,3 +75,45 @@ let foldr : ∀ a b. (a → b → b) → b → List a → b
     | Nil        → z
     | Cons x rest → f x (foldr f z rest)
   }
+
+-- list_eq_go: structural equality with explicit element comparator
+-- Standalone recursive function avoids the dict-param/self-ref collision
+-- that occurs in constrained instance methods.
+let list_eq_go : ∀ a. (a → a → Bool) → List a → List a → Bool
+  = λ elem_eq xs ys → match xs {
+    | Nil → match ys { | Nil → True | Cons _ _ → False }
+    | Cons h t → match ys {
+      | Nil → False
+      | Cons h2 t2 → match (elem_eq h h2) { | 0 → False | k → list_eq_go elem_eq t t2 }
+    }
+  }
+
+instance Eq a => Eq List {
+  eq = λ xs ys → list_eq_go eq xs ys
+}
+
+-- show_list_go: render list elements with explicit show function
+-- Produces "elem1,elem2,elem3" (no brackets).
+let show_list_go : ∀ a. (a → Text) → List a → Text
+  = λ show_elem xs → match xs {
+    | Nil → ""
+    | Cons x rest → match rest {
+      | Nil → show_elem x
+      | Cons _ _ → text_concat (show_elem x) (text_concat "," (show_list_go show_elem rest))
+    }
+  }
+
+instance Show a => Show List {
+  show = λ xs → text_concat "[" (text_concat (show_list_go show xs) "]")
+}
+
+-- debug_list_go: render list elements in constructor syntax
+let debug_list_go : ∀ a. (a → Text) → List a → Text
+  = λ debug_elem xs → match xs {
+    | Nil → "Nil"
+    | Cons x rest → text_concat "Cons " (text_concat (debug_elem x) (text_concat " (" (text_concat (debug_list_go debug_elem rest) ")")))
+  }
+
+instance Debug a => Debug List {
+  debug = λ xs → debug_list_go debug xs
+}

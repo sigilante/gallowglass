@@ -194,7 +194,9 @@ class Compiler:
     """
 
     def __init__(self, module: str = 'Main', pre_compiled: dict | None = None,
-                 pre_class_methods: dict | None = None):
+                 pre_class_methods: dict | None = None,
+                 pre_class_defaults: dict | None = None,
+                 pre_class_constraints: dict | None = None):
         self.module = module
         # map fq_name → PLAN value (not pinned yet)
         self.compiled: dict[str, Any] = {}
@@ -230,6 +232,16 @@ class Compiler:
                 if class_fq not in self._class_methods:
                     shorts = [m.split('.')[-1] for m in sorted(method_fqs)]
                     self._class_methods[class_fq] = shorts
+        # Pre-populate class defaults from upstream modules.
+        if pre_class_defaults:
+            for class_fq, defaults in pre_class_defaults.items():
+                if class_fq not in self._class_defaults:
+                    self._class_defaults[class_fq] = defaults
+        # Pre-populate class constraints from upstream modules.
+        if pre_class_constraints:
+            for class_fq, constraints in pre_class_constraints.items():
+                if class_fq not in self._class_constraints:
+                    self._class_constraints[class_fq] = constraints
 
     # -----------------------------------------------------------------------
     # Builtins
@@ -3164,24 +3176,34 @@ def compile_program(
     module: str = 'Main',
     pre_compiled: dict | None = None,
     pre_class_methods: dict | None = None,
+    pre_class_defaults: dict | None = None,
+    pre_class_constraints: dict | None = None,
 ) -> dict[str, Any]:
     """
     Compile a resolved, type-checked program.
 
     Parameters:
-        program:           Resolved Program AST.
-        module:            FQ module name, e.g. 'Core.Nat'.
-        pre_compiled:      PLAN values from already-compiled upstream modules,
-                           made available as globals so cross-module references
-                           compile correctly.  Does NOT appear in the returned dict.
-        pre_class_methods: class_fq → set(method_fq_names) from upstream module
-                           Env objects.  Enables cross-module instance resolution:
-                           constrained functions can reference classes and instances
-                           defined in other modules.
+        program:              Resolved Program AST.
+        module:               FQ module name, e.g. 'Core.Nat'.
+        pre_compiled:         PLAN values from already-compiled upstream modules,
+                              made available as globals so cross-module references
+                              compile correctly.  Does NOT appear in the returned dict.
+        pre_class_methods:    class_fq → set(method_fq_names) from upstream module
+                              Env objects.  Enables cross-module instance resolution:
+                              constrained functions can reference classes and instances
+                              defined in other modules.
+        pre_class_defaults:   class_fq → {method_short → resolved Expr} from upstream
+                              Compiler instances. Enables cross-module default method
+                              fallback in instances.
+        pre_class_constraints: class_fq → [(superclass_short, type_args)] from upstream
+                              Compiler instances. Enables cross-module superclass
+                              constraint expansion.
 
     Returns:
         dict mapping FQ name → PLAN value (this module's definitions only)
     """
     compiler = Compiler(module=module, pre_compiled=pre_compiled,
-                        pre_class_methods=pre_class_methods)
+                        pre_class_methods=pre_class_methods,
+                        pre_class_defaults=pre_class_defaults,
+                        pre_class_constraints=pre_class_constraints)
     return compiler.compile(program)

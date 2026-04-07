@@ -13,7 +13,7 @@
 -- Dependencies:
 --   Core.Nat — nat_eq, nat_lt, add, mul, pred, is_zero, Eq class
 
-use Core.Nat { Eq, add, mul, nat_eq, nat_lt, pred, is_zero }
+use Core.Nat { Eq, add, mul, sub, div_nat, mod_nat, nat_eq, nat_lt, pred, is_zero }
 
 external mod Core.Text.Prim {
   mk_text  : Nat → Nat → Text
@@ -64,35 +64,6 @@ let text_concat : Text → Text → Text
         (add ls lt)
         (add cs (mul ct (pow2 (mul ls 8))))
 
--- sub: saturating subtraction — sub m n = max(m − n, 0)
-let sub : Nat → Nat → Nat
-  = λ m n → match n {
-    | 0 → m
-    | k → sub (pred m) k
-  }
-
--- div_nat: floor division (assumes n > 0; div_nat m 0 diverges)
---
--- Uses `match (is_zero (nat_lt m n)) { | 0 → trivial | k → recursive }` so
--- the recursive call lands in the PatVar/succ arm, which the bootstrap compiles
--- into a deferred law via _make_pred_succ_law.  The zero arm is trivial (return 0
--- or return m), avoiding eager infinite recursion in the Python harness.
--- See DECISIONS.md §Bootstrap.
-let div_nat : Nat → Nat → Nat
-  = λ m n →
-      match (is_zero (nat_lt m n)) {
-        | 0 → 0
-        | k → add 1 (div_nat (sub m n) n)
-      }
-
--- mod_nat: remainder (assumes n > 0; mod_nat m 0 diverges)
-let mod_nat : Nat → Nat → Nat
-  = λ m n →
-      match (is_zero (nat_lt m n)) {
-        | 0 → m
-        | k → mod_nat (sub m n) n
-      }
-
 -- show_digit: convert 0–9 to its ASCII character as a single-byte Text
 -- ASCII digits: '0'=48, '1'=49, … '9'=57
 let show_digit : Nat → Text
@@ -129,4 +100,28 @@ instance Show Bool {
 
 instance Show Nat {
   show = show_nat
+}
+
+-- Debug typeclass: developer-facing text representation
+-- Distinct from Show per spec. Initially same output for primitive types,
+-- but Debug for compound types uses constructor syntax (e.g., "Some 42")
+-- while Show uses user-friendly syntax (e.g., "Some(42)").
+class Debug a {
+  debug : a → Text
+}
+
+-- debug_nat: same as show_nat for primitive nats
+let debug_nat : Nat → Text
+  = λ n → show_nat n
+
+-- debug_bool: same as show_bool
+let debug_bool : Bool → Text
+  = λ b → if b then "True" else "False"
+
+instance Debug Nat {
+  debug = debug_nat
+}
+
+instance Debug Bool {
+  debug = debug_bool
 }

@@ -40,6 +40,9 @@ class Parser:
         self.tokens = tokens
         self.pos = 0
         self.filename = filename
+        # When True, _is_app_arg_start refuses TSnake tokens followed by ':'
+        # to prevent default expressions from consuming the next class member.
+        self._in_class_default = False
 
     # -- primitives --
 
@@ -436,7 +439,11 @@ class Parser:
                 break
         default = None
         if self._try_eat(KIND_PUNCT, '='):
-            default = self._parse_expr()
+            self._in_class_default = True
+            try:
+                default = self._parse_expr()
+            finally:
+                self._in_class_default = False
         return ClassMember(name, ty, contracts, default, loc)
 
     def _parse_instance_decl(self) -> DeclInst:
@@ -987,6 +994,12 @@ class Parser:
         if t.kind in (KIND_TEXT, KIND_RAWTEXT, KIND_BYTES, KIND_HEXBYTES):
             return True
         if t.kind == KIND_SNAKE:
+            # In class default context, stop if this looks like a new member
+            # (snake_ident followed by ':' for type annotation).
+            if self._in_class_default:
+                next_t = self.tokens[min(self.pos + 1, len(self.tokens) - 1)]
+                if next_t.kind == KIND_PUNCT and next_t.value == ':':
+                    return False
             return True
         if t.kind == KIND_PASCAL:
             return True

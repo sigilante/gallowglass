@@ -61,8 +61,12 @@ class TestCoreBoolSeeds(unittest.TestCase):
         self.assertTrue(seed_loads(make_seed('bool_select')))
 
     @requires_planvm
-    def test_inst_eq_bool_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('inst_Eq_Bool')))
+    def test_inst_eq_bool_eq_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('inst_Eq_Bool_eq')))
+
+    @requires_planvm
+    def test_inst_eq_bool_neq_seed_loads(self):
+        self.assertTrue(seed_loads(make_seed('inst_Eq_Bool_neq')))
 
 
 if __name__ == '__main__':
