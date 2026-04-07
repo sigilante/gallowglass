@@ -1,0 +1,57 @@
+-- Core.Result
+-- Result type: success or failure.
+--
+-- Encoding: Ok a = A(tag=0, a), Err b = A(tag=1, b).
+
+type Result a b =
+  | Ok  a
+  | Err b
+
+-- is_ok: True if the result is Ok
+let is_ok : ∀ a b. Result a b → Bool
+  = λ r → match r {
+    | Ok  _ → True
+    | Err _ → False
+  }
+
+-- is_err: True if the result is Err
+let is_err : ∀ a b. Result a b → Bool
+  = λ r → match r {
+    | Ok  _ → False
+    | Err _ → True
+  }
+
+-- with_ok: extract the Ok value, or return a default
+let with_ok : ∀ a b. a → Result a b → a
+  = λ default r → match r {
+    | Ok  x → x
+    | Err _ → default
+  }
+
+-- with_err: extract the Err value, or return a default
+let with_err : ∀ a b. b → Result a b → b
+  = λ default r → match r {
+    | Ok  _ → default
+    | Err e → e
+  }
+
+-- map_ok: apply f to the Ok value, leave Err unchanged
+let map_ok : ∀ a b c. (a → c) → Result a b → Result c b
+  = λ f r → match r {
+    | Ok  x → Ok (f x)
+    | Err e → Err e
+  }
+
+-- map_err: apply f to the Err value, leave Ok unchanged
+let map_err : ∀ a b c. (b → c) → Result a b → Result a c
+  = λ f r → match r {
+    | Ok  x → Ok x
+    | Err e → Err (f e)
+  }
+
+-- bind_result: monadic bind for Result
+let bind_result : ∀ a b c. Result a b → (a → Result c b) → Result c b
+  = λ r f → match r {
+    | Ok  x → f x
+    | Err e → Err e
+  }
