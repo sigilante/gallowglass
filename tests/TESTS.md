@@ -1,6 +1,6 @@
 # Test Strategy
 
-**Last updated:** M8.8 emit_program jets + bevaluate O(N) optimization (783 tests)
+**Last updated:** 2026-04-07 — Layer 3 evaluation tests added (911 tests: 890 pass, 101 skip)
 
 This document describes the test architecture, what each layer verifies,
 and the known gap between what is tested and what is not.
@@ -29,6 +29,8 @@ lifting, etc.
 - `tests/bootstrap/test_*.py` — lexer, parser, scope, typecheck, codegen (462 tests)
 - `tests/bootstrap/test_programs.py` — integration battery: Fibonacci (self-recursive + fix), Ackermann, Sudan, even/odd (20 tests)
 - `tests/bootstrap/test_typeclasses.py` — M11 typeclass: DeclClass/DeclInst compilation, constrained let arity, call-site dict insertion, multi-method, prelude Eq/Ord/Add instance evaluation (27 tests)
+- `tests/bootstrap/test_data_csv.py` — M12.5 Data.Csv effect handler integration (9 tests)
+- `tests/bootstrap/test_modules.py` — M12 multi-module build, cross-module instances (18 tests)
 
 **Limitation:** The harness is our own implementation of PLAN semantics. If the
 harness and the real planvm disagree on semantics (evaluation order, edge cases),
@@ -69,8 +71,8 @@ arithmetic). Correctness is still gated by M8.8 self-hosting validation.
 ### Layer 2: planvm seed loading (format validity)
 
 **Tool:** `planvm` binary in Docker (xocore-tech/PLAN `x/plan`).
-**Runs:** In Docker CI only; requires `make docker-build` first.
-**Gate:** `make test-ci`
+**Runs:** CI only (planvm is x86_64-only; cannot run on Apple Silicon via Docker).
+**Gate:** `make test-ci` (CI), or `PLANVM=planvm pytest tests/` (native x86_64)
 
 `seed_loads(seed_bytes)` invokes `planvm <seed_file>` and checks that the seed
 is accepted without a format/parse crash. It distinguishes:
@@ -84,44 +86,60 @@ error. It does **not** mean the compiled function produces correct results.
 
 **Coverage:**
 - `tests/planvm/test_seed_planvm.py` — 7 seed format tests
-- `tests/prelude/test_core_*.py` — all 36 prelude definitions
+- `tests/prelude/test_core_*.py` — all prelude definitions (56 tests)
+- `tests/compiler/test_selfhost.py` — compiler seed loading + Path A (5 tests)
 
 ---
 
-### Layer 3: planvm evaluation (functional correctness) ← NOT YET IMPLEMENTED
+### Layer 3: planvm evaluation (functional correctness)
 
-**Tool:** Reaver CLI (`sol-plunder/reaver`) — not yet available.
-**Planned gate:** `make test-eval`
+**Tool:** `planvm` binary — `eval_seed()` runs planvm, checks exit code = result Nat.
+**Runs:** CI only (planvm is x86_64-only).
+**Gate:** `PLANVM=planvm pytest tests/planvm/test_eval_planvm.py`
 
-This layer will apply compiled seeds to arguments and assert outputs:
-```
-assert planvm_eval(Core.Nat.add, [2, 3]) == 5
-assert planvm_eval(Core.List.foldl, [add_fn, 0, [1,2,3]]) == 6
-```
+planvm behavior: forces the seed value, casts result to Nat, exits with it as the
+process exit code. For pure Nat values 0–255, the exit code directly gives the
+evaluated result.
 
-Until Reaver provides a CLI eval mode, this layer is replaced by:
+`eval_seed(seed_bytes)` invokes planvm and returns the exit code as the result.
+Tests compile small Gallowglass programs, emit seeds, and assert planvm produces
+the correct Nat.
 
-**Functional equivalence via self-hosting (Milestone 8.8):** If the Gallowglass
-compiler compiles itself and produces byte-identical seeds to the Python compiler
-over the same inputs, the planvm execution is functionally correct for the full
-compiler workload. This is a much stronger test than seed loading.
+**Coverage (21 tests):**
+- Nat literals (0, 42, 255)
+- Lambda application (identity, const, nested)
+- Pattern matching (nat match, constructor match)
+- If/then/else
+- Arithmetic (Core.PLAN.inc)
+- Recursion (fix-based)
+- Effect handlers (pure/run, handle return/op/resume, do-bind)
+- Constructor field extraction (Option, Result)
+
+**Limitation:** Exit codes are 0–255 (8-bit). Values > 255 require a WriteOp
+wrapper seed to write the result to stdout. Current tests use small Nats.
 
 ---
 
 ## Running Tests
 
 ```bash
-# Layer 1: Python harness (always available)
-make test
+# Layer 1: Python harness (always available, no planvm)
+make test                    # harness + bootstrap + demos
+python3 -m pytest tests/ -q  # all tests (planvm-gated skip automatically)
 
-# Layer 2: planvm seed loading (requires Docker)
-make test-ci           # full CI: harness + planvm seed loading
-make test-planvm-docker  # planvm seed loading only
-make test-prelude-docker # prelude seed loading only
+# Layer 2+3: planvm validation (CI or native x86_64 only)
+# On CI (GitHub Actions ubuntu x86_64):
+PLANVM=planvm python3 -m pytest tests/ -v --tb=short
 
-# Run a specific test file
-python tests/bootstrap/test_codegen.py
-python tests/prelude/test_core_nat.py  # skips if planvm not available
+# Note: planvm cannot run on Apple Silicon via Docker (x86_64 assembly
+# requires native hardware, not QEMU/Rosetta emulation).
+
+# Individual targets:
+make test-planvm-docker      # seed format validation
+make test-eval-docker        # evaluation correctness
+make test-prelude-docker     # prelude seed validation
+make test-selfhost-docker    # self-hosting + Path A
+make test-compiler-docker    # all compiler tests
 ```
 
 ---
@@ -144,25 +162,50 @@ tests/
     test_typecheck.py          ← restricted HM
     test_codegen.py            ← codegen PLAN value output (44 tests)
     test_bootstrap.py          ← integration: source → seed
+    test_programs.py           ← Fibonacci, Ackermann, Sudan (20 tests)
+    test_typeclasses.py        ← M11 typeclasses (27 tests)
+    test_coverage_gaps.py      ← edge cases, superclass constraints
+    test_modules.py            ← M12 multi-module build (18 tests)
+    test_data_csv.py           ← M12.5 Data.Csv E2E effects (9 tests)
   planvm/
     __init__.py
-    test_seed_planvm.py        ← planvm seed loading (7 tests; skips locally)
+    test_seed_planvm.py        ← Layer 2: seed loading (7 tests; skips locally)
+    test_eval_planvm.py        ← Layer 3: evaluation correctness (21 tests; skips locally)
   prelude/
     __init__.py
     test_core_combinators.py   ← 5 definitions
-    test_core_bool.py          ← 6 definitions
-    test_core_nat.py           ← 7 definitions (pred, is_zero, nat_eq, nat_lt, add, mul)
+    test_core_bool.py          ← 8 definitions
+    test_core_nat.py           ← 11 definitions
     test_core_option.py        ← 7 definitions
     test_core_list.py          ← 11 definitions
     test_core_text.py          ← 44 harness (bplan jets) + 15 planvm seed tests
-  compiler/                    ← Milestone 8
+  compiler/
     __init__.py
-    test_utils.py              ← M8.1 utilities (nat/list/byte ops); 45 tests + planvm seeds
-    test_emit.py               ← M8.6 Plan Assembler emitter; 39 active (BPLAN harness)
-    test_driver.py             ← M8.7 driver (main : Bytes → Bytes); 3 active + 3 skipped
-    test_selfhost.py           ← M8.8 self-hosting; 17 active + 5 planvm-gated (incl. Path A); uses curated 9-def module for Path B speed
-    test_m11.py                ← M11.5 GLS DeclClass/DeclInst support; 20 tests
+    test_utils.py              ← M8.1 utilities; 45 tests + planvm seeds
+    test_lexer.py              ← M8.2 GLS lexer tests
+    test_scope.py              ← M8.4 GLS scope tests
+    test_emit.py               ← M8.6 Plan Assembler emitter; 39 active (BPLAN)
+    test_driver.py             ← M8.7 driver; 3 active + 3 skipped
+    test_selfhost.py           ← M8.8 self-hosting; 17 active + 5 planvm-gated
+    test_m11.py                ← M11.5 GLS DeclClass/DeclInst (20 tests)
+    test_m12_effects.py        ← M12.2/M12.4 GLS effects + DeclUse (25 tests)
+  demos/
+    __init__.py
+    test_calculator.py         ← Calculator demo: compile + arithmetic eval (9 tests)
+    test_csv_table.py          ← CSV table demo: E2E data pipeline eval (10 tests)
 ```
+
+---
+
+## Known Issue: planvm SIGILL on CI (2026-04-07)
+
+The planvm binary built via `nix develop --command make all` crashes with `Illegal
+instruction (core dumped)` on GitHub Actions runners. All ~89 planvm-gated tests
+skip silently. The CI now has a "Verify planvm runs" step that fails the job early
+if the binary crashes, rather than reporting a misleading green result.
+
+See `DECISIONS.md` § "planvm SIGILL on GitHub Actions runners" for details and
+upstream fix plan (xocore-tech/PLAN issue).
 
 ---
 
@@ -170,15 +213,18 @@ tests/
 
 | What we test | What we don't test |
 |---|---|
-| Seed format is valid | Computation produces correct result |
-| planvm accepts the seed | `pred 3 = 2` in planvm |
-| Python harness semantics | Harness ↔ planvm agreement |
+| Seed format is valid (Layer 2) | Large Nat results (> 255) on planvm |
+| Computation produces correct result for small Nats (Layer 3) | Harness ↔ planvm agreement for all edge cases |
+| Python harness semantics (Layer 1) | planvm-specific behavior (GC, persistence) |
 
-The harness has been validated empirically (it produced the same results as
-expected from PLAN semantics), and CI confirms seeds load. But a bug that
-produces the wrong answer for, say, `nat_eq` would pass all current tests if
-the seed format remains valid.
+**Layer 3 closes the primary evaluation gap.** Previously, a bug producing the
+wrong answer (e.g., `nat_eq 3 3 = 0` instead of `1`) would pass if the seed format
+remained valid. Now, 21 eval tests verify actual computation on planvm.
 
-**Mitigation:** Milestone 8 codegen tests compare PLAN values produced by
-the Gallowglass compiler against Python bootstrap output for each prelude
-definition. Byte-identical output = semantic equivalence under the same runtime.
+**Remaining gap:** Values > 255 cannot be tested via exit code. A WriteOp-based
+eval wrapper (compile value, convert to decimal, write to stdout) would extend
+coverage to arbitrary Nats. This is tracked for future work.
+
+**Mitigation:** M8.8 self-hosting (Path A) validates byte-identical compiler output
+between Python bootstrap and planvm execution. This is a comprehensive functional
+equivalence check for the full compiler workload.

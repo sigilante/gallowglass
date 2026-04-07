@@ -23,57 +23,77 @@ jobs:
         run: pip install pytest
 
       - name: Run all Python-only tests
-        run: python3 -m pytest tests/bootstrap/ tests/compiler/ tests/prelude/ tests/sanity/ -v --tb=short
+        run: python3 -m pytest tests/bootstrap/ tests/compiler/ tests/prelude/ tests/sanity/ tests/demos/ -v --tb=short
 
   # ── xocore PLAN VM seed validation (Linux x86-64 only) ──────────────────
-  plan-vm:
-    name: planvm seed validation (xocore)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install pytest
-        run: pip install pytest
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v27
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-
-      - name: Cache Nix store
-        uses: actions/cache@v4
-        with:
-          path: /nix/store
-          key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
-          restore-keys: nix-${{ runner.os }}-
-
-      - name: Clone xocore-tech/PLAN
-        run: |
-          git clone --depth=1 https://github.com/xocore-tech/PLAN.git /tmp/planvm-src
-
-      - name: Build PLAN VM
-        working-directory: /tmp/planvm-src
-        run: |
-          nix develop --command make all
-
-      - name: Install planvm
-        run: |
-          cp /tmp/planvm-src/x/plan /usr/local/bin/planvm
-          planvm --help 2>&1 || true
-          echo "planvm: $(which planvm)"
-
-      - name: Smoke-test VM (Sire REPL on empty input)
-        working-directory: /tmp/planvm-src
-        run: |
-          echo "" | timeout 10 x/plan xseed/sire.seed || true
-
-      - name: Run all tests (planvm-gated tests now active)
-        run: |
-          PLANVM=planvm python3 -m pytest tests/ -v --tb=short
+  # DISABLED: planvm binary crashes with SIGILL on GitHub Actions runners.
+  # The Nix-built binary uses CPU instructions unavailable on the runner.
+  # Upstream fix needed: xocore-tech/PLAN issue for -march=x86-64 support.
+  # See DECISIONS.md § "planvm SIGILL on GitHub Actions runners".
+  #
+  # Re-enable this job once the upstream fix lands. The verify step will
+  # catch regressions: it checks the binary runs before executing tests.
+  #
+  # plan-vm:
+  #   name: planvm seed validation (xocore)
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - name: Set up Python
+  #       uses: actions/setup-python@v5
+  #       with:
+  #         python-version: '3.12'
+  #
+  #     - name: Install pytest
+  #       run: pip install pytest
+  #
+  #     - name: Install Nix
+  #       uses: cachix/install-nix-action@v27
+  #       with:
+  #         nix_path: nixpkgs=channel:nixos-unstable
+  #         extra_nix_config: |
+  #           experimental-features = nix-command flakes
+  #
+  #     - name: Cache Nix store
+  #       uses: actions/cache@v4
+  #       with:
+  #         path: /nix/store
+  #         key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
+  #         restore-keys: nix-${{ runner.os }}-
+  #
+  #     - name: Clone xocore-tech/PLAN
+  #       run: |
+  #         git clone --depth=1 https://github.com/xocore-tech/PLAN.git /tmp/planvm-src
+  #
+  #     - name: Build PLAN VM
+  #       working-directory: /tmp/planvm-src
+  #       run: |
+  #         nix develop --command make all
+  #
+  #     - name: Install planvm
+  #       run: |
+  #         cp /tmp/planvm-src/x/plan /usr/local/bin/planvm
+  #         echo "planvm: $(which planvm)"
+  #
+  #     - name: Verify planvm runs (detect SIGILL / bad build)
+  #       run: |
+  #         # planvm with no args should exit quickly (non-zero is fine, crash is not)
+  #         timeout 10 planvm /dev/null 2>&1 || CODE=$?
+  #         if [ "${CODE:-0}" -gt 128 ]; then
+  #           echo "::error::planvm crashed with signal $((CODE - 128)) — binary incompatible with runner CPU"
+  #           exit 1
+  #         fi
+  #         echo "planvm binary OK (exit code ${CODE:-0})"
+  #
+  #     - name: Run all tests (planvm-gated tests now active)
+  #       run: |
+  #         PLANVM=planvm python3 -m pytest tests/ -v --tb=short
+  #
+  #     - name: Verify planvm_available() agrees
+  #       run: |
+  #         PLANVM=planvm python3 -c "
+  #         from tests.planvm.test_seed_planvm import planvm_available
+  #         assert planvm_available(), 'planvm_available() returned False — tests would skip'
+  #         print('planvm_available() = True')
+  #         "

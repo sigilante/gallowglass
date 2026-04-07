@@ -38,13 +38,20 @@ PLANVM = os.environ.get('PLANVM', 'planvm')
 
 
 def planvm_available() -> bool:
-    """Return True if planvm is on PATH (or PLANVM env var points to it)."""
+    """Return True if planvm is on PATH (or PLANVM env var points to it) and runs without crashing."""
     try:
         r = subprocess.run(
-            [PLANVM, '--help'],
+            [PLANVM, '/dev/null'],
             capture_output=True, timeout=5
         )
-        return True          # any response means it exists
+        # Negative returncode = killed by signal (e.g. SIGILL = -4)
+        if r.returncode < 0:
+            import signal
+            sig = -r.returncode
+            signame = signal.Signals(sig).name if sig in signal.Signals._value2member_map_ else str(sig)
+            print(f'planvm crashed with signal {signame} — binary may be incompatible with this CPU', flush=True)
+            return False
+        return True
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
@@ -108,6 +115,27 @@ def seed_loads(seed_bytes: bytes) -> bool:
     # Any other exit (including "not a cog", runtime errors) means the seed
     # format was accepted
     return True
+
+
+def eval_seed(seed_bytes: bytes, timeout: int = 10) -> int | None:
+    """
+    Run planvm on seed_bytes and return the exit code as the result Nat.
+
+    planvm forces the seed value, casts to Nat, exits with it as the process
+    exit code.  For pure Nat seeds (0-255), this gives the evaluated result.
+
+    Returns None on timeout, signal crash, or format error.
+    """
+    result = run_planvm(seed_bytes, timeout=timeout)
+    if isinstance(result, subprocess.TimeoutExpired):
+        return None
+    if result.returncode < 0:
+        return None  # signal crash
+    stderr = result.stderr.lower()
+    format_errors = [b'invalid seed', b'bad seed', b'seed parse', b'format error']
+    if any(marker in stderr for marker in format_errors):
+        return None
+    return result.returncode
 
 
 # ---------------------------------------------------------------------------

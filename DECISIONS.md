@@ -621,3 +621,32 @@ to validate end-to-end.
 (reads stdin, writes stdout), running `compiler.seed` on `Compiler.gls` and
 comparing the output to Path B provides byte-identical functional equivalence proof
 for the complete compiler pipeline. This is the alpha release gate.
+
+## CI / planvm
+
+### planvm SIGILL on GitHub Actions runners (2026-04-07)
+
+**Status:** Upstream issue — needs xocore-tech/PLAN fix.
+
+The `plan-vm` CI job clones xocore-tech/PLAN, builds via `nix develop --command
+make all`, and installs the resulting `x/plan` binary as `planvm`. The binary
+compiles successfully but crashes immediately with `Illegal instruction (core
+dumped)` on the GitHub Actions `ubuntu-latest` runner.
+
+The build uses `-msse4.2` explicitly, but the assembly files (`planvm-amd64.s`,
+`planvm-amd64data.s`) or the Nix toolchain may emit instructions beyond what the
+runner's CPU supports (e.g. AVX, POPCNT via `-march=native` in the Nix shell).
+
+**Impact:** All `@requires_planvm` tests (~89) skip silently. The CI job reports
+890 passed / 101 skipped / 0 failed — green, but misleading. The planvm-gated
+tests are the ones that validate seed format acceptance and evaluated correctness
+on the real VM.
+
+**Upstream fix (xocore-tech/PLAN issue):** The Makefile or Nix devshell should
+support building for generic x86-64 (`-march=x86-64`) so the binary runs on any
+amd64 host, not just the build machine's microarchitecture. Alternatively,
+publishing a pre-built release binary for generic x86-64 would work.
+
+**Local workaround (not yet attempted):** Build with the runner's native GCC
+(`make all`) instead of `nix develop --command make all`. This avoids the Nix
+toolchain's potential `-march=native` default but loses reproducibility.
