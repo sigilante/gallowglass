@@ -449,6 +449,87 @@ let test_same = same 5 5
         compiled = pipeline(src)
         assert evaluate(compiled['Test.test_same']) == 1
 
+    def test_superclass_flat_expansion(self):
+        """Function constrained by Ord uses both eq (from Eq superclass) and lt."""
+        src = '''
+class Eq a {
+  eq : a → a → Nat
+}
+
+class Eq a => Ord a {
+  lt : a → a → Nat
+}
+
+let nat_eq : Nat → Nat → Nat
+  = λ xx yy → match xx {
+    | 0 → match yy { | 0 → 1 | _ → 0 }
+    | kk → match yy { | 0 → 0 | jj → nat_eq kk jj }
+  }
+
+let nat_lt : Nat → Nat → Nat
+  = λ xx yy → match xx {
+    | 0 → match yy { | 0 → 0 | _ → 1 }
+    | kk → match yy { | 0 → 0 | jj → nat_lt kk jj }
+  }
+
+instance Eq Nat {
+  eq = nat_eq
+}
+
+instance Ord Nat {
+  lt = nat_lt
+}
+
+let both : ∀ a. Ord a => a → a → Nat
+  = λ xx yy → match (eq xx yy) {
+    | 0 → lt xx yy
+    | _ → 99
+  }
+
+let test_eq = both 3 3
+let test_lt = both 2 5
+let test_gt = both 5 2
+'''
+        compiled = pipeline(src)
+        assert evaluate(compiled['Test.test_eq']) == 99  # eq returns 1 → 99
+        assert evaluate(compiled['Test.test_lt']) == 1   # eq returns 0 → lt returns 1
+        assert evaluate(compiled['Test.test_gt']) == 0   # eq returns 0 → lt returns 0
+
+    def test_superclass_multi_level(self):
+        """Three-level superclass chain: A => B => C."""
+        src = '''
+class A a {
+  method_a : a → Nat
+}
+
+class A a => B a {
+  method_b : a → Nat
+}
+
+class B a => C a {
+  method_c : a → Nat
+}
+
+instance A Nat {
+  method_a = λ xx → 1
+}
+
+instance B Nat {
+  method_b = λ xx → 2
+}
+
+instance C Nat {
+  method_c = λ xx → 3
+}
+
+let use_c : ∀ a. C a => a → Nat
+  = λ xx → method_c xx
+
+let test_c = use_c 42
+'''
+        compiled = pipeline(src)
+        assert evaluate(compiled['Test.test_c']) == 3
+
 
 # ===========================================================================
 # MEDIUM PRIORITY 5: UTF-8 in text/bytes literals

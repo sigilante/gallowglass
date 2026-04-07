@@ -191,6 +191,8 @@ class Compiler:
         self._next_op_tag: int = 0
         # Typeclass info: class_fq → ordered list of method short names
         self._class_methods: dict[str, list[str]] = {}
+        # Superclass constraints: class_fq → [(superclass_short, type_args)]
+        self._class_constraints: dict[str, list] = {}
         # Constrained lets: fq → [(class_fq, [method_fq, ...])] per constraint
         self._constrained_lets: dict[str, list] = {}
         # Register builtin constructors from scope resolver.
@@ -527,10 +529,39 @@ class Compiler:
     # -----------------------------------------------------------------------
 
     def _compile_class(self, decl: DeclClass) -> None:
-        """Register typeclass method names (no PLAN value emitted for the class itself)."""
+        """Register typeclass method names and superclass constraints."""
         fq_cls = f'{self.module}.{decl.name}'
         methods = [m.name for m in decl.members if isinstance(m, ClassMember)]
         self._class_methods[fq_cls] = methods
+        if decl.constraints:
+            self._class_constraints[fq_cls] = decl.constraints
+
+    def _expand_superclass_constraints(self, constraints: list) -> list:
+        """Expand constraints to include superclass methods (flat expansion).
+
+        If constrained by Ord (superclass Eq), expands to [Eq, Ord] so that
+        dict params include Eq methods before Ord methods.
+        Returns the expanded list of (class_short, type_args) tuples.
+        """
+        expanded = []
+        seen = set()
+        for class_short, type_args in constraints:
+            class_fq = self._resolve_class_fq(class_short)
+            self._expand_one_constraint(class_fq, class_short, type_args, expanded, seen)
+        return expanded
+
+    def _expand_one_constraint(self, class_fq: str, class_short: str,
+                                type_args: list, expanded: list, seen: set) -> None:
+        """Recursively expand one constraint, adding superclasses first."""
+        if class_fq in seen:
+            return
+        # First, expand superclasses
+        if class_fq in self._class_constraints:
+            for super_short, super_type_args in self._class_constraints[class_fq]:
+                super_fq = self._resolve_class_fq(super_short)
+                self._expand_one_constraint(super_fq, super_short, type_args, expanded, seen)
+        seen.add(class_fq)
+        expanded.append((class_short, type_args))
 
     def _resolve_class_fq(self, class_short: str) -> str:
         """Resolve a short class name to its defining-module FQ form.
@@ -655,9 +686,10 @@ class Compiler:
 
         if constraints:
             val = self._compile_constrained_let(decl, fq, env, constraints)
-            # Record for call-site dict insertion
+            # Record for call-site dict insertion (with superclass expansion)
+            expanded = self._expand_superclass_constraints(constraints)
             constraint_info = []
-            for class_short, _type_args in constraints:
+            for class_short, _type_args in expanded:
                 class_fq = self._resolve_class_fq(class_short)
                 methods = self._class_methods.get(class_fq, [class_short])
                 class_module = class_fq.rsplit('.', 1)[0]
@@ -684,11 +716,15 @@ class Compiler:
         """Compile a let declaration that has typeclass constraints.
 
         Adds one leading parameter per method per constraint (flat dict passing).
+        Superclass constraints are expanded: constrained by Ord (superclass Eq)
+        adds Eq method params before Ord method params.
         Inside the body, class method FQ names are bound to their dict params.
         """
+        # Expand superclass constraints
+        expanded = self._expand_superclass_constraints(constraints)
         # Collect dict param FQ names (one per method per constraint, in order)
         dict_param_fqs: list[str] = []
-        for class_short, _type_args in constraints:
+        for class_short, _type_args in expanded:
             class_fq = self._resolve_class_fq(class_short)
             methods = self._class_methods.get(class_fq, [class_short])
             class_module = class_fq.rsplit('.', 1)[0]
