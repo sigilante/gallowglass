@@ -18,6 +18,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from dev.harness.plan import A, N, L, P
+from dev.harness.plan import evaluate as plan_evaluate, apply as plan_apply
 from dev.harness.bplan import bevaluate, _bapply
 
 def apply(f, x):
@@ -34,6 +35,7 @@ except ImportError:
     def seed_loads(_): return False
 
 CORE_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'prelude', 'src', 'Core')
+NAT_PATH = os.path.join(CORE_DIR, 'Nat.gls')
 RESULT_PATH = os.path.join(CORE_DIR, 'Result.gls')
 MODULE = 'Core.Result'
 
@@ -43,15 +45,12 @@ MODULE = 'Core.Result'
 # ---------------------------------------------------------------------------
 
 def _compile_result():
-    from bootstrap.lexer import lex
-    from bootstrap.parser import parse
-    from bootstrap.scope import resolve
-    from bootstrap.codegen import compile_program
+    from bootstrap.build import build_modules
+    with open(NAT_PATH) as f:
+        nat_src = f.read()
     with open(RESULT_PATH) as f:
-        src = f.read()
-    prog = parse(lex(src, RESULT_PATH), RESULT_PATH)
-    resolved, _ = resolve(prog, MODULE, {}, RESULT_PATH)
-    return compile_program(resolved, MODULE)
+        res_src = f.read()
+    return build_modules([('Core.Nat', nat_src), ('Core.Result', res_src)])
 
 _RESULT_COMPILED = None
 
@@ -181,6 +180,37 @@ class TestCoreResultHarness(unittest.TestCase):
         self.assertEqual(result.fun, 1)  # tag Err
         self.assertEqual(result.arg, 99)
 
+    # --- Eq Result ---
+
+    def _eq_result(self, x, y):
+        eq_res = self.c[f'{MODULE}.inst_Eq_Result_eq']
+        nat_eq = self.c['Core.Nat.inst_Eq_Nat_eq']
+        nat_neq = self.c['Core.Nat.inst_Eq_Nat_neq']
+        r = eq_res
+        r = plan_apply(r, nat_eq)
+        r = plan_apply(r, nat_neq)
+        r = plan_apply(r, x)
+        r = plan_apply(r, y)
+        return plan_evaluate(r)
+
+    def test_eq_ok_ok_equal(self):
+        self.assertEqual(self._eq_result(mk_ok(N(5)), mk_ok(N(5))), 1)
+
+    def test_eq_ok_ok_unequal(self):
+        self.assertEqual(self._eq_result(mk_ok(N(5)), mk_ok(N(3))), 0)
+
+    def test_eq_ok_err(self):
+        self.assertEqual(self._eq_result(mk_ok(N(5)), mk_err(N(9))), 0)
+
+    def test_eq_err_ok(self):
+        self.assertEqual(self._eq_result(mk_err(N(9)), mk_ok(N(5))), 0)
+
+    def test_eq_err_err_equal(self):
+        self.assertEqual(self._eq_result(mk_err(N(9)), mk_err(N(9))), 1)
+
+    def test_eq_err_err_unequal(self):
+        self.assertEqual(self._eq_result(mk_err(N(9)), mk_err(N(7))), 0)
+
 
 # ---------------------------------------------------------------------------
 # Layer 2: planvm seed loading
@@ -229,6 +259,14 @@ class TestCoreResultSeeds(unittest.TestCase):
     @requires_planvm
     def test_bind_result_seed_loads(self):
         self.assertTrue(seed_loads(_make_seed('bind_result')))
+
+    @requires_planvm
+    def test_inst_eq_result_eq_seed_loads(self):
+        self.assertTrue(seed_loads(_make_seed('inst_Eq_Result_eq')))
+
+    @requires_planvm
+    def test_inst_eq_result_neq_seed_loads(self):
+        self.assertTrue(seed_loads(_make_seed('inst_Eq_Result_neq')))
 
 
 if __name__ == '__main__':

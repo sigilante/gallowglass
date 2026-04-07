@@ -2,6 +2,12 @@
 -- Option type: a value that may or may not be present.
 --
 -- Encoding: None = 0 (bare nat tag), Some x = A(tag=1, x).
+--
+-- Dependencies:
+--   Core.Nat — Eq class
+
+use Core.Nat { Eq }
+use Core.Text { Show, text_concat }
 
 type Option a =
   | None
@@ -41,3 +47,17 @@ let bind_option : ∀ a b. Option a → (a → Option b) → Option b
     | None   → None
     | Some x → f x
   }
+
+instance Eq a => Eq Option {
+  eq = λ x y → match x {
+    | None → match y { | None → True | Some _ → False }
+    | Some a → match y { | None → False | Some b → eq a b }
+  }
+}
+
+instance Show a => Show Option {
+  show = λ o → match o {
+    | None → "None"
+    | Some x → text_concat "Some(" (text_concat (show x) ")")
+  }
+}

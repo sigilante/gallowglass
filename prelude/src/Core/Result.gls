@@ -2,6 +2,11 @@
 -- Result type: success or failure.
 --
 -- Encoding: Ok a = A(tag=0, a), Err b = A(tag=1, b).
+--
+-- Dependencies:
+--   Core.Nat — Eq class
+
+use Core.Nat { Eq }
 
 type Result a b =
   | Ok  a
@@ -55,3 +60,14 @@ let bind_result : ∀ a b c. Result a b → (a → Result c b) → Result c b
     | Ok  x → f x
     | Err e → Err e
   }
+
+-- Note: single constraint Eq a covers both Ok and Err fields.
+-- A dual-constraint (Eq a, Eq b =>) would require distinct dict-param
+-- names for same-class constraints, which the bootstrap compiler does not
+-- yet support.  This instance is correct when a ~ b.
+instance Eq a => Eq Result {
+  eq = λ x y → match x {
+    | Ok  a → match y { | Ok  b → eq a b | Err _ → False }
+    | Err a → match y { | Ok _  → False  | Err b → eq a b }
+  }
+}
