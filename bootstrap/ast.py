@@ -158,6 +158,11 @@ class PatCons:
     loc: Loc
 
 @dataclass
+class PatRecord:
+    fields: list[tuple[str, Any]]  # (field_name, Pattern) pairs
+    loc: Loc
+
+@dataclass
 class PatAs:
     pat: Any   # Pattern
     name: str

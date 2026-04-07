@@ -88,7 +88,11 @@ def test_type_builtin_registered():
 def test_record_type_registered():
     _, env = resolve_src('type Point = { x : Nat, y : Nat }')
     assert 'Test.Point' in env.bindings
-    assert isinstance(env.bindings['Test.Point'], BindingType)
+    # Records register a BindingCon (constructor overwrites type binding)
+    assert isinstance(env.bindings['Test.Point'], BindingCon)
+    assert env.bindings['Test.Point'].arity == 2
+    # Field metadata stored
+    assert env.record_fields['Test.Point'] == ['x', 'y']
 
 def test_eff_decl_registered():
     _, env = resolve_src('eff State s { get : ⊤ → s  put : s → ⊤ }')

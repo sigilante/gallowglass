@@ -367,10 +367,16 @@ dependency chain: Combinators → Nat → Bool → Option → List → Text.
 Goal: close the gap between the restricted dialect and `spec/06-surface-syntax.md`.
 The parser already handles most forms; codegen rejects them.
 
-### M15.1 — Record types, construction, update, patterns
+### ✅ M15.1 — Record types, construction, update, patterns
 
-`DeclRecord`, `ExprRecord`, `ExprRecordUpdate`, `PatRecord` — all parsed, none
-compiled. Encoding: record = ADT with one constructor and named fields.
+Records desugar to single-constructor ADTs during scope resolution:
+- `DeclRecord` → `DeclType` with one constructor (tag 0), fields become positional args
+- `ExprRecord { x = 1, y = 2 }` → constructor application, fields reordered to declaration order
+- `ExprRecordUpdate base { x = 3 }` → match + rebuild with overrides
+- `PatRecord { x = px }` → `PatCon` with positional sub-patterns, missing fields become `PatWild`
+- Field-set → record-type reverse lookup for type inference from field names
+- Punning: `{ x }` in both expressions and patterns means `{ x = x }`
+- 7 new integration tests in `tests/bootstrap/test_programs.py`.
 
 ### ✅ M15.2 — Type aliases
 

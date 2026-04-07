@@ -677,6 +677,121 @@ def test_guard_fail_4():
 
 
 # ---------------------------------------------------------------------------
+# Records (M15.1)
+# ---------------------------------------------------------------------------
+
+_RECORD_SRC = """\
+external mod Core.PLAN {
+  inc : Nat → Nat
+}
+
+type Point = { x : Nat, y : Nat }
+
+-- get_x: extract x field via pattern match
+let get_x : Point → Nat
+  = λ p → match p {
+    | Point px py → px
+  }
+
+-- get_y: extract y field
+let get_y : Point → Nat
+  = λ p → match p {
+    | Point px py → py
+  }
+
+-- mk_point: construct via record literal
+let mk_point : Nat → Nat → Point
+  = λ xx yy → { x = xx, y = yy }
+
+-- move_x: update x field
+let move_x : Point → Nat → Point
+  = λ p new_x → p { x = new_x }
+"""
+
+
+def test_record_construct():
+    """Record literal constructs correct PLAN value."""
+    # Point 10 20 = A(A(0, 10), 20)
+    result = run(_RECORD_SRC, 'mk_point', N(10), N(20))
+    assert is_app(result)
+
+
+def test_record_get_x():
+    """Pattern match extracts first field."""
+    # Build Point 10 20 = A(A(0, 10), 20)
+    point = A(A(N(0), N(10)), N(20))
+    assert run(_RECORD_SRC, 'get_x', point) == 10
+
+
+def test_record_get_y():
+    """Pattern match extracts second field."""
+    point = A(A(N(0), N(10)), N(20))
+    assert run(_RECORD_SRC, 'get_y', point) == 20
+
+
+def test_record_roundtrip():
+    """Construct via literal, then extract fields."""
+    compiled = pipeline(_RECORD_SRC)
+    mk = compiled['Test.mk_point']
+    gx = compiled['Test.get_x']
+    gy = compiled['Test.get_y']
+    point = evaluate(apply(apply(mk, N(3)), N(7)))
+    assert evaluate(apply(gx, point)) == 3
+    assert evaluate(apply(gy, point)) == 7
+
+
+def test_record_update():
+    """Record update changes one field, preserves others."""
+    compiled = pipeline(_RECORD_SRC)
+    mk = compiled['Test.mk_point']
+    mx = compiled['Test.move_x']
+    gx = compiled['Test.get_x']
+    gy = compiled['Test.get_y']
+    point = evaluate(apply(apply(mk, N(3)), N(7)))
+    moved = evaluate(apply(apply(mx, point), N(99)))
+    assert evaluate(apply(gx, moved)) == 99
+    assert evaluate(apply(gy, moved)) == 7
+
+
+def test_record_field_reorder():
+    """Fields in different order than declaration are reordered."""
+    src = _RECORD_SRC + """\
+-- reversed: construct with fields in reverse order
+let reversed : Point
+  = { y = 20, x = 10 }
+"""
+    compiled = pipeline(src)
+    v = evaluate(compiled['Test.reversed'])
+    gx = compiled['Test.get_x']
+    gy = compiled['Test.get_y']
+    assert evaluate(apply(gx, v)) == 10
+    assert evaluate(apply(gy, v)) == 20
+
+
+# -- Record pattern tests --
+
+_RECORD_PAT_SRC = """\
+external mod Core.PLAN {
+  inc : Nat → Nat
+}
+
+type Point = { x : Nat, y : Nat }
+
+-- extract_y: use record pattern to get y
+let extract_y : Point → Nat
+  = λ p → match p {
+    | { x = _, y = yy } → yy
+  }
+"""
+
+
+def test_record_pattern():
+    """Record pattern extracts named fields."""
+    point = A(A(N(0), N(10)), N(20))
+    assert run(_RECORD_PAT_SRC, 'extract_y', point) == 20
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
