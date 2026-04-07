@@ -110,6 +110,27 @@ def seed_loads(seed_bytes: bytes) -> bool:
     return True
 
 
+def eval_seed(seed_bytes: bytes, timeout: int = 10) -> int | None:
+    """
+    Run planvm on seed_bytes and return the exit code as the result Nat.
+
+    planvm forces the seed value, casts to Nat, exits with it as the process
+    exit code.  For pure Nat seeds (0-255), this gives the evaluated result.
+
+    Returns None on timeout, signal crash, or format error.
+    """
+    result = run_planvm(seed_bytes, timeout=timeout)
+    if isinstance(result, subprocess.TimeoutExpired):
+        return None
+    if result.returncode < 0:
+        return None  # signal crash
+    stderr = result.stderr.lower()
+    format_errors = [b'invalid seed', b'bad seed', b'seed parse', b'format error']
+    if any(marker in stderr for marker in format_errors):
+        return None
+    return result.returncode
+
+
 # ---------------------------------------------------------------------------
 # Skip decorator
 # ---------------------------------------------------------------------------
