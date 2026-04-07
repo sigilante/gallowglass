@@ -159,6 +159,7 @@ class ConInfo:
     tag: int              # position in the type declaration
     arity: int            # number of fields
     fq_name: str          # fully-qualified constructor name
+    type_name: str = ''   # short type name (e.g., 'List', 'Option')
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +342,8 @@ class Compiler:
         for tag, con in enumerate(decl.constructors):
             fq_con = f'{self.module}.{con.name}'
             n_fields = len(con.arg_types)
-            info = ConInfo(tag=tag, arity=n_fields, fq_name=fq_con)
+            info = ConInfo(tag=tag, arity=n_fields, fq_name=fq_con,
+                          type_name=decl.name)
             self.con_info[fq_con] = info
 
             if n_fields == 0:
@@ -593,6 +595,9 @@ class Compiler:
         Naming convention:
           Module.inst_ClassName_TypeKey_method  — individual method law
           Module.inst_ClassName_TypeKey          — dict (= method law for single-method class)
+
+        For constrained instances (e.g., Eq a => Eq (List a)), each method gets
+        extra leading parameters for the constraint dicts, just like constrained lets.
         """
         class_fq = self._resolve_class_fq(decl.class_name)
         type_key = self._typearg_key(decl.type_args[0]) if decl.type_args else 'Unknown'
@@ -600,12 +605,40 @@ class Compiler:
         methods = self._class_methods.get(class_fq, [])
         compiled_methods: dict[str, Any] = {}
 
+        # Compute constraint dict param FQs (empty for unconstrained instances).
+        dict_param_fqs: list[str] = []
+        if decl.constraints:
+            expanded = self._expand_superclass_constraints(decl.constraints)
+            for class_short, _type_args in expanded:
+                cfq = self._resolve_class_fq(class_short)
+                constraint_methods = self._class_methods.get(cfq, [class_short])
+                cmod = cfq.rsplit('.', 1)[0]
+                for m in constraint_methods:
+                    dict_param_fqs.append(f'{cmod}.{m}')
+
+        # Determine the class module prefix for binding method FQ names.
+        class_module = class_fq.rsplit('.', 1)[0]
+
         # Pass 1: compile explicitly provided instance methods.
+        # Each method body can reference class method names (e.g., `eq`) which
+        # need to resolve to either:
+        #   - A dict param (constrained instances: `eq` is in dict_param_fqs)
+        #   - Self-reference via N(0) (the current method calls itself recursively)
+        #   - A sibling instance method (already compiled in a prior iteration)
         for member in decl.members:
             if not isinstance(member, InstanceMember):
                 continue
-            env = Env(globals=self.env.globals, arity=0)
-            val = self._compile_expr(member.body, env, name_hint=member.name)
+            # Bind already-compiled sibling methods under class method FQ names
+            # so cross-method references resolve.
+            for sib_name, sib_val in compiled_methods.items():
+                self.env.globals[f'{class_module}.{sib_name}'] = sib_val
+            # For unconstrained instances, self_ref_fq enables law self-reference
+            # (N(0)) for recursive methods. For constrained instances, recursion
+            # goes through the dict param, so self-ref is not needed.
+            method_class_fq = f'{class_module}.{member.name}' if not dict_param_fqs else ''
+            val = self._compile_inst_method_body(
+                member.body, member.name, dict_param_fqs,
+                self_ref_fq=method_class_fq)
             method_fq = f'{self.module}.inst_{decl.class_name}_{type_key}_{member.name}'
             self.compiled[method_fq] = val
             self.env.globals[method_fq] = val
@@ -622,15 +655,13 @@ class Compiler:
                 continue
             if method_name not in defaults:
                 continue
-            # Bind provided instance methods as globals under their class-local
-            # FQ names so the default body can reference sibling methods.
-            default_env = Env(globals=dict(self.env.globals), arity=0)
-            class_module = class_fq.rsplit('.', 1)[0]
-            for provided_name, provided_val in compiled_methods.items():
-                method_global_fq = f'{class_module}.{provided_name}'
-                default_env.globals[method_global_fq] = provided_val
-            val = self._compile_expr(defaults[method_name], default_env,
-                                      name_hint=method_name)
+            # Bind all compiled instance methods under their class method FQ names.
+            for sib_name, sib_val in compiled_methods.items():
+                self.env.globals[f'{class_module}.{sib_name}'] = sib_val
+            method_class_fq = f'{class_module}.{method_name}'
+            val = self._compile_inst_method_body(
+                defaults[method_name], method_name, dict_param_fqs,
+                self_ref_fq=method_class_fq)
             method_fq = f'{self.module}.inst_{decl.class_name}_{type_key}_{method_name}'
             self.compiled[method_fq] = val
             self.env.globals[method_fq] = val
@@ -645,14 +676,79 @@ class Compiler:
             self.compiled[dict_fq] = ordered_vals[0]
             self.env.globals[dict_fq] = ordered_vals[0]
 
+        # Register constrained instances so call-site dict insertion knows to
+        # propagate inner constraint dicts.
+        if decl.constraints:
+            expanded = self._expand_superclass_constraints(decl.constraints)
+            constraint_info = []
+            for class_short, _type_args in expanded:
+                cfq = self._resolve_class_fq(class_short)
+                constraint_methods = self._class_methods.get(cfq, [class_short])
+                cmod = cfq.rsplit('.', 1)[0]
+                method_fqs = [f'{cmod}.{m}' for m in constraint_methods]
+                constraint_info.append((cfq, method_fqs))
+            # Store per method so call-site can find them
+            for method_name in methods:
+                method_fq = f'{self.module}.inst_{decl.class_name}_{type_key}_{method_name}'
+                self._constrained_lets[method_fq] = constraint_info
+            dict_fq = f'{self.module}.inst_{decl.class_name}_{type_key}'
+            if dict_fq in self.env.globals:
+                self._constrained_lets[dict_fq] = constraint_info
+
+    def _compile_inst_method_body(self, body_expr: Any, name_hint: str,
+                                   dict_param_fqs: list[str],
+                                   self_ref_fq: str = '') -> Any:
+        """Compile an instance method body, adding constraint dict params if needed.
+
+        For unconstrained instances, compiles the body directly via _compile_expr
+        (with self-ref support for recursive methods).
+        For constrained instances, wraps the body in a law with extra leading params
+        for the constraint method dicts.
+
+        self_ref_fq: the class method FQ name (e.g., 'Test.eq') to enable self-ref
+        via N(0) in the law body.
+        """
+        if not dict_param_fqs:
+            # Unconstrained instance: compile body directly (old path).
+            # _compile_expr handles lambdas, var refs, etc. naturally.
+            env = Env(globals=self.env.globals, arity=0,
+                      self_ref_name=self_ref_fq)
+            return self._compile_expr(body_expr, env, name_hint=name_hint)
+
+        # Constrained instance: flatten lambda params and prepend dict params.
+        if isinstance(body_expr, ExprLam):
+            user_params = self._flatten_params(body_expr)
+            inner_body = self._lambda_body(body_expr)
+        else:
+            user_params = []
+            inner_body = body_expr
+
+        body_env = Env(globals=self.env.globals, arity=0,
+                       self_ref_name=self_ref_fq)
+        for method_fq in dict_param_fqs:
+            body_env = body_env.bind_param(method_fq)
+        for pat in user_params:
+            param_name = self._pat_var_name(pat)
+            body_env = body_env.bind_param(param_name)
+
+        body_val = self._compile_expr(inner_body, body_env, name_hint)
+        total_arity = len(dict_param_fqs) + len(user_params)
+        name_nat = encode_name(name_hint)
+        return L(total_arity, name_nat, body_val)
+
     def _typearg_key(self, type_arg: Any) -> str:
-        """Convert a type argument AST node to a stable string key for instance names."""
+        """Convert a type argument AST node to a stable string key for instance names.
+
+        For concrete types: Nat → "Nat", Bool → "Bool".
+        For applied types: List a → "List" (outer constructor only; the variable
+        is universally quantified so doesn't appear in the key).
+        """
         if isinstance(type_arg, str):
             return type_arg
-        if hasattr(type_arg, 'name'):   # TyCon, TyVar, TyApp with .name
+        if hasattr(type_arg, 'fun'):    # TyApp — use only the outer constructor
+            return self._typearg_key(type_arg.fun)
+        if hasattr(type_arg, 'name'):   # TyCon, TyVar
             return str(type_arg.name)
-        if hasattr(type_arg, 'fun'):    # TyApp
-            return self._typearg_key(type_arg.fun) + '_' + self._typearg_key(type_arg.arg)
         return str(type_arg)
 
     def _extract_param_types(self, ty: Any) -> list[str | None] | None:
@@ -1088,8 +1184,8 @@ class Compiler:
     def _infer_type_key(self, expr: Any, env: Env) -> str | None:
         """Heuristically determine the type key of an expression for instance lookup.
 
-        Covers: literal Nats/Text, locals with tracked param types, explicit type
-        annotations, and some global value checks.
+        Covers: literal Nats/Text, constructor applications, locals with tracked
+        param types, explicit type annotations, and some global value checks.
         Returns None if the type cannot be determined.
         """
         if isinstance(expr, ExprNat):
@@ -1104,10 +1200,22 @@ class Compiler:
                 return env.param_types[short]
             if fq in env.param_types:
                 return env.param_types[fq]
+            # Check if it's a nullary constructor
+            if fq in self.con_info:
+                return self.con_info[fq].type_name
             # Check if it's a global with known Nat value
             val = self.env.globals.get(fq)
             if val is not None and is_nat(val):
                 return 'Nat'
+        if isinstance(expr, ExprApp):
+            # Constructor application: Cons 1 Nil → type_name of Cons
+            root = expr
+            while isinstance(root, ExprApp):
+                root = root.fun
+            if isinstance(root, ExprVar):
+                root_fq = str(root.name)
+                if root_fq in self.con_info:
+                    return self.con_info[root_fq].type_name
         if isinstance(expr, ExprAnn):
             # Explicit type annotation: (expr : Type)
             from bootstrap.ast import TyCon as AstTyCon
