@@ -292,10 +292,31 @@ preserves nested handler layers during forwarding. Virtual resume index +
 substitution avoids de Bruijn scope issues. 5 tests (generator pattern, k-called
 shallow, deep contrast, mixed arms, nested forwarding). 902 passing.
 
-### M13.4 — GLS compiler parity for M13.1–M13.3
+### M13.4 — GLS compiler parity for M13.1–M13.3 ✅
 
-Self-hosting compiler tracks bootstrap. Update `Compiler.gls` to handle default
-method storage and fallback in `cg_compile_inst_members`.
+Self-hosting compiler updated to open-continuation CPS protocol matching bootstrap.
+
+**Changes to `Compiler.gls`:**
+- Added `cps_id_open` (L(2,0,N(2))), `cps_compose_open`, `cps_forward_k` constants
+- Updated `cps_pure_law` to `k_open(dispatch, value)` protocol
+- Updated `cps_run_law` to use `cps_id_open` instead of `cps_id_law`
+- `cg_compile_dispatch_fn`: builds `dispatch_fn_base` (self-ref + captures),
+  `dispatch_current`, `resume_expr = k_open(dispatch_current)`. Forward body uses
+  `_FORWARD_K` to wrap k_open and preserve nested handler layers.
+- `cg_build_handle_dispatch`: virtual resume index substitution via
+  `subst_virtual_resume` — arm bodies compile with sentinel index 9999999, then
+  substitute with actual resume expression (all deep for now).
+- `cg_compile_handle`: uses `cps_compose_open` instead of `cps_compose`.
+- `cg_compile_do`: inner continuation params reordered to `[caps, k_open_outer,
+  dispatch, x]` — partial application `(caps, k_open_outer)` gives 2-arg open
+  continuation. Outer body passes `inner_cont_open` directly (not applied with
+  dispatch).
+- Moved `cg_apply_range` before dispatch codegen (forward-reference fix).
+- 5 new GLS compiler tests (CPS constant presence, virtual resume, selfhost regression).
+
+**Deferred:** Default method storage/fallback in GLS `cg_compile_inst_members`
+requires DClass AST change + parser update. Tracked for future work. Shallow
+handler (`once`) support in GLS requires AST extension for arm once-flag.
 
 **Deferred past 1.0:** multi-param typeclasses, functional dependencies, deriving,
 typeclass laws verification, effect polymorphism in constraints.

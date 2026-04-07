@@ -4046,10 +4046,14 @@ let cg_compile_pin : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat �
 
 -- =====================================================================
 -- CPS Effect Constants (must precede handler codegen)
+-- Open-continuation protocol (M13.3): continuations are 2-arg (dispatch, value).
 -- =====================================================================
 
--- _id_law: L(1, 0, N(1)) — identity function
+-- _id_law: L(1, 0, N(1)) — identity function (retained for non-CPS use)
 let cps_id_law : PlanVal = PLaw 0 (MkPair 1 (PNat 1))
+
+-- _id_open: L(2, 0, N(2)) — open-continuation identity: (dispatch, value) → value
+let cps_id_open : PlanVal = PLaw 0 (MkPair 2 (PNat 2))
 
 -- _null_dispatch: L(3, name, P(0)) — drops all args, returns P(0)
 let nn_null_dispatch : Nat = 0x68637461707369645f6c6c756e5f  -- "_null_dispatch"
@@ -4059,26 +4063,69 @@ let cps_null_dispatch : PlanVal = PLaw nn_null_dispatch (MkPair 3 (PPin (PNat 0)
 let nn_compose : Nat = 0x65736f706d6f635f  -- "_compose"
 let cps_compose : PlanVal = PLaw nn_compose (MkPair 3 (PApp (PNat 1) (PApp (PNat 2) (PNat 3))))
 
--- pure_law: L(3, "pure", A(N(3), N(1))) — pure v dispatch k = k(v)
-let cps_pure_law : PlanVal = PLaw kw_pure (MkPair 3 (PApp (PNat 3) (PNat 1)))
+-- _compose_open: L(4, name, A(A(N(1), N(3)), A(N(2), N(4))))
+-- compose_open(f_open, g, dispatch', x) = f_open(dispatch', g(x))
+let nn_compose_open : Nat = 0x6e65706f5f65736f706d6f635f  -- "_compose_open"
+let cps_compose_open : PlanVal
+  = PLaw nn_compose_open (MkPair 4 (PApp (PApp (PNat 1) (PNat 3)) (PApp (PNat 2) (PNat 4))))
 
--- run_law: L(1, "run", A(A(N(1), P(null_dispatch)), P(id_law)))
--- run comp = comp(null_dispatch, id)
+-- _forward_k: L(4, name, A(A(N(1), A(N(2), N(3))), N(4)))
+-- forward_k(k_open, dispatch_fn_base, dispatch', v) = k_open(dispatch_fn_base(dispatch'), v)
+-- Used when forwarding unhandled ops to preserve nested handler layers.
+let nn_forward_k : Nat = 0x6b5f64726177726f665f  -- "_forward_k"
+let cps_forward_k : PlanVal
+  = PLaw nn_forward_k (MkPair 4 (PApp (PApp (PNat 1) (PApp (PNat 2) (PNat 3))) (PNat 4)))
+
+-- pure_law: L(3, "pure", A(A(N(3), N(2)), N(1))) — pure v dispatch k_open = k_open(dispatch, v)
+let cps_pure_law : PlanVal = PLaw kw_pure (MkPair 3 (PApp (PApp (PNat 3) (PNat 2)) (PNat 1)))
+
+-- run_law: L(1, "run", A(A(N(1), P(null_dispatch)), P(id_open)))
+-- run comp = comp(null_dispatch, id_open)
 let cps_run_law : PlanVal
-  = PLaw kw_run (MkPair 1 (PApp (PApp (PNat 1) (PPin cps_null_dispatch)) (PPin cps_id_law)))
+  = PLaw kw_run (MkPair 1 (PApp (PApp (PNat 1) (PPin cps_null_dispatch)) (PPin cps_id_open)))
+
+-- Virtual de Bruijn index for resume during arm body compilation.
+-- Substituted with the real resume expression before embedding in the law body.
+let virtual_resume_idx : Nat = 9999999
+
+-- subst_virtual_resume: walk PlanVal, replacing PNat(virtual_idx) with replacement.
+-- Only PNat and PApp nodes are affected; PLaw/PPin are opaque (no recursion needed
+-- because arm bodies are flat expressions, not nested laws).
+let subst_virtual_resume : PlanVal → Nat → PlanVal → PlanVal
+  = λ expr vid replacement →
+      match expr {
+        | PNat n →
+            match (nat_eq n vid) {
+              | 0 → replacement
+              | _ → PNat n
+            }
+        | PApp f g →
+            PApp (subst_virtual_resume f vid replacement)
+                 (subst_virtual_resume g vid replacement)
+        | _ → expr
+      }
+
+-- cg_apply_range: partially apply val to N(start)..N(end_inclusive) via cg_bapp
+let cg_apply_range : PlanVal → Nat → Nat → PlanVal
+  = λ v start end_idx →
+      match (lte start end_idx) {
+        | 0 → v
+        | _ → cg_apply_range (cg_bapp v (PNat start)) (add start 1) end_idx
+      }
 
 -- =====================================================================
 -- CPS Effect Handler Codegen
 -- =====================================================================
 
 -- cg_build_handle_dispatch: build nested nat_eq dispatch on op_tag
--- Each op arm gets a sequential tag (starting from tag_counter).
--- Compiled body binds op_arg at op_arg_idx and k at k_idx.
+-- Each op arm gets a sequential tag. Body uses virtual resume index,
+-- which is substituted with the actual resume expression after compilation.
+-- resume_expr: pre-built resume (k_open applied to dispatch_current for deep).
 let cg_build_handle_dispatch
-      : List (Pair Nat (Pair Nat Expr)) → CEnv → Nat → Nat → Nat → PlanVal
+      : List (Pair Nat (Pair Nat Expr)) → CEnv → Nat → Nat → Nat → PlanVal → PlanVal
       → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
       → List (Pair Nat (Pair Nat Nat)) → Nat → Nat → PlanVal
-  = λ arms dispatch_env k_idx op_arg_idx op_tag_idx forward_body ce ctab hint tag →
+  = λ arms dispatch_env k_idx op_arg_idx op_tag_idx forward_body resume_expr ce ctab hint tag →
       match arms {
         | Nil → forward_body
         | Cons arm rest →
@@ -4086,11 +4133,14 @@ let cg_build_handle_dispatch
               | MkPair op_name inner →
                   match inner {
                     | MkPair k_name body →
-                        let arm_env = cenv_bind_local dispatch_env k_name k_idx in
+                        -- Bind resume at virtual index, op_arg at op_arg_idx
+                        let arm_env = cenv_bind_local dispatch_env k_name virtual_resume_idx in
                         let arm_env2 = cenv_bind_local arm_env op_name op_arg_idx in
-                        let body_val = ce body arm_env2 ctab hint in
+                        let raw_body = ce body arm_env2 ctab hint in
+                        -- Substitute virtual resume with actual resume expression
+                        let body_val = subst_virtual_resume raw_body virtual_resume_idx resume_expr in
                         let tag_val = cg_quote_nat tag (cenv_arity dispatch_env) in
-                        let rest_body = cg_build_handle_dispatch rest dispatch_env k_idx op_arg_idx op_tag_idx forward_body ce ctab hint (add tag 1) in
+                        let rest_body = cg_build_handle_dispatch rest dispatch_env k_idx op_arg_idx op_tag_idx forward_body resume_expr ce ctab hint (add tag 1) in
                         let eq_test = cg_bapp (cg_bapp (PPin (PNat 3)) (PNat op_tag_idx)) tag_val in
                         let const_body = PLaw 0 (MkPair 1 body_val) in
                         let const_pin = PPin const_body in
@@ -4100,9 +4150,11 @@ let cg_build_handle_dispatch
       }
 
 -- cg_compile_dispatch_fn: build dispatch law for handle expression
+-- Open-continuation protocol (M13.3): k_open is 2-arg (dispatch, value).
 -- Dispatch law: L(n_cap+4, name, body)
--- Slots: [cap_1..cap_n] [dispatch_parent] [op_tag] [op_arg] [resume/k]
--- Each arm matches on op_tag; unhandled tags forward to dispatch_parent.
+-- Slots: [cap_1..cap_n] [dispatch_parent] [op_tag] [op_arg] [k_open]
+-- Deep handler: resume = k_open(dispatch_current).
+-- Unhandled tags forward to dispatch_parent with k_open wrapped by forward_k.
 let cg_compile_dispatch_fn
       : List (Pair Nat (Pair Nat Expr)) → CEnv
       → List (Pair Nat (Pair Nat Nat)) → Nat
@@ -4110,9 +4162,12 @@ let cg_compile_dispatch_fn
   = λ op_arms env ctab hint ce →
       match op_arms {
         | Nil →
-            -- No op arms: pure forwarder — dispatch_parent(tag, arg, k)
+            -- No op arms: pure forwarder with forward_k wrapping
+            -- 4-arg law: [dp] [tag] [arg] [k_open]
+            -- k_fwd = forward_k(k_open, N(0)) — N(0) is self-ref (no captures)
+            let k_fwd = cg_bapp (cg_bapp (PPin cps_forward_k) (PNat 4)) (PNat 0) in
             PPin (PLaw hint (MkPair 4
-              (cg_bapp (cg_bapp (cg_bapp (PNat 1) (PNat 2)) (PNat 3)) (PNat 4))))
+              (cg_bapp (cg_bapp (cg_bapp (PNat 1) (PNat 2)) (PNat 3)) k_fwd)))
         | _ →
             -- Collect free vars from all arm bodies
             let all_bodies = map (λ arm →
@@ -4127,16 +4182,23 @@ let cg_compile_dispatch_fn
             let op_tag_idx = add n_cap 2 in
             let op_arg_idx = add n_cap 3 in
             let k_idx      = add n_cap 4 in
-            -- Build dispatch env: [caps] + [dp] + [tag] + [arg] + [k]
+            -- Build dispatch env: [caps] + [dp] + [tag] + [arg] + [k_open]
             let g = cenv_globals env in
             let dispatch_env0 = cenv_make g Nil 0 None in
             let dispatch_env1 = cg_bind_params free_vars dispatch_env0 in
             let dispatch_env = cenv_set_arity dispatch_env1 total_arity in
-            -- Forward body: dispatch_parent(tag, arg, k)
-            let forward_body = cg_bapp (cg_bapp (cg_bapp (PNat dp_idx) (PNat op_tag_idx)) (PNat op_arg_idx)) (PNat k_idx) in
-            -- Build tag dispatch: simple nat ladder on op_tag
-            -- For now use single-arm dispatch (tag 0 = first arm, forward rest)
-            let dispatch_body = cg_build_handle_dispatch op_arms dispatch_env k_idx op_arg_idx op_tag_idx forward_body ce ctab hint 0 in
+            -- dispatch_fn_base: self-ref applied to captures (NOT dp).
+            -- N(0) inside the law body = the law's own pin (self-reference).
+            let dispatch_fn_base = cg_apply_range (PNat 0) 1 n_cap in
+            -- dispatch_current = dispatch_fn_base(dp) — full dispatch for deep arms
+            let dispatch_current = cg_bapp dispatch_fn_base (PNat dp_idx) in
+            -- Resume expression: k_open(dispatch_current) — deep handler reinstalled
+            let resume_expr = cg_bapp (PNat k_idx) dispatch_current in
+            -- Forward body: wrap k_open with forward_k to preserve nested handler layers
+            let k_open_forwarded = cg_bapp (cg_bapp (PPin cps_forward_k) (PNat k_idx)) dispatch_fn_base in
+            let forward_body = cg_bapp (cg_bapp (cg_bapp (PNat dp_idx) (PNat op_tag_idx)) (PNat op_arg_idx)) k_open_forwarded in
+            -- Build tag dispatch with virtual resume substitution
+            let dispatch_body = cg_build_handle_dispatch op_arms dispatch_env k_idx op_arg_idx op_tag_idx forward_body resume_expr ce ctab hint 0 in
             let dispatch_law = PPin (PLaw hint (MkPair total_arity dispatch_body)) in
             cg_apply_free_locals dispatch_law free_vars env
       }
@@ -4168,7 +4230,8 @@ let cg_compile_return_fn
 
 -- cg_compile_handle: compile EHandle expression
 -- handle comp { | return x → body_r | op arg k → body_op }
--- Produces: λ(dp, ko) → comp(dispatch(dp), compose(ko, ret_fn))
+-- Open-continuation protocol (M13.3):
+-- Produces: λ(dp, ko_open) → comp(dispatch(dp), compose_open(ko_open, ret_fn))
 let cg_compile_handle
       : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
       → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
@@ -4183,7 +4246,7 @@ let cg_compile_handle
                   let all_found = append comp_free ret_free in
                   let free_vars = cg_keep_free_locals (cenv_locals env) all_found Nil in
                   let n_cap = length free_vars in
-                  -- CPS handle law: arity = n_cap + 2 [caps, dp, ko]
+                  -- CPS handle law: arity = n_cap + 2 [caps, dp, ko_open]
                   let total_arity = add n_cap 2 in
                   let dp_idx = add n_cap 1 in
                   let ko_idx = add n_cap 2 in
@@ -4200,9 +4263,10 @@ let cg_compile_handle
                   let return_fn = cg_compile_return_fn ret_fn cps_env ctab hint ce in
                   -- dispatch(dp): apply dp as first arg to dispatch_fn
                   let dispatch_applied = cg_bapp dispatch_fn (PNat dp_idx) in
-                  -- composed_k = compose(ko, return_fn) = λ x → ko(return_fn(x))
-                  let composed_k = cg_bapp (cg_bapp (PPin cps_compose) (PNat ko_idx)) return_fn in
-                  -- CPS body: comp(dispatch(dp), composed_k)
+                  -- composed_k_open = compose_open(ko_open, ret_fn)
+                  -- = (dispatch', x) → ko_open(dispatch', ret_fn(x))
+                  let composed_k = cg_bapp (cg_bapp (PPin cps_compose_open) (PNat ko_idx)) return_fn in
+                  -- CPS body: comp(dispatch(dp), composed_k_open)
                   let cps_body = cg_bapp (cg_bapp comp_val dispatch_applied) composed_k in
                   let cps_law = PLaw hint (MkPair total_arity cps_body) in
                   -- Apply to captures
@@ -4216,18 +4280,13 @@ let cg_compile_handle
         | _ → PNat 0
       }
 
--- cg_apply_range: partially apply val to N(start)..N(end_inclusive) via cg_bapp
-let cg_apply_range : PlanVal → Nat → Nat → PlanVal
-  = λ v start end_idx →
-      match (lte start end_idx) {
-        | 0 → v
-        | _ → cg_apply_range (cg_bapp v (PNat start)) (add start 1) end_idx
-      }
-
 -- cg_compile_do: compile EDo (x ← rhs in body)
--- Outer law: arity = n_cap+2 [caps, dispatch, k_outer]
--- Inner cont law: arity = n_cap+3 [caps, dispatch, k_outer, x]
--- Outer body: rhs_comp dispatch inner_cont
+-- Open-continuation protocol (M13.3):
+-- Outer law: arity = n_cap+2 [caps, dispatch, k_open_outer]
+-- Inner cont law: arity = n_cap+3 [caps, k_open_outer, dispatch, x]
+--   Reordered: k_open_outer BEFORE dispatch so partial application
+--   with (caps, k_open_outer) gives a 2-arg open continuation.
+-- Outer body: rhs dispatch inner_cont_open
 let cg_compile_do
       : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
       → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
@@ -4244,10 +4303,11 @@ let cg_compile_do
                   let n_cap = length free_vars in
                   -- Outer law: arity = n_cap + 2
                   let outer_dispatch_idx = add n_cap 1 in
-                  let outer_k_idx        = add n_cap 2 in
+                  let outer_k_open_idx   = add n_cap 2 in
                   -- Inner continuation: arity = n_cap + 3
-                  let inner_dispatch_idx = add n_cap 1 in
-                  let inner_k_idx        = add n_cap 2 in
+                  -- Reordered: [caps, k_open_outer, dispatch, x]
+                  let inner_k_open_idx   = add n_cap 1 in
+                  let inner_dispatch_idx = add n_cap 2 in
                   let inner_x_idx        = add n_cap 3 in
                   -- Build inner env
                   let g = cenv_globals env in
@@ -4257,8 +4317,8 @@ let cg_compile_do
                   let inner_env3 = cenv_bind_local inner_env2 bind_name inner_x_idx in
                   -- Compile body in inner env
                   let body_cps = ce body inner_env3 ctab hint in
-                  -- Inner body: body_cps(dispatch, k_outer)
-                  let inner_body = cg_bapp (cg_bapp body_cps (PNat inner_dispatch_idx)) (PNat inner_k_idx) in
+                  -- Inner body: body_cps(dispatch, k_open_outer)
+                  let inner_body = cg_bapp (cg_bapp body_cps (PNat inner_dispatch_idx)) (PNat inner_k_open_idx) in
                   let inner_law = PPin (PLaw hint (MkPair (add n_cap 3) inner_body)) in
                   -- Build outer env
                   let outer_env0 = cenv_make g Nil 0 None in
@@ -4266,11 +4326,12 @@ let cg_compile_do
                   let outer_env  = cenv_set_arity outer_env1 (add n_cap 2) in
                   -- Compile rhs in outer env
                   let rhs_val = ce rhs outer_env ctab hint in
-                  -- Apply inner_law to captures + dispatch + k_outer
+                  -- Apply inner_law to captures + k_open_outer (NOT dispatch).
+                  -- Result is a 2-arg open continuation: (dispatch, x) → body(dispatch, k_open_outer)
                   let inner_applied = cg_apply_range inner_law 1 n_cap in
-                  let inner_cont = cg_bapp (cg_bapp inner_applied (PNat outer_dispatch_idx)) (PNat outer_k_idx) in
-                  -- Outer body: rhs_comp(dispatch, inner_cont)
-                  let outer_body = cg_bapp (cg_bapp rhs_val (PNat outer_dispatch_idx)) inner_cont in
+                  let inner_cont_open = cg_bapp inner_applied (PNat outer_k_open_idx) in
+                  -- Outer body: rhs_comp(dispatch, inner_cont_open)
+                  let outer_body = cg_bapp (cg_bapp rhs_val (PNat outer_dispatch_idx)) inner_cont_open in
                   let do_law = PLaw hint (MkPair (add n_cap 2) outer_body) in
                   -- Apply to captures
                   match (nat_eq (cenv_arity env) 0) {
