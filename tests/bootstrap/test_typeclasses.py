@@ -358,6 +358,91 @@ let test_min2 : Nat = min_by 7 2
 
 
 # ---------------------------------------------------------------------------
+# M13.1: Default methods
+# ---------------------------------------------------------------------------
+
+def test_default_method_basic():
+    """A class with a default method; instance omits it; default is used."""
+    src = '''\
+class Eq a {
+  eq  : a → a → Nat
+  neq : a → a → Nat = λ x y → match (eq x y) { | 0 → 1 | _ → 0 }
+}
+
+let nat_eq : Nat → Nat → Nat
+  = λ x y → match x {
+    | 0 → match y { | 0 → 1 | _ → 0 }
+    | k → match y { | 0 → 0 | j → nat_eq k j }
+  }
+
+instance Eq Nat {
+  eq = nat_eq
+}
+'''
+    compiled = pipeline(src)
+    # Default neq should be compiled and emitted
+    assert 'Test.inst_Eq_Nat_neq' in compiled
+    assert 'Test.inst_Eq_Nat_eq' in compiled
+    # Test directly: neq 3 4 = 1, neq 5 5 = 0
+    neq = compiled['Test.inst_Eq_Nat_neq']
+    assert evaluate(apply(apply(neq, N(3)), N(4))) == 1
+    assert evaluate(apply(apply(neq, N(5)), N(5))) == 0
+
+
+def test_default_method_override():
+    """Instance provides a method that has a default; override takes precedence."""
+    src = '''\
+class Eq a {
+  eq  : a → a → Nat
+  neq : a → a → Nat = λ x y → match (eq x y) { | 0 → 1 | _ → 0 }
+}
+
+let nat_eq : Nat → Nat → Nat
+  = λ x y → match x {
+    | 0 → match y { | 0 → 1 | _ → 0 }
+    | k → match y { | 0 → 0 | j → nat_eq k j }
+  }
+
+instance Eq Nat {
+  eq  = nat_eq
+  neq = λ a b → 42
+}
+'''
+    compiled = pipeline(src)
+    # Override takes precedence — should be 42, not the default's 1
+    neq = compiled['Test.inst_Eq_Nat_neq']
+    assert evaluate(apply(apply(neq, N(1)), N(2))) == 42
+
+
+def test_default_method_constrained_call():
+    """Default methods work through constrained function calls."""
+    src = '''\
+class Eq a {
+  eq  : a → a → Nat
+  neq : a → a → Nat = λ x y → match (eq x y) { | 0 → 1 | _ → 0 }
+}
+
+let nat_eq : Nat → Nat → Nat
+  = λ x y → match x {
+    | 0 → match y { | 0 → 1 | _ → 0 }
+    | k → match y { | 0 → 0 | j → nat_eq k j }
+  }
+
+instance Eq Nat {
+  eq = nat_eq
+}
+
+let differs : ∀ a. Eq a => a → a → Nat = λ x y → neq x y
+
+let test_differs_yes : Nat = differs 3 4
+let test_differs_no  : Nat = differs 5 5
+'''
+    compiled = pipeline(src)
+    assert evaluate(compiled['Test.test_differs_yes']) == 1
+    assert evaluate(compiled['Test.test_differs_no']) == 0
+
+
+# ---------------------------------------------------------------------------
 # M11.4: Core prelude instances (Python harness evaluation)
 # ---------------------------------------------------------------------------
 #

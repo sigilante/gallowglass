@@ -261,6 +261,121 @@ typeclass instances (deferred above). The `mod` declaration syntax from
 
 ---
 
+## M13 — Effects & typeclasses (compiler maturity)
+
+Goal: bring the typeclass and effect system to the level needed for a real
+prelude — default methods, polymorphic instances, shallow handlers.
+
+### ✅ M13.1 — Default methods
+
+`_compile_class` stores `ClassMember.default` exprs in `_class_defaults`.
+`_compile_inst` pass 2: for methods in the class not provided by the instance,
+compiles the default body in an env where already-provided instance methods are
+in globals so sibling references resolve. Override takes precedence.
+3 new tests in `tests/bootstrap/test_typeclasses.py`. 893 tests passing.
+
+### M13.2 — Polymorphic instances (`Eq a => Eq (List a)`)
+
+Instance type key resolution currently handles only concrete types (`Nat`, `Bool`).
+Polymorphic instances require `_typearg_key` to handle `TyApp` (e.g., `List a`)
+and `_compile_constrained_app` to propagate constraints from the instance head
+to the call site. Needed for any useful collection instance.
+
+### M13.3 — Shallow handlers (`once`)
+
+Spec §4.6: single-fire handler that does not reinstall itself on resume. Needed
+for generators and one-shot continuations. Codegen: omit the dispatch re-wrapping
+in the continuation.
+
+### M13.4 — GLS compiler parity for M13.1–M13.3
+
+Self-hosting compiler tracks bootstrap. Update `Compiler.gls` to handle default
+method storage and fallback in `cg_compile_inst_members`.
+
+**Deferred past 1.0:** multi-param typeclasses, functional dependencies, deriving,
+typeclass laws verification, effect polymorphism in constraints.
+
+---
+
+## M14 — Core Prelude
+
+Goal: complete the core library to the level where real programs can be written.
+
+### M14.1 — Complete existing classes
+
+`Ord`: add `compare`, `gt`, `gte`, `min`, `max` (needs M13.1 default methods for
+the ones derivable from `lt`). `Eq`: add `neq` default. Move `div_nat`/`mod_nat`
+from Text to Nat where they belong.
+
+### M14.2 — Missing core types
+
+`Result a b` (`Ok a | Err b`). `Pair a b` with `fst`, `snd`.
+
+### M14.3 — Collection instances
+
+`Show Option`, `Show List`, `Eq Option`, `Eq List`, `Eq Result`. Needs M13.2
+polymorphic instances.
+
+### M14.4 — Missing combinators
+
+`fix` as a standalone combinator, `fst`, `snd`, pipe `|>`, function composition `·`.
+
+### M14.5 — `Debug` class
+
+Spec mandates Show/Debug distinction. Minimal implementation: same output as Show
+initially but distinct class identity and instances.
+
+### M14.6 — Cross-module prelude refactor
+
+Prelude modules use `use` imports (M12) instead of inlining dependencies. Proper
+dependency chain: Combinators → Nat → Bool → Option → List → Text.
+
+**Deferred past 1.0:** `Serialize`, `Functor`/`Monad`/`Applicative` (higher-kinded),
+`Int`/`Rational`/`Fixed`, `Bytes`, IO/State/Exn effect modules, `Core.Inspect`,
+`Core.Abort`.
+
+---
+
+## M15 — Full surface syntax
+
+Goal: close the gap between the restricted dialect and `spec/06-surface-syntax.md`.
+The parser already handles most forms; codegen rejects them.
+
+### M15.1 — Record types, construction, update, patterns
+
+`DeclRecord`, `ExprRecord`, `ExprRecordUpdate`, `PatRecord` — all parsed, none
+compiled. Encoding: record = ADT with one constructor and named fields.
+
+### M15.2 — Type aliases
+
+`DeclTypeAlias` parsed. Codegen: expand at scope resolution time.
+
+### M15.3 — List/Cons patterns
+
+`PatList` and `PatCons` parsed. Codegen: desugar to nested `Cons`/`Nil` constructor
+patterns.
+
+### M15.4 — Or patterns
+
+`PatOr` parsed. Codegen: duplicate the arm body for each alternative.
+
+### M15.5 — Guards in match arms
+
+Guards parsed and extracted. Codegen: compile guard as if-then-else wrapping the
+arm body, with fallthrough to the next arm.
+
+### M15.6 — String interpolation
+
+Parsed. Requires `Show` instances (M14) for embedded expressions. Codegen: desugar
+to `text_concat (show x) ...`.
+
+### M15.7 — GLS compiler parity for M15.1–M15.6
+
+**Deferred past 1.0:** macros/quotation, contract solver tiers, module export
+enforcement, package declarations.
+
+---
+
 ## 1.0
 
 All of the above complete. Acceptance criteria:

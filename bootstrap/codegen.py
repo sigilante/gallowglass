@@ -193,6 +193,8 @@ class Compiler:
         self._class_methods: dict[str, list[str]] = {}
         # Superclass constraints: class_fq → [(superclass_short, type_args)]
         self._class_constraints: dict[str, list] = {}
+        # Default method bodies: class_fq → {method_short → resolved Expr}
+        self._class_defaults: dict[str, dict[str, Any]] = {}
         # Constrained lets: fq → [(class_fq, [method_fq, ...])] per constraint
         self._constrained_lets: dict[str, list] = {}
         # Register builtin constructors from scope resolver.
@@ -529,12 +531,18 @@ class Compiler:
     # -----------------------------------------------------------------------
 
     def _compile_class(self, decl: DeclClass) -> None:
-        """Register typeclass method names and superclass constraints."""
+        """Register typeclass method names, superclass constraints, and default bodies."""
         fq_cls = f'{self.module}.{decl.name}'
         methods = [m.name for m in decl.members if isinstance(m, ClassMember)]
         self._class_methods[fq_cls] = methods
         if decl.constraints:
             self._class_constraints[fq_cls] = decl.constraints
+        defaults = {}
+        for m in decl.members:
+            if isinstance(m, ClassMember) and m.default is not None:
+                defaults[m.name] = m.default
+        if defaults:
+            self._class_defaults[fq_cls] = defaults
 
     def _expand_superclass_constraints(self, constraints: list) -> list:
         """Expand constraints to include superclass methods (flat expansion).
@@ -592,18 +600,41 @@ class Compiler:
         methods = self._class_methods.get(class_fq, [])
         compiled_methods: dict[str, Any] = {}
 
+        # Pass 1: compile explicitly provided instance methods.
         for member in decl.members:
             if not isinstance(member, InstanceMember):
                 continue
             env = Env(globals=self.env.globals, arity=0)
-            # Instance methods may reference earlier lets (e.g., recursive via
-            # the module-level self-ref mechanism is not needed here; the body
-            # is a standalone expression).
             val = self._compile_expr(member.body, env, name_hint=member.name)
             method_fq = f'{self.module}.inst_{decl.class_name}_{type_key}_{member.name}'
             self.compiled[method_fq] = val
             self.env.globals[method_fq] = val
             compiled_methods[member.name] = val
+
+        # Pass 2: fill in missing methods from class defaults.
+        # Default bodies may reference other methods of the same class
+        # (e.g., neq defaults to `not (eq ...)`), so they are compiled in an
+        # environment where already-provided instance methods are in globals
+        # under their class method FQ names.
+        defaults = self._class_defaults.get(class_fq, {})
+        for method_name in methods:
+            if method_name in compiled_methods:
+                continue
+            if method_name not in defaults:
+                continue
+            # Bind provided instance methods as globals under their class-local
+            # FQ names so the default body can reference sibling methods.
+            default_env = Env(globals=dict(self.env.globals), arity=0)
+            class_module = class_fq.rsplit('.', 1)[0]
+            for provided_name, provided_val in compiled_methods.items():
+                method_global_fq = f'{class_module}.{provided_name}'
+                default_env.globals[method_global_fq] = provided_val
+            val = self._compile_expr(defaults[method_name], default_env,
+                                      name_hint=method_name)
+            method_fq = f'{self.module}.inst_{decl.class_name}_{type_key}_{method_name}'
+            self.compiled[method_fq] = val
+            self.env.globals[method_fq] = val
+            compiled_methods[method_name] = val
 
         # For single-method classes: the dict IS the one method.
         # For multi-method classes: each method has its own named law; the
