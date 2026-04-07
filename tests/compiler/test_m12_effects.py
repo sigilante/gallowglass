@@ -339,6 +339,29 @@ class TestM12SelfhostRegression(unittest.TestCase):
             fq = f'Compiler.{name}'
             self.assertIn(fq, self.bc, f'{fq} not found in compiled output')
 
+    def test_use_functions_present(self):
+        """DeclUse-related functions are in compiled output."""
+        for name in ['kw_use', 'decl_is_use', 'parse_use_decl', 'parse_use_names']:
+            fq = f'Compiler.{name}'
+            self.assertIn(fq, self.bc, f'{fq} not found in compiled output')
+
+    def test_kw_use(self):
+        expected = nn('use')
+        result = ev(self.bc['Compiler.kw_use'])
+        self.assertEqual(result, expected)
+
+    def test_decl_is_use_true(self):
+        """decl_is_use returns 1 for a DUse value."""
+        # DUse tag = 6 (7th constructor)
+        d = A(A(6, nn('Core.Nat')), mk_nil())
+        result = ev(self.bc['Compiler.decl_is_use'], d)
+        self.assertEqual(result, 1)
+
+    def test_decl_is_use_false_for_dlet(self):
+        d = mk_dlet(nn('foo'), 0)
+        result = ev(self.bc['Compiler.decl_is_use'], d)
+        self.assertEqual(result, 0)
+
 
 if __name__ == '__main__':
     unittest.main()

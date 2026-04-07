@@ -485,6 +485,7 @@ type Token =
   | TkHandle
   | TkPure
   | TkRun
+  | TkUse
 
 -- AST types (parser output)
 -- Note: constructors are limited to arity ≤ 2 (bootstrap codegen restriction).
@@ -514,6 +515,7 @@ type Decl =
   | DClass Nat (List Nat)
   | DInst Nat (Pair Nat (List (Pair Nat Expr)))
   | DEff Nat (List Nat)
+  | DUse Nat (List Nat)
 
 type ConDef =
   | MkConDef Nat Nat
@@ -645,6 +647,7 @@ let kw_eff          : Nat = 0x666665           -- "eff"
 let kw_handle       : Nat = 0x656c646e6168     -- "handle"
 let kw_pure         : Nat = 0x65727570         -- "pure"
 let kw_run          : Nat = 0x6e7572           -- "run"
+let kw_use          : Nat = 0x657375           -- "use"
 
 -- =====================================================================
 -- Section 12: LexPos Helpers
@@ -839,7 +842,11 @@ let lex_classify_ident : Nat → Nat → Token
                                                                                                             match (nat_eq ident_nat kw_pure) {
                                                                                                               | 0 →
                                                                                                                   match (nat_eq ident_nat kw_run) {
-                                                                                                                    | 0 → TkIdent ident_nat
+                                                                                                                    | 0 →
+                                                                                                                        match (nat_eq ident_nat kw_use) {
+                                                                                                                          | 0 → TkIdent ident_nat
+                                                                                                                          | k → TkUse
+                                                                                                                        }
                                                                                                                     | k → TkRun
                                                                                                                   }
                                                                                                               | k → TkPure
@@ -1684,7 +1691,11 @@ let is_arity_stop : Nat → Nat
                                           match (nat_eq t TkEff) {
                                             | 0 →
                                                 match (nat_eq t TkClass) {
-                                                  | 0 → nat_eq t TkInstance
+                                                  | 0 →
+                                                      match (nat_eq t TkInstance) {
+                                                        | 0 → nat_eq t TkUse
+                                                        | k → 1
+                                                      }
                                                   | k → 1
                                                 }
                                             | k → 1
@@ -2064,6 +2075,58 @@ let parse_handle_expr : List Token → Pair Expr (List Token)
             }
       }
 
+-- parse_use_names: parse { name1, name2, ... } after use Module
+let parse_use_names : List Token → Pair (List Nat) (List Token)
+  = λ toks →
+      match (tok_is toks TkRBrace) {
+        | 0 →
+            match (tok_eat_ident toks) {
+              | MkPair 0 _ → MkPair Nil (tok_tail toks)
+              | MkPair name rest →
+                  -- skip comma if present
+                  let rest2 = match (tok_is rest TkComma) {
+                                | 0 → rest
+                                | k → tok_tail rest
+                              } in
+                  match (parse_use_names rest2) {
+                    | MkPair names rest3 →
+                        MkPair (Cons name names) rest3
+                  }
+            }
+        | k → MkPair Nil (tok_tail toks)
+      }
+
+-- parse_use_decl: parse use declaration after 'use' keyword
+-- use Mod.Path
+-- use Mod.Path { name1, name2 }
+-- use Mod.Path unqualified { name1, name2 }
+-- Returns DUse with module path nat and imported names (Nil = import all qualified)
+let parse_use_decl : List Token → Pair Decl (List Token)
+  = λ toks →
+      match (parse_qual_name toks) {
+        | MkPair mod_name rest →
+            match (tok_is rest TkLBrace) {
+              | 0 →
+                  -- Check for 'unqualified' keyword followed by {
+                  match (tok_peek rest) {
+                    | TkIdent _ →
+                        -- skip 'unqualified' ident, then parse names
+                        match (tok_is (tok_tail rest) TkLBrace) {
+                          | 0 → MkPair (DUse mod_name Nil) rest
+                          | k →
+                              match (parse_use_names (tok_tail (tok_tail rest))) {
+                                | MkPair names rest2 → MkPair (DUse mod_name names) rest2
+                              }
+                        }
+                    | _ → MkPair (DUse mod_name Nil) rest
+                  }
+              | k →
+                  match (parse_use_names (tok_tail rest)) {
+                    | MkPair names rest2 → MkPair (DUse mod_name names) rest2
+                  }
+            }
+      }
+
 -- parse_decl: parse one top-level declaration
 -- Uses tok_is chain (1 named nat arm each) — avoids multi-nullary-arm pred_env bug.
 let parse_decl : List Token → Pair Decl (List Token)
@@ -2079,7 +2142,11 @@ let parse_decl : List Token → Pair Decl (List Token)
                               match (tok_is toks TkInstance) {
                                 | 0 →
                                     match (tok_is toks TkEff) {
-                                      | 0 → MkPair (DLet 0 (EVar 0)) (tok_tail toks)
+                                      | 0 →
+                                          match (tok_is toks TkUse) {
+                                            | 0 → MkPair (DLet 0 (EVar 0)) (tok_tail toks)
+                                            | k → parse_use_decl (tok_tail toks)
+                                          }
                                       | k → parse_eff_decl (tok_tail toks)
                                     }
                                 | k → parse_inst_decl (tok_tail toks)
@@ -2474,7 +2541,7 @@ let arm_get_con_body : MatchArm → Expr
 -- Layer 3c: Decl single-arm helpers
 -- -------------------------------------------------------------------
 
--- Predicates use exhaustive 5-arm matches to avoid the wildcard-arm-drop
+-- Predicates use exhaustive 7-arm matches to avoid the wildcard-arm-drop
 -- bootstrap bug (| Con _ _ → 1 | _ → 0 matches all constructors as Con).
 let decl_is_let : Decl → Nat
   = λ d → match d {
@@ -2484,6 +2551,7 @@ let decl_is_let : Decl → Nat
       | DClass _ _ → 0
       | DInst _ _  → 0
       | DEff _ _   → 0
+      | DUse _ _   → 0
     }
 
 let decl_is_type : Decl → Nat
@@ -2494,6 +2562,7 @@ let decl_is_type : Decl → Nat
       | DClass _ _ → 0
       | DInst _ _  → 0
       | DEff _ _   → 0
+      | DUse _ _   → 0
     }
 
 let decl_is_ext : Decl → Nat
@@ -2504,6 +2573,7 @@ let decl_is_ext : Decl → Nat
       | DClass _ _ → 0
       | DInst _ _  → 0
       | DEff _ _   → 0
+      | DUse _ _   → 0
     }
 
 let decl_get_let_name : Decl → Nat
@@ -2532,6 +2602,7 @@ let decl_is_class : Decl → Nat
       | DClass _ _ → 1
       | DInst _ _  → 0
       | DEff _ _   → 0
+      | DUse _ _   → 0
     }
 
 let decl_is_inst : Decl → Nat
@@ -2542,6 +2613,7 @@ let decl_is_inst : Decl → Nat
       | DClass _ _ → 0
       | DInst _ _  → 1
       | DEff _ _   → 0
+      | DUse _ _   → 0
     }
 
 let decl_is_eff : Decl → Nat
@@ -2552,6 +2624,18 @@ let decl_is_eff : Decl → Nat
       | DClass _ _ → 0
       | DInst _ _  → 0
       | DEff _ _   → 1
+      | DUse _ _   → 0
+    }
+
+let decl_is_use : Decl → Nat
+  = λ d → match d {
+      | DLet _ _   → 0
+      | DType _ _  → 0
+      | DExt _ _   → 0
+      | DClass _ _ → 0
+      | DInst _ _  → 0
+      | DEff _ _   → 0
+      | DUse _ _   → 1
     }
 
 let decl_get_eff_name : Decl → Nat
@@ -4705,6 +4789,7 @@ let sr_collect_globals
                          | DEff eff_name ops →
                              let eff_fq = name_concat_dot mod_name eff_name in
                              sr_collect_eff_op_names ops eff_fq mod_name acc
+                         | DUse _ _ → acc
                        } in
             sr_collect_globals rest mod_name acc2
       }
@@ -4981,6 +5066,7 @@ let sr_resolve_decls
                                            (sr_resolve_inst_members members gtab))
                                  }
                              | DEff _ _ → decl
+                             | DUse _ _ → decl
                            } in
             Cons new_decl (sr_resolve_decls rest gtab)
       }
