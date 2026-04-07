@@ -174,17 +174,37 @@ class TestCPSConstants(unittest.TestCase):
         """cps_id_law is in compiled output."""
         self.assertIn('Compiler.cps_id_law', self.bc)
 
+    def test_cps_id_open_present(self):
+        """cps_id_open (M13.3 open-continuation identity) is in compiled output."""
+        self.assertIn('Compiler.cps_id_open', self.bc)
+
     def test_cps_null_dispatch_present(self):
         self.assertIn('Compiler.cps_null_dispatch', self.bc)
 
     def test_cps_compose_present(self):
         self.assertIn('Compiler.cps_compose', self.bc)
 
+    def test_cps_compose_open_present(self):
+        """cps_compose_open (M13.3) is in compiled output."""
+        self.assertIn('Compiler.cps_compose_open', self.bc)
+
+    def test_cps_forward_k_present(self):
+        """cps_forward_k (M13.3) is in compiled output."""
+        self.assertIn('Compiler.cps_forward_k', self.bc)
+
     def test_cps_pure_law_present(self):
         self.assertIn('Compiler.cps_pure_law', self.bc)
 
     def test_cps_run_law_present(self):
         self.assertIn('Compiler.cps_run_law', self.bc)
+
+    def test_virtual_resume_idx_present(self):
+        """virtual_resume_idx constant is in compiled output."""
+        self.assertIn('Compiler.virtual_resume_idx', self.bc)
+
+    def test_subst_virtual_resume_present(self):
+        """subst_virtual_resume helper is in compiled output."""
+        self.assertIn('Compiler.subst_virtual_resume', self.bc)
 
 
 # ---------------------------------------------------------------------------
@@ -325,8 +345,10 @@ class TestM12SelfhostRegression(unittest.TestCase):
 
     def test_effect_functions_present(self):
         """Key effect functions are in the compiled output."""
-        for name in ['cps_id_law', 'cps_null_dispatch', 'cps_compose',
+        for name in ['cps_id_law', 'cps_id_open', 'cps_null_dispatch',
+                      'cps_compose', 'cps_compose_open', 'cps_forward_k',
                       'cps_pure_law', 'cps_run_law',
+                      'virtual_resume_idx', 'subst_virtual_resume',
                       'cg_compile_handle', 'cg_compile_do',
                       'cg_compile_dispatch_fn', 'cg_compile_return_fn',
                       'cg_build_handle_dispatch', 'cg_apply_range',

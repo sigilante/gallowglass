@@ -63,11 +63,11 @@ def eval_val(src: str, name: str, module: str = 'Test'):
 
 # CPS effect handler helpers
 _NULL_DISPATCH = L(3, encode_name('_null_dispatch'), P(N(0)))
-_ID_LAW = L(1, 0, N(1))
+_ID_OPEN = L(2, 0, N(2))
 
 def run_cps(val):
-    """Run a CPS computation value by applying null_dispatch and identity k."""
-    return evaluate(A(A(val, _NULL_DISPATCH), _ID_LAW))
+    """Run a CPS computation value by applying null_dispatch and id_open."""
+    return evaluate(A(A(val, _NULL_DISPATCH), _ID_OPEN))
 
 def eval_handler(src: str, name: str, module: str = 'Test'):
     """Compile a handler expression and run its CPS value to get a raw result."""

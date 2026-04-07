@@ -1,6 +1,6 @@
 # Test Strategy
 
-**Last updated:** 2026-04-07 — Layer 3 evaluation tests added (911 tests: 890 pass, 101 skip)
+**Last updated:** 2026-04-07 — M13.4 GLS compiler parity (1008 tests: 907 pass, 101 skip)
 
 This document describes the test architecture, what each layer verifies,
 and the known gap between what is tested and what is not.
@@ -188,7 +188,7 @@ tests/
     test_driver.py             ← M8.7 driver; 3 active + 3 skipped
     test_selfhost.py           ← M8.8 self-hosting; 17 active + 5 planvm-gated
     test_m11.py                ← M11.5 GLS DeclClass/DeclInst (20 tests)
-    test_m12_effects.py        ← M12.2/M12.4 GLS effects + DeclUse (25 tests)
+    test_m12_effects.py        ← M12.2/M12.4/M13.4 GLS effects + DeclUse + open-CPS (30 tests)
   demos/
     __init__.py
     test_calculator.py         ← Calculator demo: compile + arithmetic eval (9 tests)

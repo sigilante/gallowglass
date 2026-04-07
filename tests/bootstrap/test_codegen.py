@@ -51,11 +51,12 @@ def eval_val(src: str, name: str, module: str = 'Test'):
 
 # CPS effect handler helpers
 _NULL_DISPATCH = L(3, encode_name('_null_dispatch'), P(N(0)))
-_ID_LAW = L(1, 0, N(1))
+# Open-continuation protocol: root k_open is 2-arg (dispatch, value) → value.
+_ID_OPEN = L(2, 0, N(2))
 
 def run_cps(val):
-    """Run a CPS computation value by applying null_dispatch and identity k."""
-    return evaluate(A(A(val, _NULL_DISPATCH), _ID_LAW))
+    """Run a CPS computation value by applying null_dispatch and id_open."""
+    return evaluate(A(A(val, _NULL_DISPATCH), _ID_OPEN))
 
 def eval_handler(src: str, name: str, module: str = 'Test'):
     """Compile a handler expression and run its CPS value to get a raw result."""
@@ -1262,3 +1263,124 @@ let rb = handle (store 5) {
     rb = run_cps(compiled['Test.rb'])
     assert ra == 99, f"expected 99, got {ra}"
     assert rb == 77, f"expected 77, got {rb}"
+
+
+# ---------------------------------------------------------------------------
+# M13.3: Shallow handlers (once)
+# ---------------------------------------------------------------------------
+
+def test_once_handler_k_unused():
+    """Shallow handler (once) that does NOT call k — primary generator pattern."""
+    src = '''
+eff Yield {
+  yield_val : Nat → ()
+}
+
+let result = handle (yield_val 42) {
+  | return _ → 0
+  | once yield_val vv kk → vv
+}
+'''
+    result = eval_handler(src, 'result')
+    assert result == 42, f"expected 42, got {result}"
+
+
+def test_once_handler_k_called():
+    """Shallow handler (once): k resumes WITHOUT the handler installed.
+
+    Inner handler is shallow (once). The second yield escapes to the outer
+    handler which resumes with 0. If the inner were deep, the second yield
+    would be caught by the inner handler and resumed with 99.
+    """
+    src = '''
+eff Yield {
+  yield_val : Nat → Nat
+}
+
+let comp = xx ← yield_val 10 in yield_val xx
+
+let inner = handle comp {
+  | return rr → rr
+  | once yield_val vv kk → kk 99
+}
+
+let result = handle inner {
+  | return rr → rr
+  | yield_val vv kk → kk 0
+}
+'''
+    result = eval_handler(src, 'result')
+    # Inner (once) handles first yield → resume with 99.
+    # Second yield escapes inner (shallow) → caught by outer → resume with 0.
+    assert result == 0, f"expected 0 (escaped to outer handler), got {result}"
+
+
+def test_deep_handler_k_called_twice():
+    """Deep handler: both yields are handled (contrast with once test above)."""
+    src = '''
+eff Yield {
+  yield_val : Nat → Nat
+}
+
+let comp = xx ← yield_val 10 in yield_val xx
+
+let result = handle comp {
+  | return rr → rr
+  | yield_val vv kk → kk 99
+}
+'''
+    result = eval_handler(src, 'result')
+    # Deep: both yields caught, each resumed with 99.
+    assert result == 99, f"expected 99, got {result}"
+
+
+def test_once_mixed_deep_and_shallow():
+    """Two ops in one effect: one deep, one shallow."""
+    src = '''
+eff Mix {
+  deep_op : () → Nat
+  once_op : () → Nat
+}
+
+let comp = xx ← deep_op () in once_op ()
+
+let result = handle comp {
+  | return rr → rr
+  | deep_op _ kk → kk 5
+  | once once_op _ kk → kk 7
+}
+'''
+    result = eval_handler(src, 'result')
+    # deep_op handled normally → resume with 5, then once_op fires.
+    # once_op is shallow → resume with 7, handler discharged.
+    # Second once_op not present so just returns 7.
+    assert result == 7, f"expected 7, got {result}"
+
+
+def test_once_nested_handler_forwarding():
+    """Shallow handler with nested handler: forwarding preserves inner handler."""
+    src = '''
+eff Inner {
+  inner_op : () → Nat
+}
+
+eff Outer {
+  outer_op : () → Nat
+}
+
+let comp = xx ← outer_op () in inner_op ()
+
+let inner_handled = handle comp {
+  | return rr → rr
+  | inner_op _ kk → kk 10
+}
+
+let result = handle inner_handled {
+  | return rr → rr
+  | once outer_op _ kk → kk 5
+}
+'''
+    result = eval_handler(src, 'result')
+    # outer_op forwarded from inner handler to outer handler (once).
+    # Resumed with 5. Then inner_op fires, handled by inner handler → 10.
+    assert result == 10, f"expected 10, got {result}"

@@ -261,6 +261,147 @@ typeclass instances (deferred above). The `mod` declaration syntax from
 
 ---
 
+## M13 — Effects & typeclasses (compiler maturity)
+
+Goal: bring the typeclass and effect system to the level needed for a real
+prelude — default methods, polymorphic instances, shallow handlers.
+
+### ✅ M13.1 — Default methods
+
+`_compile_class` stores `ClassMember.default` exprs in `_class_defaults`.
+`_compile_inst` pass 2: for methods in the class not provided by the instance,
+compiles the default body in an env where already-provided instance methods are
+in globals so sibling references resolve. Override takes precedence.
+3 new tests in `tests/bootstrap/test_typeclasses.py`. 893 tests passing.
+
+### ✅ M13.2 — Polymorphic instances (`Eq a => Eq (List a)`)
+
+`ConInfo.type_name` maps constructors to parent types. `_typearg_key` handles
+`TyApp` (outer constructor only). `_infer_type_key` extended with constructor
+application and nullary constructor detection for call-site instance resolution.
+`_compile_inst` refactored: constraint dict params, sibling binding, self-ref for
+unconstrained only. Constrained instances registered in `_constrained_lets`.
+4 tests. 897 passing.
+
+### ✅ M13.3 — Shallow handlers (`once`)
+
+Open-continuation CPS protocol: continuations are 2-arg `(dispatch, value)` instead
+of 1-arg `(value)`. The dispatch function applies either `dispatch_current` (deep)
+or `dispatch_parent` (shallow/once) to the open continuation. `_FORWARD_K` helper
+preserves nested handler layers during forwarding. Virtual resume index +
+substitution avoids de Bruijn scope issues. 5 tests (generator pattern, k-called
+shallow, deep contrast, mixed arms, nested forwarding). 902 passing.
+
+### M13.4 — GLS compiler parity for M13.1–M13.3 ✅
+
+Self-hosting compiler updated to open-continuation CPS protocol matching bootstrap.
+
+**Changes to `Compiler.gls`:**
+- Added `cps_id_open` (L(2,0,N(2))), `cps_compose_open`, `cps_forward_k` constants
+- Updated `cps_pure_law` to `k_open(dispatch, value)` protocol
+- Updated `cps_run_law` to use `cps_id_open` instead of `cps_id_law`
+- `cg_compile_dispatch_fn`: builds `dispatch_fn_base` (self-ref + captures),
+  `dispatch_current`, `resume_expr = k_open(dispatch_current)`. Forward body uses
+  `_FORWARD_K` to wrap k_open and preserve nested handler layers.
+- `cg_build_handle_dispatch`: virtual resume index substitution via
+  `subst_virtual_resume` — arm bodies compile with sentinel index 9999999, then
+  substitute with actual resume expression (all deep for now).
+- `cg_compile_handle`: uses `cps_compose_open` instead of `cps_compose`.
+- `cg_compile_do`: inner continuation params reordered to `[caps, k_open_outer,
+  dispatch, x]` — partial application `(caps, k_open_outer)` gives 2-arg open
+  continuation. Outer body passes `inner_cont_open` directly (not applied with
+  dispatch).
+- Moved `cg_apply_range` before dispatch codegen (forward-reference fix).
+- 5 new GLS compiler tests (CPS constant presence, virtual resume, selfhost regression).
+
+**Deferred:** Default method storage/fallback in GLS `cg_compile_inst_members`
+requires DClass AST change + parser update. Tracked for future work. Shallow
+handler (`once`) support in GLS requires AST extension for arm once-flag.
+
+**Deferred past 1.0:** multi-param typeclasses, functional dependencies, deriving,
+typeclass laws verification, effect polymorphism in constraints.
+
+---
+
+## M14 — Core Prelude
+
+Goal: complete the core library to the level where real programs can be written.
+
+### M14.1 — Complete existing classes
+
+`Ord`: add `compare`, `gt`, `gte`, `min`, `max` (needs M13.1 default methods for
+the ones derivable from `lt`). `Eq`: add `neq` default. Move `div_nat`/`mod_nat`
+from Text to Nat where they belong.
+
+### M14.2 — Missing core types
+
+`Result a b` (`Ok a | Err b`). `Pair a b` with `fst`, `snd`.
+
+### M14.3 — Collection instances
+
+`Show Option`, `Show List`, `Eq Option`, `Eq List`, `Eq Result`. Needs M13.2
+polymorphic instances.
+
+### M14.4 — Missing combinators
+
+`fix` as a standalone combinator, `fst`, `snd`, pipe `|>`, function composition `·`.
+
+### M14.5 — `Debug` class
+
+Spec mandates Show/Debug distinction. Minimal implementation: same output as Show
+initially but distinct class identity and instances.
+
+### M14.6 — Cross-module prelude refactor
+
+Prelude modules use `use` imports (M12) instead of inlining dependencies. Proper
+dependency chain: Combinators → Nat → Bool → Option → List → Text.
+
+**Deferred past 1.0:** `Serialize`, `Functor`/`Monad`/`Applicative` (higher-kinded),
+`Int`/`Rational`/`Fixed`, `Bytes`, IO/State/Exn effect modules, `Core.Inspect`,
+`Core.Abort`.
+
+---
+
+## M15 — Full surface syntax
+
+Goal: close the gap between the restricted dialect and `spec/06-surface-syntax.md`.
+The parser already handles most forms; codegen rejects them.
+
+### M15.1 — Record types, construction, update, patterns
+
+`DeclRecord`, `ExprRecord`, `ExprRecordUpdate`, `PatRecord` — all parsed, none
+compiled. Encoding: record = ADT with one constructor and named fields.
+
+### M15.2 — Type aliases
+
+`DeclTypeAlias` parsed. Codegen: expand at scope resolution time.
+
+### M15.3 — List/Cons patterns
+
+`PatList` and `PatCons` parsed. Codegen: desugar to nested `Cons`/`Nil` constructor
+patterns.
+
+### M15.4 — Or patterns
+
+`PatOr` parsed. Codegen: duplicate the arm body for each alternative.
+
+### M15.5 — Guards in match arms
+
+Guards parsed and extracted. Codegen: compile guard as if-then-else wrapping the
+arm body, with fallthrough to the next arm.
+
+### M15.6 — String interpolation
+
+Parsed. Requires `Show` instances (M14) for embedded expressions. Codegen: desugar
+to `text_concat (show x) ...`.
+
+### M15.7 — GLS compiler parity for M15.1–M15.6
+
+**Deferred past 1.0:** macros/quotation, contract solver tiers, module export
+enforcement, package declarations.
+
+---
+
 ## 1.0
 
 All of the above complete. Acceptance criteria:
