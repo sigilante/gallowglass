@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
-**Last updated:** 2026-04-05
-**Current status:** Alpha — M8 complete (Path B). M9.1–9.4 complete. M10.1–10.7 complete. M11.1–11.5 complete. M12 + M12.1 complete. 854 tests passing.
+**Last updated:** 2026-04-06
+**Current status:** Alpha — M8 complete (Path B). M9.1–9.4 complete. M10.1–10.7 complete. M11.1–11.5 complete. M12 + M12.1 complete. M12.2 (GLS DEff/EHandle/EDo), M12.3 (superclass constraints), M12.4 (GLS DeclUse), M12.5 (Data.Csv E2E) complete. 890 tests passing.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -119,7 +119,6 @@ preserved (667 tests passing). ✅
 
 **Remaining M10 scope:**
 - Full surface syntax integration with effect annotations in the prelude
-- GLS compiler: `DEff`/`EHandle`/`EDo` support (deferred to post-M10)
 - Runtime: no change — continuations are ordinary PLAN values
 
 **Unblocked by M10:** `IO`, `Exn`, `State`, `Generator` effects. The CSV and
@@ -183,7 +182,6 @@ predicates (wildcard-arm-drop bug: now use exhaustive 5-arm matches). 20 new tes
 
 **Remaining M11 scope:**
 - Advanced type inference for dict insertion (non-Nat types, polymorphic call sites)
-- Superclass constraints (one constraint implies another)
 
 **Unblocked by M11:** `Show`, `Eq`, `Ord`, `Add`, `Serialize` instances. The
 standard prelude becomes expressible without explicit dictionary passing.
@@ -222,10 +220,39 @@ unknown module error, single-module smoke test.
 - `Core.Bool`: now `use Core.Nat { Eq }` instead of re-declaring `Eq` locally.
 - **5 new tests** in `tests/bootstrap/test_modules.py`. 739 tests passing.
 
+**M12.2 — GLS compiler DEff/EHandle/EDo support:** ✅
+Added `TkEff`/`TkHandle`/`TkPure`/`TkRun` tokens, `EHandle`/`EDo`/`DEff` AST constructors,
+keyword nats (`kw_eff`, `kw_handle`, `kw_pure`, `kw_run`), lexer keyword chain extensions,
+parser (`parse_eff_decl`, `parse_handle_expr`, do-bind detection), scope resolver
+(`sr_collect_eff_op_names`, `sr_rewrite_handle_arms`), CPS constants (`cps_id_law`,
+`cps_null_dispatch`, `cps_compose`, `cps_pure_law`, `cps_run_law`), full CPS effect handler
+codegen (`cg_compile_handle`, `cg_compile_do`, `cg_compile_dispatch_fn`, `cg_compile_return_fn`,
+`cg_build_handle_dispatch`, `cg_register_eff_ops`, `cg_register_effs`). All `decl_is_*`
+predicates updated to 6-arm exhaustive matches. ~720 lines added to `Compiler.gls`.
+25 new tests in `tests/compiler/test_m12_effects.py`.
+
+**M12.3 — Superclass constraint flat expansion:** ✅
+When a function is constrained by a class with superclass constraints (e.g., `Eq a => Ord a`),
+the compiler recursively expands to include superclass method params before the class's own
+method params — at both declaration sites and call sites. Added `_class_constraints`,
+`_expand_superclass_constraints`, `_expand_one_constraint` to `bootstrap/codegen.py`.
+Tests: `test_superclass_flat_expansion`, `test_superclass_multi_level` in `test_coverage_gaps.py`.
+
+**M12.4 — GLS compiler DeclUse support:** ✅
+Added `TkUse` token, `kw_use` keyword nat, `DUse` AST constructor (7th Decl variant),
+`parse_use_decl`/`parse_use_names` parser, all `decl_is_*` predicates updated to 7-arm
+exhaustive matches. DUse is a pass-through in scope/codegen — cross-module resolution
+handled by external build driver. ~110 lines added to `Compiler.gls`.
+
+**M12.5 — Data.Csv end-to-end integration tests:** ✅
+Minimal Data.Csv-style error handling via effects: `CsvError` type, `Exn` effect with
+`raise` op, handle expressions with return/op arms, do-notation chains, pattern matching
+on error variants. 9 tests in `tests/bootstrap/test_data_csv.py` — validates the full
+effect handler pipeline (type definitions, eff declarations, handle/pure/run, do-bind).
+
 **Deferred:**
 - Package declarations (`package { version, depends }`) — reserved keywords only
 - Explicit `export { ... }` lists — all bindings implicitly exported
-- GLS self-hosting compiler: `DeclUse` support (requires multi-module pipeline in Compiler.gls)
 - Module PinId stability — seed format handles content-addressing implicitly
 
 **Unblocked by M12:** The full Core prelude can be split across files. Cross-module

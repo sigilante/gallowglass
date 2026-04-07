@@ -205,7 +205,7 @@ monolithic file with clearly marked sections.
 
 ## 6. Sub-Milestones
 
-### Status as of 2026-04-03
+### Status as of 2026-04-06
 
 | Milestone | Status | Location in `Compiler.gls` |
 |-----------|--------|---------------------------|
@@ -369,7 +369,8 @@ All constraints from the restricted dialect (`bootstrap/BOOTSTRAP.md §2`) apply
 - No cross-module imports (each file compiled independently)
 - No mutual recursion (each SCC is a single definition)
 - No typeclasses (explicit dictionary passing)
-- No `handle` expressions (effects as external mods only)
+- `handle`/`eff`/`pure`/`run`/`do` expressions supported (M12.2)
+- `use` declarations parsed but treated as no-ops (M12.4)
 - No tuples (encode as unary/binary constructors)
 - Pattern match: Nat literals, wildcard, constructor patterns only
 
@@ -403,4 +404,6 @@ tests/compiler/
   test_emit.py         ← M8.6 emitter tests (38 passed, 1 planvm-gated skip)
   test_driver.py       ← M8.7 driver tests (3 passed, 3 skipped)
   test_selfhost.py     ← M8.8 self-hosting validation (17 passed, 5 planvm-gated: seed loads + Path A)
+  test_m11.py          ← M11.5 typeclass tests (20 passed)
+  test_m12_effects.py  ← M12.2/M12.4 effects + DeclUse tests (25 passed)
 ```

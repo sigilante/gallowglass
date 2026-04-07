@@ -112,7 +112,7 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
 
 ## Current Phase
 
-**Alpha.** All Milestone 8 phases complete. M9.1–9.4, M10.1–10.7, M11.1–11.5, M12, M12.1 complete. Core.Text + Show typeclass added to prelude. Nested effect handler support (CPS forwarding). 854 tests passing.
+**Alpha.** All Milestone 8 phases complete. M9.1–9.4, M10.1–10.7, M11.1–11.5, M12–M12.5 complete. Core.Text + Show typeclass added to prelude. Nested effect handler support (CPS forwarding). GLS compiler has full DEff/EHandle/EDo + DeclUse support. Superclass constraint flat expansion. Data.Csv E2E integration tests. 890 tests passing.
 
 - Phase 0 (spec): complete.
 - Phase 1 (Python bootstrap compiler): complete. Milestones 1–7.5 done. Core prelude: 36 definitions, planvm-valid.
@@ -121,6 +121,12 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
   - M8.8 self-hosting validation: Path B (harness) complete — GLS `emit_program` processes the full Compiler.gls module and produces correct Plan Assembler output. Path A (VM-executed) deferred pending upstream side-effects + virtualization API stabilization (see `IO.md`).
 - M9: fix expressions, tuples, mutual recursion (SCC), type checker SCCs — all complete.
 - M10: CPS effect handlers, pure builtin, do-notation, tag namespacing, integration test battery, GLS EFix — all complete.
+- M11: Typeclasses (DeclClass, DeclInst, constrained lets, dictionary insertion) — all complete.
+- M12: Module system (use imports, build driver, cross-module instances) — all complete.
+- M12.2: GLS compiler DEff/EHandle/EDo support — complete.
+- M12.3: Superclass constraint flat expansion — complete.
+- M12.4: GLS compiler DeclUse support — complete.
+- M12.5: Data.Csv end-to-end integration tests — complete.
 
 The bootstrap compiler compiles the **restricted dialect** of Gallowglass only.
 See `bootstrap/BOOTSTRAP.md` for what the restricted dialect permits.
