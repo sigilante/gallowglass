@@ -402,6 +402,54 @@ enforcement, package declarations.
 
 ---
 
+## M16 — Pin-based module loading
+
+Goal: modules are pins in the persistent DAG, not inlined definitions. Programs
+reference upstream dependencies by BLAKE3 hash; the VM lazily materializes pin
+content on demand. This is the PLAN-native analogue of Nock 12 scry-based
+namespace loading (as used in Hoon's Shrine).
+
+### M16.1 — Pin manifest format
+
+Define the **pin manifest**: a map from fully-qualified name → PinId (BLAKE3-256
+hash). The prelude build produces a manifest alongside its seeds. Format aligns
+with `SPEC.md §8.4` package manifest (`depends { Gallowglass.Core at pin#... }`).
+
+### M16.2 — Compiler pin-reference emission
+
+When the compiler encounters a `use`-imported name whose PinId is known from a
+manifest, emit `P(hash)` instead of inlining the law body. The emitted seed
+contains hash references to upstream pins, not copies of their content.
+
+### M16.3 — Prelude as pinned DAG
+
+Compile the full prelude (`Core.Combinators` through `Core.Result`) and publish
+each definition as an independent pin. Produce a prelude manifest. Verify that
+user programs compiled against the manifest produce valid seeds with pin
+references that the VM resolves correctly.
+
+### M16.4 — Lazy pin resolution in harness
+
+Extend the Python dev harness to support lazy pin lookup: when evaluation forces
+a `P(hash)` whose content is not yet loaded, fetch it from a pin store (local
+directory of seed files). This enables local testing of pin-based seeds without
+requiring the full VM infrastructure.
+
+### M16.5 — CI validation
+
+CI job that compiles a test program against the pinned prelude manifest, emits a
+seed with pin references, loads it in planvm, and verifies correct execution.
+Demonstrates the full lazy-load cycle: compile → emit pin refs → VM fetches pins
+on demand → correct result.
+
+**Why now (pre-1.0):** Without pin-based loading, every seed bundles its entire
+transitive dependency closure. This is acceptable for bootstrap but makes seed
+sizes grow combinatorially as the prelude expands. Pin-based loading is also a
+prerequisite for the package system (`SPEC.md §8.4`) and for any multi-cog
+deployment where cogs share a common prelude in the persistent store.
+
+---
+
 ## 1.0
 
 All of the above complete. Acceptance criteria:
@@ -410,6 +458,7 @@ All of the above complete. Acceptance criteria:
 - Core prelude (`prelude/src/Core/`) fully implemented and split across modules
 - Effect handlers, typeclasses, and mutual recursion all working and self-hosted
 - The `Data.Csv` example from `spec/06-surface-syntax.md §15` compiles and runs
+- Prelude published as pinned DAG; user programs reference pins, not inlined defs (M16)
 - CI passes: Python harness + planvm seed loading + M8.8 Path A equivalent for 1.0 compiler
 
 ---
