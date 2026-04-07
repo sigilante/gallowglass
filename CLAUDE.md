@@ -112,10 +112,10 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
 
 ## Current Phase
 
-**Alpha.** All Milestone 8 phases complete. M9.1–9.4, M10.1–10.7, M11.1–11.5, M12–M12.5 complete. M13.1–M13.4 complete. Core.Text + Show typeclass added to prelude. Open-continuation CPS protocol with shallow handler support. GLS compiler has full DEff/EHandle/EDo + DeclUse support with open-continuation parity. Superclass constraint flat expansion. Data.Csv E2E integration tests. 907 tests passing.
+**Alpha.** All Milestone 8 phases complete. M9–M14 complete. 111 prelude definitions across 8 modules. Eq/Ord/Show/Debug typeclasses with constrained instances. 979 tests passing.
 
 - Phase 0 (spec): complete.
-- Phase 1 (Python bootstrap compiler): complete. Milestones 1–7.5 done. Core prelude: 36 definitions, planvm-valid.
+- Phase 1 (Python bootstrap compiler): complete. Milestones 1–7.5 done. Core prelude: 111 definitions, planvm-valid.
 - Phase 3 (self-hosting compiler, M8): complete through M8.8 Path B.
   - M8.1 utilities, M8.2 lexer, M8.3 parser, M8.4 scope resolver, M8.5 codegen, M8.6 emitter, M8.7 driver: all done.
   - M8.8 self-hosting validation: Path B (harness) complete — GLS `emit_program` processes the full Compiler.gls module and produces correct Plan Assembler output. Path A (VM-executed) deferred pending upstream side-effects + virtualization API stabilization (see `IO.md`).
@@ -131,6 +131,11 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
 - M13.2: Compound type instances, constrained instances — complete.
 - M13.3: Shallow handlers (once) via open-continuation CPS protocol — complete.
 - M13.4: GLS compiler parity for M13.1–M13.3 (open-continuation CPS, forward_k, virtual resume substitution) — complete.
+- M14.1: Complete Eq (neq default) and Ord (gt, gte, min, max defaults), move arithmetic to Core.Nat — complete.
+- M14.2: Pair and Result types — complete.
+- M14.3: Collection instances (Eq + Show for Option, List, Result) — complete.
+- M14.4: pipe and fixpoint combinators — complete.
+- M14.5: Debug class with instances for Nat, Bool, Option, List — complete.
 
 The bootstrap compiler compiles the **restricted dialect** of Gallowglass only.
 See `bootstrap/BOOTSTRAP.md` for what the restricted dialect permits.
@@ -165,7 +170,7 @@ python3 -m pytest tests/            # all tests
 
 ### Test skip categories
 
-907 passing, 101 skipped. The skips are all expected:
+979 passing, 145 skipped. The skips are all expected:
 
 - **planvm-gated (75):** Seed loading and VM execution tests that require the
   `planvm` binary. These run in the `plan-vm` CI job (builds planvm via Nix).
