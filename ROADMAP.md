@@ -372,28 +372,44 @@ The parser already handles most forms; codegen rejects them.
 `DeclRecord`, `ExprRecord`, `ExprRecordUpdate`, `PatRecord` — all parsed, none
 compiled. Encoding: record = ADT with one constructor and named fields.
 
-### M15.2 — Type aliases
+### ✅ M15.2 — Type aliases
 
-`DeclTypeAlias` parsed. Codegen: expand at scope resolution time.
+`DeclTypeAlias` parsed, scope-resolved, type-checked. No codegen needed — types are
+fully erased. Type aliases produce no runtime code by design.
 
-### M15.3 — List/Cons patterns
+### ✅ M15.3 — List/Cons expressions and patterns
 
-`PatList` and `PatCons` parsed. Codegen: desugar to nested `Cons`/`Nil` constructor
-patterns.
+Desugared during scope resolution to constructor forms, then compiled normally:
+- `ExprList [a, b, c]` → `Cons a (Cons b (Cons c Nil))` (nested constructor applications)
+- `PatCons h :: t` → `PatCon("Cons", [h, t])` (single-level constructor pattern)
+- `PatList []` → `PatCon("Nil", [])` (nullary constructor pattern)
 
-### M15.4 — Or patterns
+Multi-element `PatList [a, b]` desugars to nested `PatCon` which requires nested match
+compilation (not yet supported by the bootstrap match codegen). Single-level patterns
+(`[]`, `h :: t`) work now; nested list patterns deferred to nested match compilation.
 
-`PatOr` parsed. Codegen: duplicate the arm body for each alternative.
+7 new tests in `tests/bootstrap/test_programs.py`.
 
-### M15.5 — Guards in match arms
+### ✅ M15.4 — Or patterns
 
-Guards parsed and extracted. Codegen: compile guard as if-then-else wrapping the
-arm body, with fallthrough to the next arm.
+`PatOr` desugared during scope resolution: each alternative in `p1 | p2 → body`
+becomes a separate match arm with the same body. 6 new tests in
+`tests/bootstrap/test_programs.py`.
 
-### M15.6 — String interpolation
+### ✅ M15.5 — Guards in match arms
 
-Parsed. Requires `Show` instances (M14) for embedded expressions. Codegen: desugar
-to `text_concat (show x) ...`.
+Desugared during scope resolution: `| pat if guard → body` becomes
+`| pat → if guard then body else match __scrut { remaining_arms }`. Scrutinee
+bound to a fresh variable to avoid re-evaluation. Guard failure falls through
+to a re-match on remaining arms. 5 new tests in `tests/bootstrap/test_programs.py`.
+
+### ✅ M15.6 — String interpolation
+
+Desugared during parsing: `"hello #{x} world"` becomes
+`text_concat "hello " (text_concat (show x) " world")`. Lexer fixed to produce
+fragment lists for interpolated text; parser sub-parses interpolation expressions
+and builds the `text_concat`/`show` chain. Requires `Show` and `text_concat` in
+scope at the use site. 3 new tests in `tests/bootstrap/test_programs.py`.
 
 ### M15.7 — GLS compiler parity for M15.1–M15.6
 

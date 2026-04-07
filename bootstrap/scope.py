@@ -672,15 +672,31 @@ class Resolver:
             return ExprLet(expr.pattern, type_ann, rhs, body, expr.loc)
 
         if isinstance(expr, ExprMatch):
+            # Flatten or-patterns: PatOr([p1, p2], ...) with body b
+            # becomes two arms: (p1, guard, b), (p2, guard, b)
+            expanded_arms = []
+            for (pat, guard, body) in expr.arms:
+                if isinstance(pat, PatOr):
+                    for sub_pat in pat.pats:
+                        expanded_arms.append((sub_pat, guard, body))
+                else:
+                    expanded_arms.append((pat, guard, body))
+
+            has_guards = any(g is not None for _, g, _ in expanded_arms)
+            if has_guards:
+                # Desugar guards: wrap scrutinee in a let and transform each
+                # guarded arm | pat if guard → body into
+                # | pat → if guard then body else match __scrut { remaining }
+                return self._desugar_guarded_match(expr.scrutinee, expanded_arms, expr.loc)
+
             scrutinee = self._resolve_expr(expr.scrutinee)
             arms = []
-            for (pat, guard, body) in expr.arms:
+            for (pat, guard, body) in expanded_arms:
                 self._push_frame()
                 resolved_pat = self._resolve_pat(pat)
-                guard_r = self._resolve_expr(guard) if guard else None
                 body_r = self._resolve_expr(body)
                 self._pop_frame()
-                arms.append((resolved_pat, guard_r, body_r))
+                arms.append((resolved_pat, None, body_r))
             return ExprMatch(scrutinee, arms, expr.loc)
 
         if isinstance(expr, ExprHandle):
@@ -699,7 +715,13 @@ class Resolver:
             return ExprTuple([self._resolve_expr(e) for e in expr.elems], expr.loc)
 
         if isinstance(expr, ExprList):
-            return ExprList([self._resolve_expr(e) for e in expr.elems], expr.loc)
+            # Desugar [a, b, c] → Cons a (Cons b (Cons c Nil))
+            result: Any = ExprVar(QualName(['Nil'], expr.loc), expr.loc)
+            for elem in reversed(expr.elems):
+                result = ExprApp(
+                    ExprApp(ExprVar(QualName(['Cons'], expr.loc), expr.loc), elem, expr.loc),
+                    result, expr.loc)
+            return self._resolve_expr(result)
 
         if isinstance(expr, ExprPin):
             rhs = self._resolve_expr(expr.rhs)
@@ -781,6 +803,43 @@ class Resolver:
             return HandlerOp(arm.once, fq_op_name, arm.arg_pats, arm.resume, body, arm.loc)
         return arm
 
+    def _desugar_guarded_match(self, scrutinee_expr, arms, loc):
+        """Desugar a match with guards into nested if-else + re-match.
+
+        Each guarded arm `| pat if guard → body` becomes
+        `| pat → if guard then body else match __scrut { remaining_arms }`.
+
+        The scrutinee is bound to a fresh variable to avoid re-evaluation.
+        """
+        scrut_name = '__guard_scrut'
+        scrut_pat = PatVar(scrut_name, loc)
+        scrut_var = ExprVar(QualName([scrut_name], loc), loc)
+
+        def build_match_from(arm_index):
+            """Build a match expression from arm_index onward."""
+            remaining = arms[arm_index:]
+            if not remaining:
+                # No remaining arms — this shouldn't happen with well-formed
+                # exhaustive matches, but emit a 0 (abort-like) as fallback
+                return ExprNat(0, loc)
+
+            new_arms = []
+            for i, (pat, guard, body) in enumerate(remaining):
+                if guard is not None:
+                    # Guard present: body becomes if guard then body else <fallback>
+                    fallback = build_match_from(arm_index + i + 1)
+                    guarded_body = ExprIf(guard, body, fallback, loc)
+                    new_arms.append((pat, None, guarded_body))
+                else:
+                    new_arms.append((pat, None, body))
+            return ExprMatch(scrut_var, new_arms, loc)
+
+        inner_match = build_match_from(0)
+
+        # Wrap in let __guard_scrut = scrutinee in <inner_match>
+        let_expr = ExprLet(scrut_pat, None, scrutinee_expr, inner_match, loc)
+        return self._resolve_expr(let_expr)
+
     # ------------------------------------------------------------------
     # Pattern resolution
     # ------------------------------------------------------------------
@@ -822,13 +881,16 @@ class Resolver:
             return PatTuple([self._resolve_pat(p) for p in pat.pats], pat.loc)
 
         if isinstance(pat, PatList):
-            return PatList([self._resolve_pat(p) for p in pat.pats], pat.loc)
+            # Desugar [a, b, c] → Cons a (Cons b (Cons c Nil))
+            result: Any = PatCon(QualName(['Nil'], pat.loc), [], pat.loc)
+            for p in reversed(pat.pats):
+                result = PatCon(QualName(['Cons'], pat.loc), [p, result], pat.loc)
+            return self._resolve_pat(result)
 
         if isinstance(pat, PatCons):
-            return PatCons(
-                self._resolve_pat(pat.head),
-                self._resolve_pat(pat.tail),
-                pat.loc)
+            # Desugar h :: t → Cons h t
+            result = PatCon(QualName(['Cons'], pat.loc), [pat.head, pat.tail], pat.loc)
+            return self._resolve_pat(result)
 
         # PatWild, PatNat, PatText: no names
         return pat

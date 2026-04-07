@@ -1132,6 +1132,9 @@ class Parser:
         # Text literals
         if t.kind == KIND_TEXT:
             self._advance()
+            if isinstance(t.value, list):
+                # Interpolated text: desugar to text_concat chain
+                return self._desugar_interpolation(t.value, loc)
             return ExprText(t.value, loc)
         if t.kind == KIND_RAWTEXT:
             self._advance()
@@ -1154,6 +1157,39 @@ class Parser:
             return ExprVar(name, loc)
 
         raise self._error(f"unexpected token {t.kind!r} {t.value!r} in expression")
+
+    def _desugar_interpolation(self, fragments: list, loc) -> Any:
+        """Desugar interpolated text fragments into text_concat/show chain.
+
+        Fragments: list of str | ('interp', raw_expr_text).
+        Result: text_concat(frag1, text_concat(frag2, ...))
+        where interp fragments become show(parsed_expr).
+        """
+        from bootstrap.lexer import lex
+        parts = []
+        for frag in fragments:
+            if isinstance(frag, tuple) and frag[0] == 'interp':
+                # Parse the raw expression text
+                tokens = lex(frag[1], f'{loc.file}:interp')
+                sub_parser = Parser(tokens, f'{loc.file}:interp')
+                expr = sub_parser._parse_expr()
+                # Wrap in show(expr)
+                show_var = ExprVar(QualName(['show'], loc), loc)
+                parts.append(ExprApp(show_var, expr, loc))
+            elif frag:  # non-empty string literal
+                parts.append(ExprText(frag, loc))
+
+        if not parts:
+            return ExprText('', loc)
+        if len(parts) == 1:
+            return parts[0]
+
+        # Build right-associative text_concat chain
+        concat_var = ExprVar(QualName(['text_concat'], loc), loc)
+        result = parts[-1]
+        for part in reversed(parts[:-1]):
+            result = ExprApp(ExprApp(concat_var, part, loc), result, loc)
+        return result
 
     def _parse_list_expr(self) -> ExprList:
         loc = self._loc()

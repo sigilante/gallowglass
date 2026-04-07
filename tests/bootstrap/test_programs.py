@@ -386,6 +386,297 @@ let collatz_steps : Nat → Nat
 
 
 # ---------------------------------------------------------------------------
+# List literals and cons patterns (M15.3)
+# ---------------------------------------------------------------------------
+
+_LIST_SRC = """\
+external mod Core.PLAN {
+  inc : Nat → Nat
+}
+
+type List a =
+  | Nil
+  | Cons a (List a)
+
+-- sum: sum a list of nats
+let sum : List Nat → Nat
+  = λ xs → match xs {
+    | Nil      → 0
+    | Cons h t → let rest = sum t in
+                 match rest {
+                   | 0 → h
+                   | k → Core.PLAN.inc (sum (Cons h (Cons k Nil)))
+                 }
+  }
+"""
+
+# -- List literal expression tests --
+
+_LIST_EXPR_SRC = _LIST_SRC + """\
+-- list_empty: empty list literal
+let list_empty : List Nat
+  = []
+
+-- list_one: singleton list literal
+let list_one : List Nat
+  = [42]
+
+-- list_three: three-element list literal
+let list_three : List Nat
+  = [1, 2, 3]
+"""
+
+
+def test_list_expr_empty():
+    """[] desugars to Nil (= 0)."""
+    compiled = pipeline(_LIST_EXPR_SRC)
+    v = evaluate(compiled['Test.list_empty'])
+    assert v == 0  # Nil = N(0)
+
+
+def test_list_expr_one():
+    """[42] desugars to Cons 42 Nil = A(A(1, 42), 0)."""
+    compiled = pipeline(_LIST_EXPR_SRC)
+    v = evaluate(compiled['Test.list_one'])
+    # Cons 42 Nil = A(A(1, 42), 0)
+    assert is_app(v)
+
+
+def test_list_expr_three():
+    """[1, 2, 3] desugars to Cons 1 (Cons 2 (Cons 3 Nil))."""
+    compiled = pipeline(_LIST_EXPR_SRC)
+    v = evaluate(compiled['Test.list_three'])
+    # Should be a nested app structure
+    assert is_app(v)
+
+
+# -- List pattern tests --
+
+_LIST_PAT_SRC = _LIST_SRC + """\
+-- head_or_zero: extract head via list pattern
+let head_or_zero : List Nat → Nat
+  = λ xs → match xs {
+    | []     → 0
+    | h :: t → h
+  }
+
+-- len: length via cons pattern
+let len : List Nat → Nat
+  = λ xs → match xs {
+    | []     → 0
+    | _ :: t → Core.PLAN.inc (len t)
+  }
+
+"""
+
+
+def test_pat_cons_nil():
+    """[] pattern matches Nil."""
+    assert run(_LIST_PAT_SRC, 'head_or_zero', N(0)) == 0  # Nil = 0
+
+
+def test_pat_cons_head():
+    """h :: t pattern extracts head."""
+    # Cons 42 Nil = A(A(1, 42), 0)
+    cons_42_nil = A(A(N(1), N(42)), N(0))
+    assert run(_LIST_PAT_SRC, 'head_or_zero', cons_42_nil) == 42
+
+
+def test_pat_cons_len_nil():
+    """len [] = 0."""
+    assert run(_LIST_PAT_SRC, 'len', N(0)) == 0
+
+
+def test_pat_cons_len_three():
+    """len [1, 2, 3] = 3."""
+    # Build Cons 1 (Cons 2 (Cons 3 Nil))
+    lst = A(A(N(1), N(1)), A(A(N(1), N(2)), A(A(N(1), N(3)), N(0))))
+    assert run(_LIST_PAT_SRC, 'len', lst) == 3
+
+
+# ---------------------------------------------------------------------------
+# Or patterns (M15.4)
+# ---------------------------------------------------------------------------
+
+_OR_PAT_SRC = """\
+external mod Core.PLAN {
+  inc : Nat → Nat
+}
+
+type Color =
+  | Red
+  | Green
+  | Blue
+
+-- is_warm: Red or Green are warm colors
+let is_warm : Color → Nat
+  = λ c → match c {
+    | Red | Green → 1
+    | _           → 0
+  }
+
+-- classify_nat: 0 or 1 are small, anything else is big
+let classify_nat : Nat → Nat
+  = λ n → match n {
+    | 0 | 1 → 0
+    | _     → 1
+  }
+"""
+
+
+def test_or_pat_first():
+    """Red matches the or-pattern (first alternative)."""
+    assert run(_OR_PAT_SRC, 'is_warm', N(0)) == 1  # Red = tag 0
+
+
+def test_or_pat_second():
+    """Green matches the or-pattern (second alternative)."""
+    assert run(_OR_PAT_SRC, 'is_warm', N(1)) == 1  # Green = tag 1
+
+
+def test_or_pat_fallthrough():
+    """Blue does not match the or-pattern."""
+    assert run(_OR_PAT_SRC, 'is_warm', N(2)) == 0  # Blue = tag 2
+
+
+def test_or_pat_nat_zero():
+    """0 matches the nat or-pattern."""
+    assert run(_OR_PAT_SRC, 'classify_nat', N(0)) == 0
+
+
+def test_or_pat_nat_one():
+    """1 matches the nat or-pattern."""
+    assert run(_OR_PAT_SRC, 'classify_nat', N(1)) == 0
+
+
+def test_or_pat_nat_other():
+    """2 does not match the nat or-pattern."""
+    assert run(_OR_PAT_SRC, 'classify_nat', N(2)) == 1
+
+
+# ---------------------------------------------------------------------------
+# String interpolation (M15.6)
+# ---------------------------------------------------------------------------
+
+_INTERP_SRC = """\
+external mod Core.PLAN {
+  inc : Nat → Nat
+}
+
+-- text_concat: concatenate two texts (simplified — uses primitives)
+-- For testing, we stub text_concat as a pair constructor:
+-- text_concat a b = A(A(tag=99, a), b) — distinguishable structure
+
+-- Actually, for a proper test we need real text encoding.
+-- Let's just test that interpolation desugars correctly at the parse level.
+"""
+
+
+def test_interp_parse_plain():
+    """Plain text with no interpolation parses normally."""
+    from bootstrap.lexer import lex
+    from bootstrap.parser import parse
+    src = 'let msg : Nat = "hello"'
+    prog = parse(lex(src, '<test>'), '<test>')
+    decl = prog.decls[0]
+    from bootstrap.ast import ExprText
+    assert isinstance(decl.body, ExprText)
+    assert decl.body.value == "hello"
+
+
+def test_interp_parse_desugar():
+    """Interpolated text desugars to text_concat/show chain."""
+    from bootstrap.lexer import lex
+    from bootstrap.parser import parse
+    from bootstrap.ast import ExprApp, ExprVar, ExprText
+    src = 'let msg : Nat = "hello #{name} world"'
+    prog = parse(lex(src, '<test>'), '<test>')
+    decl = prog.decls[0]
+    # Should be: text_concat "hello " (text_concat (show name) " world")
+    assert isinstance(decl.body, ExprApp), f"expected ExprApp, got {type(decl.body).__name__}"
+    # Outer: text_concat applied to two args
+    outer_app = decl.body
+    assert isinstance(outer_app.fun, ExprApp)  # text_concat "hello "
+    inner_func = outer_app.fun
+    assert isinstance(inner_func.fun, ExprVar)  # text_concat
+    assert str(inner_func.fun.name) == 'text_concat'
+    assert isinstance(inner_func.arg, ExprText)  # "hello "
+    assert inner_func.arg.value == "hello "
+    # Second arg: text_concat (show name) " world"
+    second_concat = outer_app.arg
+    assert isinstance(second_concat, ExprApp)
+    assert isinstance(second_concat.fun, ExprApp)
+    show_app = second_concat.fun.arg  # (show name)
+    assert isinstance(show_app, ExprApp)
+    assert isinstance(show_app.fun, ExprVar)
+    assert str(show_app.fun.name) == 'show'
+
+
+def test_interp_parse_single_expr():
+    """Single interpolation with no surrounding text."""
+    from bootstrap.lexer import lex
+    from bootstrap.parser import parse
+    from bootstrap.ast import ExprApp, ExprVar
+    src = 'let msg : Nat = "#{val}"'
+    prog = parse(lex(src, '<test>'), '<test>')
+    decl = prog.decls[0]
+    # Should be: show val (just the expression wrapped in show)
+    assert isinstance(decl.body, ExprApp)
+    assert isinstance(decl.body.fun, ExprVar)
+    assert str(decl.body.fun.name) == 'show'
+
+
+# ---------------------------------------------------------------------------
+# Guards in match arms (M15.5)
+# ---------------------------------------------------------------------------
+
+_GUARD_SRC = _ARITH_SRC + """\
+-- classify: returns 0 for zero, 1 for even, 2 for odd
+-- Uses guard to check evenness via mod
+let is_even : Nat → Nat
+  = λ nn → match nn {
+    | 0 → 1
+    | pp → match pp {
+        | 0 → 0
+        | qq → is_even qq
+      }
+  }
+
+let classify : Nat → Nat
+  = λ nn → match nn {
+    | 0                  → 0
+    | kk if is_even kk   → 1
+    | _                  → 2
+  }
+"""
+
+
+def test_guard_zero():
+    """0 matches the first arm (no guard)."""
+    assert run(_GUARD_SRC, 'classify', N(0)) == 0
+
+
+def test_guard_pass():
+    """1: kk=0, is_even(0)=1 (truthy) → guard passes → returns 1."""
+    assert run(_GUARD_SRC, 'classify', N(1)) == 1
+
+
+def test_guard_fail():
+    """2: kk=1, is_even(1)=0 (falsy) → guard fails → falls to _ → returns 2."""
+    assert run(_GUARD_SRC, 'classify', N(2)) == 2
+
+
+def test_guard_pass_3():
+    """3: kk=2, is_even(2)=1 → guard passes → returns 1."""
+    assert run(_GUARD_SRC, 'classify', N(3)) == 1
+
+
+def test_guard_fail_4():
+    """4: kk=3, is_even(3)=0 → guard fails → returns 2."""
+    assert run(_GUARD_SRC, 'classify', N(4)) == 2
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 

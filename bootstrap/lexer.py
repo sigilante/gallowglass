@@ -229,6 +229,20 @@ class Lexer:
             ch = self._peek()
             if ch == '"':
                 self._advance()
+                # If any interpolation fragments, return the mixed list;
+                # otherwise join into a plain string.
+                has_interp = any(isinstance(r, tuple) for r in result)
+                if has_interp:
+                    # Coalesce adjacent string fragments
+                    fragments = []
+                    for r in result:
+                        if isinstance(r, tuple):
+                            fragments.append(r)
+                        elif fragments and isinstance(fragments[-1], str):
+                            fragments[-1] += r
+                        else:
+                            fragments.append(r)
+                    return Token(KIND_TEXT, fragments, loc)
                 return Token(KIND_TEXT, ''.join(result), loc)
             if ch == '\\':
                 self._advance()
