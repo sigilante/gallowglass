@@ -140,6 +140,19 @@ class TestCoreOptionHarness(unittest.TestCase):
     def test_show_some_zero(self):
         self.assertTrue(check_text(self._show_option(mk_some(N(0))), 'Some(0)'))
 
+    # --- Debug Option ---
+
+    def _debug_option(self, v):
+        debug_opt = self.fn('inst_Debug_Option_debug')
+        debug_nat = self.c['Core.Text.inst_Debug_Nat_debug']
+        return bevaluate(_bapply(_bapply(debug_opt, debug_nat), v))
+
+    def test_debug_none(self):
+        self.assertTrue(check_text(self._debug_option(mk_none()), 'None'))
+
+    def test_debug_some(self):
+        self.assertTrue(check_text(self._debug_option(mk_some(N(42))), 'Some 42'))
+
 
 # ---------------------------------------------------------------------------
 # Layer 2: planvm seed loading
@@ -192,6 +205,10 @@ class TestCoreOptionSeeds(unittest.TestCase):
     @requires_planvm
     def test_inst_show_option_seed_loads(self):
         self.assertTrue(seed_loads(_make_seed('inst_Show_Option_show')))
+
+    @requires_planvm
+    def test_inst_debug_option_seed_loads(self):
+        self.assertTrue(seed_loads(_make_seed('inst_Debug_Option_debug')))
 
 
 if __name__ == '__main__':

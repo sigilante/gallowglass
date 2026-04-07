@@ -306,6 +306,26 @@ class TestCoreTextHarness(unittest.TestCase):
         result = evaluate(apply(fn, N(42)))
         self.assertTrue(check_text(result, '42'))
 
+    # --- Debug class ---
+
+    def test_debug_nat(self):
+        fn = self.compiled.get('Core.Text.inst_Debug_Nat_debug')
+        self.assertIsNotNone(fn, 'Core.Text.inst_Debug_Nat_debug not found')
+        result = evaluate(apply(fn, N(42)))
+        self.assertTrue(check_text(result, '42'))
+
+    def test_debug_bool_true(self):
+        fn = self.compiled.get('Core.Text.inst_Debug_Bool_debug')
+        self.assertIsNotNone(fn, 'Core.Text.inst_Debug_Bool_debug not found')
+        result = evaluate(apply(fn, N(1)))
+        self.assertTrue(check_text(result, 'True'))
+
+    def test_debug_bool_false(self):
+        fn = self.compiled.get('Core.Text.inst_Debug_Bool_debug')
+        self.assertIsNotNone(fn, 'Core.Text.inst_Debug_Bool_debug not found')
+        result = evaluate(apply(fn, N(0)))
+        self.assertTrue(check_text(result, 'False'))
+
 
 # ---------------------------------------------------------------------------
 # Layer 2: planvm seed loading
@@ -387,6 +407,22 @@ class TestCoreTextSeeds(unittest.TestCase):
     @requires_planvm
     def test_inst_show_nat_seed_loads(self):
         self.assertTrue(seed_loads(_make_seed('inst_Show_Nat')))
+
+    @requires_planvm
+    def test_debug_nat_seed_loads(self):
+        self.assertTrue(seed_loads(_make_seed('debug_nat')))
+
+    @requires_planvm
+    def test_debug_bool_seed_loads(self):
+        self.assertTrue(seed_loads(_make_seed('debug_bool')))
+
+    @requires_planvm
+    def test_inst_debug_nat_seed_loads(self):
+        self.assertTrue(seed_loads(_make_seed('inst_Debug_Nat_debug')))
+
+    @requires_planvm
+    def test_inst_debug_bool_seed_loads(self):
+        self.assertTrue(seed_loads(_make_seed('inst_Debug_Bool_debug')))
 
 
 if __name__ == '__main__':

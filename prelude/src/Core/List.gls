@@ -7,7 +7,7 @@
 --   Core.Nat — Eq class
 
 use Core.Nat { Eq }
-use Core.Text { Show, text_concat }
+use Core.Text { Show, Debug, text_concat }
 
 type List a =
   | Nil
@@ -105,4 +105,15 @@ let show_list_go : ∀ a. (a → Text) → List a → Text
 
 instance Show a => Show List {
   show = λ xs → text_concat "[" (text_concat (show_list_go show xs) "]")
+}
+
+-- debug_list_go: render list elements in constructor syntax
+let debug_list_go : ∀ a. (a → Text) → List a → Text
+  = λ debug_elem xs → match xs {
+    | Nil → "Nil"
+    | Cons x rest → text_concat "Cons " (text_concat (debug_elem x) (text_concat " (" (text_concat (debug_list_go debug_elem rest) ")")))
+  }
+
+instance Debug a => Debug List {
+  debug = λ xs → debug_list_go debug xs
 }

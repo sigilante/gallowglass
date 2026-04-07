@@ -153,6 +153,22 @@ class TestCoreListHarness(unittest.TestCase):
     def test_show_multi(self):
         self.assertTrue(check_text(self._show_list(mk_list(1, 2, 3)), '[1,2,3]'))
 
+    # --- Debug List ---
+
+    def _debug_list(self, v):
+        debug_list = self.fn('inst_Debug_List_debug')
+        debug_nat = self.c['Core.Text.inst_Debug_Nat_debug']
+        return bevaluate(_bapply(_bapply(debug_list, debug_nat), v))
+
+    def test_debug_nil(self):
+        self.assertTrue(check_text(self._debug_list(mk_nil()), 'Nil'))
+
+    def test_debug_single(self):
+        self.assertTrue(check_text(self._debug_list(mk_list(5)), 'Cons 5 (Nil)'))
+
+    def test_debug_multi(self):
+        self.assertTrue(check_text(self._debug_list(mk_list(1, 2)), 'Cons 1 (Cons 2 (Nil))'))
+
 
 # ---------------------------------------------------------------------------
 # Layer 2: planvm seed loading
@@ -229,6 +245,14 @@ class TestCoreListSeeds(unittest.TestCase):
     @requires_planvm
     def test_inst_show_list_seed_loads(self):
         self.assertTrue(seed_loads(_make_seed('inst_Show_List_show')))
+
+    @requires_planvm
+    def test_debug_list_go_seed_loads(self):
+        self.assertTrue(seed_loads(_make_seed('debug_list_go')))
+
+    @requires_planvm
+    def test_inst_debug_list_seed_loads(self):
+        self.assertTrue(seed_loads(_make_seed('inst_Debug_List_debug')))
 
 
 if __name__ == '__main__':

@@ -101,3 +101,27 @@ instance Show Bool {
 instance Show Nat {
   show = show_nat
 }
+
+-- Debug typeclass: developer-facing text representation
+-- Distinct from Show per spec. Initially same output for primitive types,
+-- but Debug for compound types uses constructor syntax (e.g., "Some 42")
+-- while Show uses user-friendly syntax (e.g., "Some(42)").
+class Debug a {
+  debug : a → Text
+}
+
+-- debug_nat: same as show_nat for primitive nats
+let debug_nat : Nat → Text
+  = λ n → show_nat n
+
+-- debug_bool: same as show_bool
+let debug_bool : Bool → Text
+  = λ b → if b then "True" else "False"
+
+instance Debug Nat {
+  debug = debug_nat
+}
+
+instance Debug Bool {
+  debug = debug_bool
+}
