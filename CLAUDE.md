@@ -112,7 +112,7 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
 
 ## Current Phase
 
-**Alpha.** All Milestone 8 phases complete. M9.1–9.4, M10.1–10.7, M11.1–11.5, M12, M12.1 complete. Core.Text + Show typeclass added to prelude. 783 tests passing.
+**Alpha.** All Milestone 8 phases complete. M9.1–9.4, M10.1–10.7, M11.1–11.5, M12, M12.1 complete. Core.Text + Show typeclass added to prelude. Nested effect handler support (CPS forwarding). 854 tests passing.
 
 - Phase 0 (spec): complete.
 - Phase 1 (Python bootstrap compiler): complete. Milestones 1–7.5 done. Core prelude: 36 definitions, planvm-valid.
@@ -147,11 +147,23 @@ sys.stdout.buffer.write(emit(compiled, 'Module.main'))
 " input.gls > output.seed
 
 # Run tests
-make test-bootstrap    # bootstrap compiler tests (482 passing)
-make test-prelude      # prelude tests (planvm, Docker)
-make test-compiler     # self-hosting compiler tests
-make test-selfhost     # M8.8 self-hosting validation
+python3 -m pytest tests/bootstrap/  # bootstrap compiler tests
+python3 -m pytest tests/compiler/   # self-hosting compiler tests
+python3 -m pytest tests/prelude/    # prelude tests (some require planvm)
+python3 -m pytest tests/            # all tests
 ```
+
+### Test skip categories
+
+854 passing, 80 skipped. The skips are all expected:
+
+- **planvm-gated (75):** Seed loading and VM execution tests that require the
+  `planvm` binary. These run in the `plan-vm` CI job (builds planvm via Nix).
+  Covers prelude seeds (56), compiler seeds/eval (12), seed format (7).
+- **Deep recursion (4):** Stress tests (`TestDeepRecursion` in `test_coverage_gaps.py`)
+  that hit the Python evaluator's recursion limit. These will work on the actual
+  PLAN VM; fixing in the Python harness requires jets (post-1.0).
+- **Driver smoke (1):** `test_main_minimal_snippet` requires planvm.
 
 ## Key Invariants to Never Violate
 

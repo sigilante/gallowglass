@@ -49,6 +49,19 @@ def eval_val(src: str, name: str, module: str = 'Test'):
     return evaluate(val_of(src, name, module))
 
 
+# CPS effect handler helpers
+_NULL_DISPATCH = L(3, encode_name('_null_dispatch'), P(N(0)))
+_ID_LAW = L(1, 0, N(1))
+
+def run_cps(val):
+    """Run a CPS computation value by applying null_dispatch and identity k."""
+    return evaluate(A(A(val, _NULL_DISPATCH), _ID_LAW))
+
+def eval_handler(src: str, name: str, module: str = 'Test'):
+    """Compile a handler expression and run its CPS value to get a raw result."""
+    return run_cps(val_of(src, name, module))
+
+
 def round_trip(src: str, name: str, module: str = 'Test'):
     """
     Compile, emit to seed, reload, and evaluate.
@@ -989,7 +1002,7 @@ let result = handle (inc ()) {
   | inc _ kk → kk 42
 }
 '''
-    result = eval_val(src, 'result')
+    result = eval_handler(src, 'result')
     assert result == 42, f"expected 42, got {result}"
 
 
@@ -1005,7 +1018,7 @@ let result = handle (get_val ()) {
   | get_val _ kk → kk 99
 }
 '''
-    result = eval_val(src, 'result')
+    result = eval_handler(src, 'result')
     assert result == 99, f"expected 99, got {result}"
 
 
@@ -1021,7 +1034,7 @@ let result = handle (inc ()) {
   | inc _ kk → kk 5
 }
 '''
-    result = eval_val(src, 'result')
+    result = eval_handler(src, 'result')
     assert result == 100, f"expected 100, got {result}"
 
 
@@ -1037,7 +1050,7 @@ let result = handle (echo 77) {
   | echo nn kk → kk nn
 }
 '''
-    result = eval_val(src, 'result')
+    result = eval_handler(src, 'result')
     assert result == 77, f"expected 77, got {result}"
 
 
@@ -1055,7 +1068,7 @@ let result = handle (first ()) {
   | second _ kk → kk 22
 }
 '''
-    result = eval_val(src, 'result')
+    result = eval_handler(src, 'result')
     assert result == 11, f"expected 11, got {result}"
 
 
@@ -1073,7 +1086,7 @@ let result = handle (second ()) {
   | second _ kk → kk 22
 }
 '''
-    result = eval_val(src, 'result')
+    result = eval_handler(src, 'result')
     assert result == 22, f"expected 22, got {result}"
 
 
@@ -1091,7 +1104,7 @@ let result = handle comp {
   | inc _ kk → kk 7
 }
 '''
-    result = eval_val(src, 'result')
+    result = eval_handler(src, 'result')
     assert result == 7, f"expected 7, got {result}"
 
 
@@ -1109,7 +1122,7 @@ let result = handle comp {
   | echo vv kk → kk vv
 }
 '''
-    result = eval_val(src, 'result')
+    result = eval_handler(src, 'result')
     assert result == 5, f"expected 5, got {result}"
 
 
@@ -1127,7 +1140,7 @@ let result = handle (greet ()) {
   | greet _ kk → kk answer
 }
 '''
-    result = eval_val(src, 'result')
+    result = eval_handler(src, 'result')
     assert result == 42, f"expected 42, got {result}"
 
 
@@ -1142,7 +1155,7 @@ let result = handle (pure 77) {
   | return rr → rr
 }
 '''
-    result = eval_val(src, 'result')
+    result = eval_handler(src, 'result')
     assert result == 77, f"expected 77, got {result}"
 
 
@@ -1160,7 +1173,7 @@ let result = handle comp {
   | echo vv kk → kk vv
 }
 '''
-    result = eval_val(src, 'result')
+    result = eval_handler(src, 'result')
     assert result == 42, f"expected 42, got {result}"
 
 
@@ -1175,7 +1188,7 @@ let result = handle (pure 10) {
   | return rr → 999
 }
 '''
-    result = eval_val(src, 'result')
+    result = eval_handler(src, 'result')
     assert result == 999, f"expected 999, got {result}"
 
 
@@ -1211,13 +1224,13 @@ let comp = ss ← get_st () in pp ← put_st ss in pure ss
 -- put arm: λ _ → k () new_state      (install new state, ignore old)
 -- return arm: λ final_state → (result, final_state)
 
-let run = handle comp {
+let handled = handle comp {
   | return rr → rr
   | get_st _ kk → kk 10
   | put_st _ kk → kk 0
 }
 '''
-    result = eval_val(src, 'run')
+    result = eval_handler(src, 'handled')
     # get_st returns 10, put_st discards, pure 10 goes to return rr → rr
     # so result = 10
     assert result == 10, f"expected 10, got {result}"
@@ -1244,7 +1257,8 @@ let rb = handle (store 5) {
   | store vv kk → kk 77
 }
 '''
-    ra = eval_val(src, 'ra')
-    rb = eval_val(src, 'rb')
+    compiled = pipeline(src)
+    ra = run_cps(compiled['Test.ra'])
+    rb = run_cps(compiled['Test.rb'])
     assert ra == 99, f"expected 99, got {ra}"
     assert rb == 77, f"expected 77, got {rb}"
