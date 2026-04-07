@@ -274,18 +274,23 @@ compiles the default body in an env where already-provided instance methods are
 in globals so sibling references resolve. Override takes precedence.
 3 new tests in `tests/bootstrap/test_typeclasses.py`. 893 tests passing.
 
-### M13.2 — Polymorphic instances (`Eq a => Eq (List a)`)
+### ✅ M13.2 — Polymorphic instances (`Eq a => Eq (List a)`)
 
-Instance type key resolution currently handles only concrete types (`Nat`, `Bool`).
-Polymorphic instances require `_typearg_key` to handle `TyApp` (e.g., `List a`)
-and `_compile_constrained_app` to propagate constraints from the instance head
-to the call site. Needed for any useful collection instance.
+`ConInfo.type_name` maps constructors to parent types. `_typearg_key` handles
+`TyApp` (outer constructor only). `_infer_type_key` extended with constructor
+application and nullary constructor detection for call-site instance resolution.
+`_compile_inst` refactored: constraint dict params, sibling binding, self-ref for
+unconstrained only. Constrained instances registered in `_constrained_lets`.
+4 tests. 897 passing.
 
-### M13.3 — Shallow handlers (`once`)
+### ✅ M13.3 — Shallow handlers (`once`)
 
-Spec §4.6: single-fire handler that does not reinstall itself on resume. Needed
-for generators and one-shot continuations. Codegen: omit the dispatch re-wrapping
-in the continuation.
+Open-continuation CPS protocol: continuations are 2-arg `(dispatch, value)` instead
+of 1-arg `(value)`. The dispatch function applies either `dispatch_current` (deep)
+or `dispatch_parent` (shallow/once) to the open continuation. `_FORWARD_K` helper
+preserves nested handler layers during forwarding. Virtual resume index +
+substitution avoids de Bruijn scope issues. 5 tests (generator pattern, k-called
+shallow, deep contrast, mixed arms, nested forwarding). 902 passing.
 
 ### M13.4 — GLS compiler parity for M13.1–M13.3
 
