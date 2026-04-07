@@ -481,6 +481,10 @@ type Token =
   | TkErr Nat
   | TkClass
   | TkInstance
+  | TkEff
+  | TkHandle
+  | TkPure
+  | TkRun
 
 -- AST types (parser output)
 -- Note: constructors are limited to arity ≤ 2 (bootstrap codegen restriction).
@@ -495,6 +499,8 @@ type Expr =
   | EMatch Expr (List MatchArm)
   | EPin Nat (Pair Expr Expr)       -- name, (rhs, body)
   | EFix Nat (Pair (List Nat) Expr)  -- self_name, (params, body)
+  | EHandle Expr (Pair Expr (List (Pair Nat (Pair Nat Expr))))  -- comp, (return_body, op_arms)
+  | EDo Nat (Pair Expr Expr)        -- bind_name, (rhs, body)
 
 type MatchArm =
   | ArmNat Nat Expr
@@ -507,6 +513,7 @@ type Decl =
   | DExt Nat (List Nat)
   | DClass Nat (List Nat)
   | DInst Nat (Pair Nat (List (Pair Nat Expr)))
+  | DEff Nat (List Nat)
 
 type ConDef =
   | MkConDef Nat Nat
@@ -634,6 +641,10 @@ let kw_underscore   : Nat = 0x5F               -- "_"
 let kw_fix          : Nat = 0x786966           -- "fix"
 let kw_class        : Nat = 0x7373616c63       -- "class"
 let kw_instance     : Nat = 0x65636e6174736e69 -- "instance"
+let kw_eff          : Nat = 0x666665           -- "eff"
+let kw_handle       : Nat = 0x656c646e6168     -- "handle"
+let kw_pure         : Nat = 0x65727570         -- "pure"
+let kw_run          : Nat = 0x6e7572           -- "run"
 
 -- =====================================================================
 -- Section 12: LexPos Helpers
@@ -820,7 +831,23 @@ let lex_classify_ident : Nat → Nat → Token
                                                                                     match (nat_eq ident_nat kw_class) {
                                                                                       | 0 →
                                                                                           match (nat_eq ident_nat kw_instance) {
-                                                                                            | 0 → TkIdent ident_nat
+                                                                                            | 0 →
+                                                                                                match (nat_eq ident_nat kw_eff) {
+                                                                                                  | 0 →
+                                                                                                      match (nat_eq ident_nat kw_handle) {
+                                                                                                        | 0 →
+                                                                                                            match (nat_eq ident_nat kw_pure) {
+                                                                                                              | 0 →
+                                                                                                                  match (nat_eq ident_nat kw_run) {
+                                                                                                                    | 0 → TkIdent ident_nat
+                                                                                                                    | k → TkRun
+                                                                                                                  }
+                                                                                                              | k → TkPure
+                                                                                                            }
+                                                                                                        | k → TkHandle
+                                                                                                      }
+                                                                                                  | k → TkEff
+                                                                                                }
                                                                                             | k → TkInstance
                                                                                           }
                                                                                       | k → TkClass
@@ -1542,7 +1569,51 @@ let parse_expr_dispatch : (List Token → Pair Expr (List Token)) → List Token
                         match (tok_is toks TkAt) {
                           | 0 →
                               match (tok_is toks TkFix) {
-                                | 0 → parse_app_expr_pe pe toks
+                                | 0 →
+                                    match (tok_is toks TkHandle) {
+                                      | 0 →
+                                          match (tok_is toks TkPure) {
+                                            | 0 →
+                                                match (tok_is toks TkRun) {
+                                                  | 0 →
+                                      -- Check for do-bind: name ← rhs in body
+                                      match (tok_peek toks) {
+                                        | TkIdent bind_name →
+                                            match (tok_is (tok_tail toks) TkBackArrow) {
+                                              | 0 → parse_app_expr_pe pe toks
+                                              | k →
+                                                  -- skip ident, skip ←
+                                                  let rest_do = tok_tail (tok_tail toks) in
+                                                  match (pe rest_do) {
+                                                    | MkPair rhs rest_do2 →
+                                                        -- skip 'in'
+                                                        let rest_do3 = tok_tail rest_do2 in
+                                                        match (pe rest_do3) {
+                                                          | MkPair body rest_do4 →
+                                                              MkPair (EDo bind_name (MkPair rhs body)) rest_do4
+                                                        }
+                                                  }
+                                            }
+                                        | _ → parse_app_expr_pe pe toks
+                                      }
+                                                  | k →
+                                                      -- run expr → EApp (EVar "run") expr
+                                                      match (pe (tok_tail toks)) {
+                                                        | MkPair arg rest →
+                                                            MkPair (EApp (EVar kw_run) arg) rest
+                                                      }
+                                                }
+                                            | k →
+                                                -- pure expr → EApp (EVar "pure") expr
+                                                match (pe (tok_tail toks)) {
+                                                  | MkPair arg rest →
+                                                      MkPair (EApp (EVar kw_pure) arg) rest
+                                                }
+                                          }
+                                      | k →
+                                          -- handle comp { ... }
+                                          parse_handle_expr (tok_tail toks)
+                                    }
                                 | k →
                                     -- fix λ self params → body
                                     -- tok_tail twice: skip 'fix', skip 'λ'
@@ -1594,7 +1665,7 @@ let skip_type_params : List Token → List Token
         | _ → toks
       }
 
--- is_arity_stop: 1 if token ends a constructor field list (| } EOF let type external)
+-- is_arity_stop: 1 if token ends a constructor field list (| } EOF let type external eff class instance)
 -- Uses nat_eq chains (each with 1 named arm) — avoids multi-nat-arm pred_env bug.
 let is_arity_stop : Nat → Nat
   = λ t →
@@ -1607,7 +1678,19 @@ let is_arity_stop : Nat → Nat
                         match (nat_eq t TkLet) {
                           | 0 →
                               match (nat_eq t TkType) {
-                                | 0 → nat_eq t TkExternal
+                                | 0 →
+                                    match (nat_eq t TkExternal) {
+                                      | 0 →
+                                          match (nat_eq t TkEff) {
+                                            | 0 →
+                                                match (nat_eq t TkClass) {
+                                                  | 0 → nat_eq t TkInstance
+                                                  | k → 1
+                                                }
+                                            | k → 1
+                                          }
+                                      | k → 1
+                                    }
                                 | k → 1
                               }
                           | k → 1
@@ -1876,6 +1959,111 @@ let parse_inst_decl : List Token → Pair Decl (List Token)
             }
       }
 
+-- parse_eff_op_names: parse op names from { name : type \n ... }
+-- Skips everything except idents before each colon (the op name).
+-- Stops at }.
+let parse_eff_op_names : List Token → Pair (List Nat) (List Token)
+  = λ toks →
+      match (tok_is toks TkRBrace) {
+        | 0 →
+            match (tok_eat_ident toks) {
+              | MkPair 0 _ → MkPair Nil (tok_tail toks)
+              | MkPair op_name rest →
+                  -- skip tokens until next ident or }
+                  let rest2 = skip_type_params (tok_tail rest) in
+                  match (parse_eff_op_names rest2) {
+                    | MkPair ops rest3 →
+                        MkPair (Cons op_name ops) rest3
+                  }
+            }
+        | k → MkPair Nil (tok_tail toks)
+      }
+
+-- parse_eff_decl: parse eff declaration after 'eff' keyword
+-- eff Name { op1 : Type \n op2 : Type }
+let parse_eff_decl : List Token → Pair Decl (List Token)
+  = λ toks →
+      match (tok_eat_ident toks) {
+        | MkPair 0 _ → MkPair (DEff 0 Nil) toks
+        | MkPair eff_name rest →
+            let rest2 = skip_type_params rest in
+            match (parse_eff_op_names (tok_tail rest2)) {
+              | MkPair ops rest3 →
+                  MkPair (DEff eff_name ops) rest3
+            }
+      }
+
+-- parse_handle_op_arm: parse | op_name arg_name k_name → body
+let parse_handle_op_arm
+      : List Token → Pair (Pair Nat (Pair Nat Expr)) (List Token)
+  = λ toks →
+      match (tok_eat_ident toks) {
+        | MkPair 0 _ → MkPair (MkPair 0 (MkPair 0 (EVar 0))) toks
+        | MkPair op_name rest →
+            match (tok_eat_ident rest) {
+              | MkPair 0 _ → MkPair (MkPair op_name (MkPair 0 (EVar 0))) rest
+              | MkPair arg_name rest2 →
+                  match (tok_eat_ident rest2) {
+                    | MkPair 0 _ → MkPair (MkPair op_name (MkPair arg_name (EVar 0))) rest2
+                    | MkPair k_name rest3 →
+                        match (parse_expr (tok_tail rest3)) {
+                          | MkPair body rest4 →
+                              MkPair (MkPair op_name (MkPair k_name body)) rest4
+                        }
+                  }
+            }
+      }
+
+-- parse_handle_arms: parse op arms after return arm, before }
+let parse_handle_arms
+      : List Token → Pair (List (Pair Nat (Pair Nat Expr))) (List Token)
+  = λ toks →
+      match (tok_is toks TkRBrace) {
+        | 0 →
+            match (tok_is toks TkBar) {
+              | 0 → MkPair Nil toks
+              | k →
+                  match (parse_handle_op_arm (tok_tail toks)) {
+                    | MkPair arm rest →
+                        match (parse_handle_arms rest) {
+                          | MkPair arms rest2 →
+                              MkPair (Cons arm arms) rest2
+                        }
+                  }
+            }
+        | k → MkPair Nil toks
+      }
+
+-- parse_handle_expr: parse handle comp { | return x → body | op ... }
+-- toks positioned after 'handle' keyword
+let parse_handle_expr : List Token → Pair Expr (List Token)
+  = λ toks →
+      match (parse_expr toks) {
+        | MkPair comp rest →
+            -- skip opening {
+            let rest2 = tok_tail rest in
+            -- skip | before 'return'
+            let rest3 = match (tok_is rest2 TkBar) {
+                          | 0 → rest2
+                          | k → tok_tail rest2
+                        } in
+            -- eat 'return' ident, then return var name, then → then body
+            let rest4 = tok_tail rest3 in
+            match (tok_eat_ident rest4) {
+              | MkPair 0 _ → MkPair (EVar 0) toks
+              | MkPair ret_var rest5 →
+                  match (parse_expr (tok_tail rest5)) {
+                    | MkPair ret_body rest6 →
+                        match (parse_handle_arms rest6) {
+                          | MkPair op_arms rest7 →
+                              -- skip closing }
+                              MkPair (EHandle comp (MkPair (ELam ret_var ret_body) op_arms))
+                                     (tok_tail rest7)
+                        }
+                  }
+            }
+      }
+
 -- parse_decl: parse one top-level declaration
 -- Uses tok_is chain (1 named nat arm each) — avoids multi-nullary-arm pred_env bug.
 let parse_decl : List Token → Pair Decl (List Token)
@@ -1889,7 +2077,11 @@ let parse_decl : List Token → Pair Decl (List Token)
                         match (tok_is toks TkClass) {
                           | 0 →
                               match (tok_is toks TkInstance) {
-                                | 0 → MkPair (DLet 0 (EVar 0)) (tok_tail toks)
+                                | 0 →
+                                    match (tok_is toks TkEff) {
+                                      | 0 → MkPair (DLet 0 (EVar 0)) (tok_tail toks)
+                                      | k → parse_eff_decl (tok_tail toks)
+                                    }
                                 | k → parse_inst_decl (tok_tail toks)
                               }
                           | k → parse_class_decl (tok_tail toks)
@@ -2165,6 +2357,8 @@ let expr_tag : Expr → Nat
         | EMatch _ _ → 6
         | EPin _ _  → 7
         | EFix _ _  → 8
+        | EHandle _ _ → 9
+        | EDo _ _   → 10
       }
 
 -- Per-constructor accessors (each: single App arm + wildcard — safe)
@@ -2218,6 +2412,18 @@ let cg_efix_self : Expr → Nat
 
 let cg_efix_pair : Expr → Pair (List Nat) Expr
   = λ e → match e { | EFix _ p → p | _ → MkPair Nil e }
+
+let cg_ehandle_comp : Expr → Expr
+  = λ e → match e { | EHandle c _ → c | _ → e }
+
+let cg_ehandle_pair : Expr → Pair Expr (List (Pair Nat (Pair Nat Expr)))
+  = λ e → match e { | EHandle _ p → p | _ → MkPair e Nil }
+
+let cg_edo_name : Expr → Nat
+  = λ e → match e { | EDo n _ → n | _ → 0 }
+
+let cg_edo_pair : Expr → Pair Expr Expr
+  = λ e → match e { | EDo _ p → p | _ → MkPair e e }
 
 -- -------------------------------------------------------------------
 -- Layer 3b: MatchArm single-arm helpers
@@ -2277,6 +2483,7 @@ let decl_is_let : Decl → Nat
       | DExt _ _   → 0
       | DClass _ _ → 0
       | DInst _ _  → 0
+      | DEff _ _   → 0
     }
 
 let decl_is_type : Decl → Nat
@@ -2286,6 +2493,7 @@ let decl_is_type : Decl → Nat
       | DExt _ _   → 0
       | DClass _ _ → 0
       | DInst _ _  → 0
+      | DEff _ _   → 0
     }
 
 let decl_is_ext : Decl → Nat
@@ -2295,6 +2503,7 @@ let decl_is_ext : Decl → Nat
       | DExt _ _   → 1
       | DClass _ _ → 0
       | DInst _ _  → 0
+      | DEff _ _   → 0
     }
 
 let decl_get_let_name : Decl → Nat
@@ -2322,6 +2531,7 @@ let decl_is_class : Decl → Nat
       | DExt _ _   → 0
       | DClass _ _ → 1
       | DInst _ _  → 0
+      | DEff _ _   → 0
     }
 
 let decl_is_inst : Decl → Nat
@@ -2331,7 +2541,24 @@ let decl_is_inst : Decl → Nat
       | DExt _ _   → 0
       | DClass _ _ → 0
       | DInst _ _  → 1
+      | DEff _ _   → 0
     }
+
+let decl_is_eff : Decl → Nat
+  = λ d → match d {
+      | DLet _ _   → 0
+      | DType _ _  → 0
+      | DExt _ _   → 0
+      | DClass _ _ → 0
+      | DInst _ _  → 0
+      | DEff _ _   → 1
+    }
+
+let decl_get_eff_name : Decl → Nat
+  = λ d → match d { | DEff n _ → n | _ → 0 }
+
+let decl_get_eff_ops : Decl → List Nat
+  = λ d → match d { | DEff _ ops → ops | _ → Nil }
 
 let decl_get_class_name : Decl → Nat
   = λ d → match d { | DClass n _ → n | _ → 0 }
@@ -2412,6 +2639,24 @@ let cg_cf_arms : (Expr → List Nat → CEnv → List Nat → List Nat)
             cg_cf_arms cf rest bound env (cf body ab env acc)
       }
 
+-- cg_cf_handle_arms: collect free vars from handler op arms
+let cg_cf_handle_arms
+      : (Expr → List Nat → CEnv → List Nat → List Nat)
+      → List (Pair Nat (Pair Nat Expr)) → List Nat → CEnv → List Nat → List Nat
+  = λ cf arms bound env acc →
+      match arms {
+        | Nil → acc
+        | Cons arm rest →
+            match arm {
+              | MkPair _ inner →
+                  match inner {
+                    | MkPair k_name body →
+                        cg_cf_handle_arms cf rest bound env
+                          (cf body (Cons k_name bound) env acc)
+                  }
+            }
+      }
+
 -- cg_cf_dispatch: dispatch collect_free to the right per-constructor handler
 -- cf: the collect_free function (passed to avoid mutual recursion)
 -- Uses nat_eq chain on expr_tag to route (all safe: 1 named arm + wildcard)
@@ -2434,14 +2679,43 @@ let cg_cf_dispatch : (Expr → List Nat → CEnv → List Nat → List Nat)
                                             | 0 →
                                                 match (nat_eq (expr_tag expr) 7) {
                                                   | 0 →
-                                                      -- EFix (tag 8): body has self_name and all params bound
-                                                      match expr {
-                                                        | EFix self_n pair →
-                                                            match pair {
-                                                              | MkPair params body →
-                                                                  cf body (append params (Cons self_n bound)) env acc
+                                                      match (nat_eq (expr_tag expr) 8) {
+                                                        | 0 →
+                                                            match (nat_eq (expr_tag expr) 9) {
+                                                              | 0 →
+                                                                  -- EDo (tag 10): collect from rhs and body (bind_name bound in body)
+                                                                  match expr {
+                                                                    | EDo bind_n pair →
+                                                                        match pair {
+                                                                          | MkPair rhs body →
+                                                                              cf body (Cons bind_n bound) env
+                                                                                (cf rhs bound env acc)
+                                                                        }
+                                                                    | _ → acc
+                                                                  }
+                                                              | _ →
+                                                                  -- EHandle (tag 9): collect from comp, return body, all op arm bodies
+                                                                  match expr {
+                                                                    | EHandle comp pair →
+                                                                        match pair {
+                                                                          | MkPair ret_fn op_arms →
+                                                                              cg_cf_handle_arms cf op_arms bound env
+                                                                                (cf ret_fn bound env
+                                                                                  (cf comp bound env acc))
+                                                                        }
+                                                                    | _ → acc
+                                                                  }
                                                             }
-                                                        | _ → acc
+                                                        | _ →
+                                                            -- EFix (tag 8): body has self_name and all params bound
+                                                            match expr {
+                                                              | EFix self_n pair →
+                                                                  match pair {
+                                                                    | MkPair params body →
+                                                                        cf body (append params (Cons self_n bound)) env acc
+                                                                  }
+                                                              | _ → acc
+                                                            }
                                                       }
                                                   | _ →
                                                       -- EPin (tag 7): collect from rhs then body (name bound in body)
@@ -2595,13 +2869,45 @@ let cg_hv_dispatch : (Expr → Nat → Nat) → Expr → Nat → Nat
                                             | 0 →
                                                 match (nat_eq (expr_tag expr) 7) {
                                                   | 0 →
-                                                      -- EFix (tag 8): check body (self_name and params are not free)
-                                                      match expr {
-                                                        | EFix _ pair →
-                                                            match pair {
-                                                              | MkPair _ body → hv body name
+                                                      match (nat_eq (expr_tag expr) 8) {
+                                                        | 0 →
+                                                            match (nat_eq (expr_tag expr) 9) {
+                                                              | 0 →
+                                                                  -- EDo (tag 10): check rhs and body
+                                                                  match expr {
+                                                                    | EDo _ pair →
+                                                                        match pair {
+                                                                          | MkPair r b →
+                                                                              match (hv r name) {
+                                                                                | 0 → hv b name
+                                                                                | _ → 1
+                                                                              }
+                                                                        }
+                                                                    | _ → 0
+                                                                  }
+                                                              | _ →
+                                                                  -- EHandle (tag 9): check comp, return fn, all op arm bodies
+                                                                  match expr {
+                                                                    | EHandle comp pair →
+                                                                        match pair {
+                                                                          | MkPair ret_fn _ →
+                                                                              match (hv comp name) {
+                                                                                | 0 → hv ret_fn name
+                                                                                | _ → 1
+                                                                              }
+                                                                        }
+                                                                    | _ → 0
+                                                                  }
                                                             }
-                                                        | _ → 0
+                                                        | _ →
+                                                            -- EFix (tag 8): check body (self_name and params are not free)
+                                                            match expr {
+                                                              | EFix _ pair →
+                                                                  match pair {
+                                                                    | MkPair _ body → hv body name
+                                                                  }
+                                                              | _ → 0
+                                                            }
                                                       }
                                                   | _ →
                                                       -- EPin (tag 7)
@@ -3654,6 +3960,245 @@ let cg_compile_pin : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat �
         | _ → PNat 0
       }
 
+-- =====================================================================
+-- CPS Effect Constants (must precede handler codegen)
+-- =====================================================================
+
+-- _id_law: L(1, 0, N(1)) — identity function
+let cps_id_law : PlanVal = PLaw 0 (MkPair 1 (PNat 1))
+
+-- _null_dispatch: L(3, name, P(0)) — drops all args, returns P(0)
+let nn_null_dispatch : Nat = 0x68637461707369645f6c6c756e5f  -- "_null_dispatch"
+let cps_null_dispatch : PlanVal = PLaw nn_null_dispatch (MkPair 3 (PPin (PNat 0)))
+
+-- _compose: L(3, name, A(N(1), A(N(2), N(3)))) — compose(f, g, x) = f(g(x))
+let nn_compose : Nat = 0x65736f706d6f635f  -- "_compose"
+let cps_compose : PlanVal = PLaw nn_compose (MkPair 3 (PApp (PNat 1) (PApp (PNat 2) (PNat 3))))
+
+-- pure_law: L(3, "pure", A(N(3), N(1))) — pure v dispatch k = k(v)
+let cps_pure_law : PlanVal = PLaw kw_pure (MkPair 3 (PApp (PNat 3) (PNat 1)))
+
+-- run_law: L(1, "run", A(A(N(1), P(null_dispatch)), P(id_law)))
+-- run comp = comp(null_dispatch, id)
+let cps_run_law : PlanVal
+  = PLaw kw_run (MkPair 1 (PApp (PApp (PNat 1) (PPin cps_null_dispatch)) (PPin cps_id_law)))
+
+-- =====================================================================
+-- CPS Effect Handler Codegen
+-- =====================================================================
+
+-- cg_build_handle_dispatch: build nested nat_eq dispatch on op_tag
+-- Each op arm gets a sequential tag (starting from tag_counter).
+-- Compiled body binds op_arg at op_arg_idx and k at k_idx.
+let cg_build_handle_dispatch
+      : List (Pair Nat (Pair Nat Expr)) → CEnv → Nat → Nat → Nat → PlanVal
+      → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+      → List (Pair Nat (Pair Nat Nat)) → Nat → Nat → PlanVal
+  = λ arms dispatch_env k_idx op_arg_idx op_tag_idx forward_body ce ctab hint tag →
+      match arms {
+        | Nil → forward_body
+        | Cons arm rest →
+            match arm {
+              | MkPair op_name inner →
+                  match inner {
+                    | MkPair k_name body →
+                        let arm_env = cenv_bind_local dispatch_env k_name k_idx in
+                        let arm_env2 = cenv_bind_local arm_env op_name op_arg_idx in
+                        let body_val = ce body arm_env2 ctab hint in
+                        let tag_val = cg_quote_nat tag (cenv_arity dispatch_env) in
+                        let rest_body = cg_build_handle_dispatch rest dispatch_env k_idx op_arg_idx op_tag_idx forward_body ce ctab hint (add tag 1) in
+                        let eq_test = cg_bapp (cg_bapp (PPin (PNat 3)) (PNat op_tag_idx)) tag_val in
+                        let const_body = PLaw 0 (MkPair 1 body_val) in
+                        let const_pin = PPin const_body in
+                        cg_build_op2 rest_body const_pin eq_test (cenv_arity dispatch_env)
+                  }
+            }
+      }
+
+-- cg_compile_dispatch_fn: build dispatch law for handle expression
+-- Dispatch law: L(n_cap+4, name, body)
+-- Slots: [cap_1..cap_n] [dispatch_parent] [op_tag] [op_arg] [resume/k]
+-- Each arm matches on op_tag; unhandled tags forward to dispatch_parent.
+let cg_compile_dispatch_fn
+      : List (Pair Nat (Pair Nat Expr)) → CEnv
+      → List (Pair Nat (Pair Nat Nat)) → Nat
+      → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+  = λ op_arms env ctab hint ce →
+      match op_arms {
+        | Nil →
+            -- No op arms: pure forwarder — dispatch_parent(tag, arg, k)
+            PPin (PLaw hint (MkPair 4
+              (cg_bapp (cg_bapp (cg_bapp (PNat 1) (PNat 2)) (PNat 3)) (PNat 4))))
+        | _ →
+            -- Collect free vars from all arm bodies
+            let all_bodies = map (λ arm →
+                                    match arm {
+                                      | MkPair _ inner →
+                                          match inner { | MkPair _ body → body }
+                                    }) op_arms in
+            let free_vars = cg_free_vars_bodies all_bodies Nil env in
+            let n_cap = length free_vars in
+            let total_arity = add n_cap 4 in
+            let dp_idx     = add n_cap 1 in
+            let op_tag_idx = add n_cap 2 in
+            let op_arg_idx = add n_cap 3 in
+            let k_idx      = add n_cap 4 in
+            -- Build dispatch env: [caps] + [dp] + [tag] + [arg] + [k]
+            let g = cenv_globals env in
+            let dispatch_env0 = cenv_make g Nil 0 None in
+            let dispatch_env1 = cg_bind_params free_vars dispatch_env0 in
+            let dispatch_env = cenv_set_arity dispatch_env1 total_arity in
+            -- Forward body: dispatch_parent(tag, arg, k)
+            let forward_body = cg_bapp (cg_bapp (cg_bapp (PNat dp_idx) (PNat op_tag_idx)) (PNat op_arg_idx)) (PNat k_idx) in
+            -- Build tag dispatch: simple nat ladder on op_tag
+            -- For now use single-arm dispatch (tag 0 = first arm, forward rest)
+            let dispatch_body = cg_build_handle_dispatch op_arms dispatch_env k_idx op_arg_idx op_tag_idx forward_body ce ctab hint 0 in
+            let dispatch_law = PPin (PLaw hint (MkPair total_arity dispatch_body)) in
+            cg_apply_free_locals dispatch_law free_vars env
+      }
+
+-- cg_compile_return_fn: build return handler law
+-- L(n_cap+1, name, body) where last param is the pure return value.
+let cg_compile_return_fn
+      : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat
+      → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+  = λ ret_fn env ctab hint ce →
+      match ret_fn {
+        | ELam ret_var ret_body →
+            let free_vars = cg_free_vars ret_body (Cons ret_var Nil) env in
+            let n_cap = length free_vars in
+            let total_arity = add n_cap 1 in
+            let val_idx = add n_cap 1 in
+            let g = cenv_globals env in
+            let ret_env0 = cenv_make g Nil 0 None in
+            let ret_env1 = cg_bind_params free_vars ret_env0 in
+            let ret_env2 = cenv_set_arity ret_env1 total_arity in
+            let ret_env3 = cenv_bind_local ret_env2 ret_var val_idx in
+            let body_val = ce ret_body ret_env3 ctab hint in
+            let ret_law = PPin (PLaw hint (MkPair total_arity body_val)) in
+            cg_apply_free_locals ret_law free_vars env
+        | _ →
+            -- Default: identity
+            PPin cps_id_law
+      }
+
+-- cg_compile_handle: compile EHandle expression
+-- handle comp { | return x → body_r | op arg k → body_op }
+-- Produces: λ(dp, ko) → comp(dispatch(dp), compose(ko, ret_fn))
+let cg_compile_handle
+      : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+      → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+  = λ expr env ctab hint ce →
+      match expr {
+        | EHandle comp pair →
+            match pair {
+              | MkPair ret_fn op_arms →
+                  -- Collect all free vars
+                  let comp_free = cg_collect_free comp Nil env Nil in
+                  let ret_free = cg_collect_free ret_fn Nil env Nil in
+                  let all_found = append comp_free ret_free in
+                  let free_vars = cg_keep_free_locals (cenv_locals env) all_found Nil in
+                  let n_cap = length free_vars in
+                  -- CPS handle law: arity = n_cap + 2 [caps, dp, ko]
+                  let total_arity = add n_cap 2 in
+                  let dp_idx = add n_cap 1 in
+                  let ko_idx = add n_cap 2 in
+                  -- Build cps env
+                  let g = cenv_globals env in
+                  let cps_env0 = cenv_make g Nil 0 None in
+                  let cps_env1 = cg_bind_params free_vars cps_env0 in
+                  let cps_env = cenv_set_arity cps_env1 total_arity in
+                  -- Compile comp in cps env
+                  let comp_val = ce comp cps_env ctab hint in
+                  -- Build dispatch function
+                  let dispatch_fn = cg_compile_dispatch_fn op_arms cps_env ctab hint ce in
+                  -- Build return function
+                  let return_fn = cg_compile_return_fn ret_fn cps_env ctab hint ce in
+                  -- dispatch(dp): apply dp as first arg to dispatch_fn
+                  let dispatch_applied = cg_bapp dispatch_fn (PNat dp_idx) in
+                  -- composed_k = compose(ko, return_fn) = λ x → ko(return_fn(x))
+                  let composed_k = cg_bapp (cg_bapp (PPin cps_compose) (PNat ko_idx)) return_fn in
+                  -- CPS body: comp(dispatch(dp), composed_k)
+                  let cps_body = cg_bapp (cg_bapp comp_val dispatch_applied) composed_k in
+                  let cps_law = PLaw hint (MkPair total_arity cps_body) in
+                  -- Apply to captures
+                  match (nat_eq (cenv_arity env) 0) {
+                    | 0 → PPin cps_law
+                    | _ →
+                        let pinned = PPin cps_law in
+                        cg_apply_free_locals pinned free_vars env
+                  }
+            }
+        | _ → PNat 0
+      }
+
+-- cg_apply_range: partially apply val to N(start)..N(end_inclusive) via cg_bapp
+let cg_apply_range : PlanVal → Nat → Nat → PlanVal
+  = λ v start end_idx →
+      match (lte start end_idx) {
+        | 0 → v
+        | _ → cg_apply_range (cg_bapp v (PNat start)) (add start 1) end_idx
+      }
+
+-- cg_compile_do: compile EDo (x ← rhs in body)
+-- Outer law: arity = n_cap+2 [caps, dispatch, k_outer]
+-- Inner cont law: arity = n_cap+3 [caps, dispatch, k_outer, x]
+-- Outer body: rhs_comp dispatch inner_cont
+let cg_compile_do
+      : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+      → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+  = λ expr env ctab hint ce →
+      match expr {
+        | EDo bind_name pair →
+            match pair {
+              | MkPair rhs body →
+                  -- Collect free vars from rhs and body
+                  let rhs_free  = cg_collect_free rhs Nil env Nil in
+                  let body_free = cg_collect_free body (Cons bind_name Nil) env Nil in
+                  let all_found = append rhs_free body_free in
+                  let free_vars = cg_keep_free_locals (cenv_locals env) all_found Nil in
+                  let n_cap = length free_vars in
+                  -- Outer law: arity = n_cap + 2
+                  let outer_dispatch_idx = add n_cap 1 in
+                  let outer_k_idx        = add n_cap 2 in
+                  -- Inner continuation: arity = n_cap + 3
+                  let inner_dispatch_idx = add n_cap 1 in
+                  let inner_k_idx        = add n_cap 2 in
+                  let inner_x_idx        = add n_cap 3 in
+                  -- Build inner env
+                  let g = cenv_globals env in
+                  let inner_env0 = cenv_make g Nil 0 None in
+                  let inner_env1 = cg_bind_params free_vars inner_env0 in
+                  let inner_env2 = cenv_set_arity inner_env1 (add n_cap 3) in
+                  let inner_env3 = cenv_bind_local inner_env2 bind_name inner_x_idx in
+                  -- Compile body in inner env
+                  let body_cps = ce body inner_env3 ctab hint in
+                  -- Inner body: body_cps(dispatch, k_outer)
+                  let inner_body = cg_bapp (cg_bapp body_cps (PNat inner_dispatch_idx)) (PNat inner_k_idx) in
+                  let inner_law = PPin (PLaw hint (MkPair (add n_cap 3) inner_body)) in
+                  -- Build outer env
+                  let outer_env0 = cenv_make g Nil 0 None in
+                  let outer_env1 = cg_bind_params free_vars outer_env0 in
+                  let outer_env  = cenv_set_arity outer_env1 (add n_cap 2) in
+                  -- Compile rhs in outer env
+                  let rhs_val = ce rhs outer_env ctab hint in
+                  -- Apply inner_law to captures + dispatch + k_outer
+                  let inner_applied = cg_apply_range inner_law 1 n_cap in
+                  let inner_cont = cg_bapp (cg_bapp inner_applied (PNat outer_dispatch_idx)) (PNat outer_k_idx) in
+                  -- Outer body: rhs_comp(dispatch, inner_cont)
+                  let outer_body = cg_bapp (cg_bapp rhs_val (PNat outer_dispatch_idx)) inner_cont in
+                  let do_law = PLaw hint (MkPair (add n_cap 2) outer_body) in
+                  -- Apply to captures
+                  match (nat_eq (cenv_arity env) 0) {
+                    | 0 → do_law
+                    | _ →
+                        let pinned = PPin do_law in
+                        cg_apply_free_locals pinned free_vars env
+                  }
+            }
+        | _ → PNat 0
+      }
+
 -- cg_compile_complex: route non-EVar, non-ENat, non-EApp expressions
 -- Uses nat_eq chain on expr_tag (pred_env safe: all bodies take ce as param)
 let cg_compile_complex : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
@@ -3669,8 +4214,20 @@ let cg_compile_complex : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Na
                           | 0 →
                               match (nat_eq (expr_tag expr) 7) {
                                 | 0 →
-                                    -- EFix (tag 8)
-                                    cg_compile_fix expr env ctab hint ce
+                                    match (nat_eq (expr_tag expr) 8) {
+                                      | 0 →
+                                          match (nat_eq (expr_tag expr) 9) {
+                                            | 0 →
+                                                -- EDo (tag 10)
+                                                cg_compile_do expr env ctab hint ce
+                                            | _ →
+                                                -- EHandle (tag 9)
+                                                cg_compile_handle expr env ctab hint ce
+                                          }
+                                      | _ →
+                                          -- EFix (tag 8)
+                                          cg_compile_fix expr env ctab hint ce
+                                    }
                                 | _ →
                                     -- EPin (tag 7)
                                     cg_compile_pin expr env ctab hint ce
@@ -3766,14 +4323,17 @@ let nn_False : Nat = 435728179526
 let nn_True  : Nat = 1702195796
 let nn_Unit  : Nat = 1953066581
 
--- cg_register_builtins: add False, True, Unit to env globals
 let cg_register_builtins : CEnv → CEnv
   = λ env →
       cenv_bind_global
         (cenv_bind_global
-          (cenv_bind_global env nn_False (PNat 0))
-          nn_True (PNat 1))
-        nn_Unit (PNat 0)
+          (cenv_bind_global
+            (cenv_bind_global
+              (cenv_bind_global env nn_False (PNat 0))
+              nn_True (PNat 1))
+            nn_Unit (PNat 0))
+          kw_pure cps_pure_law)
+        kw_run cps_run_law
 
 -- cg_register_builtin_contab: add False, True, Unit to contab
 let cg_register_builtin_contab : List (Pair Nat (Pair Nat Nat)) → List (Pair Nat (Pair Nat Nat))
@@ -3927,6 +4487,51 @@ let cg_compile_inst_members
             }
       }
 
+-- cg_register_eff_ops: register each op of one DEff as a 3-arg CPS law
+-- Each op: L(3, op_name, dispatch(tag, op_arg, k))
+-- N(1)=op_arg, N(2)=dispatch, N(3)=k
+-- body = A(A(A(N(2), tag_val), N(1)), N(3))
+let cg_register_eff_ops
+      : List Nat → Nat → Nat → CEnv → List (Pair Nat PlanVal) → Nat
+      → Pair CEnv (Pair (List (Pair Nat PlanVal)) Nat)
+  = λ ops eff_fq mod_name env compiled tag →
+      match ops {
+        | Nil → MkPair env (MkPair compiled tag)
+        | Cons op_name rest →
+            let fq_op = name_concat_dot eff_fq op_name in
+            -- Tag literal in a 3-arg law: quote if tag <= 3
+            let tag_val = cg_quote_nat tag 3 in
+            -- body = dispatch(tag, op_arg, k) = A(A(A(N(2), tag_val), N(1)), N(3))
+            let body = cg_bapp (cg_bapp (cg_bapp (PNat 2) tag_val) (PNat 1)) (PNat 3) in
+            let val = PLaw op_name (MkPair 3 body) in
+            let new_env = cenv_bind_global (cenv_bind_global env fq_op val) op_name val in
+            let new_compiled = Cons (MkPair fq_op val) compiled in
+            cg_register_eff_ops rest eff_fq mod_name new_env new_compiled (add tag 1)
+      }
+
+-- cg_register_effs: process all DEff declarations
+let cg_register_effs
+      : List Decl → Nat → CEnv → List (Pair Nat PlanVal) → Nat
+      → Pair CEnv (Pair (List (Pair Nat PlanVal)) Nat)
+  = λ decls mod_name env compiled next_tag →
+      match decls {
+        | Nil → MkPair env (MkPair compiled next_tag)
+        | Cons decl rest →
+            match (nat_eq (decl_is_eff decl) 0) {
+              | 0 →
+                  let eff_name = decl_get_eff_name decl in
+                  let eff_fq = name_concat_dot mod_name eff_name in
+                  match (cg_register_eff_ops (decl_get_eff_ops decl) eff_fq mod_name env compiled next_tag) {
+                    | MkPair new_env rest_pair →
+                        match rest_pair {
+                          | MkPair new_compiled new_tag →
+                              cg_register_effs rest mod_name new_env new_compiled new_tag
+                        }
+                  }
+              | _ → cg_register_effs rest mod_name env compiled next_tag
+            }
+      }
+
 -- cg_pass3: process DLet and DInst declarations
 let cg_pass3 : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat Nat)) → List (Pair Nat PlanVal)
              → List (Pair Nat PlanVal)
@@ -3973,7 +4578,13 @@ let compile_program : List Decl → Nat → List (Pair Nat PlanVal)
               | MkPair ctab1 compiled1 →
                   match (cg_pass2 decls mod_name env1 compiled1) {
                     | MkPair env2 compiled2 →
-                        cg_pass3 decls mod_name env2 ctab1 compiled2
+                        match (cg_register_effs decls mod_name env2 compiled2 0) {
+                          | MkPair env3 rest3 →
+                              match rest3 {
+                                | MkPair compiled3 _ →
+                                    cg_pass3 decls mod_name env3 ctab1 compiled3
+                              }
+                        }
                   }
             }
       }
@@ -4053,8 +4664,21 @@ let sr_collect_inst_method_names
             }
       }
 
+-- sr_collect_eff_op_names: collect FQ names for each eff op
+-- Each op gets "Module.EffName.op_name" as its FQ name.
+let sr_collect_eff_op_names
+      : List Nat → Nat → Nat → List (Pair Nat Nat) → List (Pair Nat Nat)
+  = λ ops eff_fq mod_name acc →
+      match ops {
+        | Nil → acc
+        | Cons op_name rest →
+            let fq = name_concat_dot eff_fq op_name in
+            sr_collect_eff_op_names rest eff_fq mod_name
+              (assoc_insert op_name fq acc)
+      }
+
 -- sr_collect_globals: build the bare→fq table from all decls
--- Uses direct exhaustive 5-way match (all constructors have arity 2).
+-- Uses direct exhaustive 6-way match (all constructors have arity 2).
 let sr_collect_globals
       : List Decl → Nat → List (Pair Nat Nat) → List (Pair Nat Nat)
   = λ decls mod_name acc →
@@ -4078,6 +4702,9 @@ let sr_collect_globals
                                        type_name in
                                    sr_collect_inst_method_names members inst_prefix mod_name acc
                              }
+                         | DEff eff_name ops →
+                             let eff_fq = name_concat_dot mod_name eff_name in
+                             sr_collect_eff_op_names ops eff_fq mod_name acc
                        } in
             sr_collect_globals rest mod_name acc2
       }
@@ -4126,6 +4753,32 @@ let sr_rewrite_arms
                  (sr_rewrite_arms pe rest bound gtab)
       }
 
+-- sr_rewrite_handle_arms: rewrite handler op arm bodies
+-- Each arm is (op_name, (k_name, body)). op_name is qualified via gtab,
+-- k_name and arg implicit in body are bound.
+let sr_rewrite_handle_arms
+      : (Expr → List Nat → List (Pair Nat Nat) → Expr)
+      → List (Pair Nat (Pair Nat Expr)) → List Nat → List (Pair Nat Nat)
+      → List (Pair Nat (Pair Nat Expr))
+  = λ pe arms bound gtab →
+      match arms {
+        | Nil → Nil
+        | Cons arm rest →
+            match arm {
+              | MkPair op_name inner →
+                  match inner {
+                    | MkPair k_name body →
+                        let fq_op = match (assoc_lookup op_name gtab) {
+                                      | None    → op_name
+                                      | Some fq → fq
+                                    } in
+                        let body2 = pe body (Cons k_name bound) gtab in
+                        Cons (MkPair fq_op (MkPair k_name body2))
+                             (sr_rewrite_handle_arms pe rest bound gtab)
+                  }
+            }
+      }
+
 -- sr_dispatch: dispatch on expr structure and recurse via pass-self pe.
 -- EVar: qualify if in gtab and not in bound.
 -- ELam/ELet/EPin: extend bound for body.
@@ -4162,16 +4815,47 @@ let sr_dispatch
                                             | 0 →
                                                 match (nat_eq (expr_tag expr) 7) {
                                                   | 0 →
-                                                      -- EFix (tag 8): self_name and params are bound in body
-                                                      match expr {
-                                                        | EFix self_n p →
-                                                            match p {
-                                                              | MkPair params body →
-                                                                  let all_bound = append params (Cons self_n bound) in
-                                                                  let body2 = pe body all_bound gtab in
-                                                                  EFix self_n (MkPair params body2)
+                                                      match (nat_eq (expr_tag expr) 8) {
+                                                        | 0 →
+                                                            match (nat_eq (expr_tag expr) 9) {
+                                                              | 0 →
+                                                                  -- EDo (tag 10): bind_name bound in body
+                                                                  match expr {
+                                                                    | EDo bind_n p →
+                                                                        match p {
+                                                                          | MkPair rhs body →
+                                                                              let rhs2  = pe rhs bound gtab in
+                                                                              let body2 = pe body (Cons bind_n bound) gtab in
+                                                                              EDo bind_n (MkPair rhs2 body2)
+                                                                        }
+                                                                    | _ → expr
+                                                                  }
+                                                              | _ →
+                                                                  -- EHandle (tag 9): rewrite comp and all arm bodies
+                                                                  match expr {
+                                                                    | EHandle comp p →
+                                                                        match p {
+                                                                          | MkPair ret_fn op_arms →
+                                                                              let comp2 = pe comp bound gtab in
+                                                                              let ret2  = pe ret_fn bound gtab in
+                                                                              let arms2 = sr_rewrite_handle_arms pe op_arms bound gtab in
+                                                                              EHandle comp2 (MkPair ret2 arms2)
+                                                                        }
+                                                                    | _ → expr
+                                                                  }
                                                             }
-                                                        | _ → expr
+                                                        | _ →
+                                                            -- EFix (tag 8): self_name and params are bound in body
+                                                            match expr {
+                                                              | EFix self_n p →
+                                                                  match p {
+                                                                    | MkPair params body →
+                                                                        let all_bound = append params (Cons self_n bound) in
+                                                                        let body2 = pe body all_bound gtab in
+                                                                        EFix self_n (MkPair params body2)
+                                                                  }
+                                                              | _ → expr
+                                                            }
                                                       }
                                                   | _ →
                                                       -- EPin (tag 7)
@@ -4296,6 +4980,7 @@ let sr_resolve_decls
                                          (MkPair type_name
                                            (sr_resolve_inst_members members gtab))
                                  }
+                             | DEff _ _ → decl
                            } in
             Cons new_decl (sr_resolve_decls rest gtab)
       }
