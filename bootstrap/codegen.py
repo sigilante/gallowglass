@@ -88,6 +88,22 @@ def body_nat(k: int, arity: int):
     return N(k)
 
 
+def _subst_virtual_resume(expr: Any, virtual_idx: int, replacement: Any) -> Any:
+    """Replace N(virtual_idx) with replacement in a PLAN expression tree.
+
+    Only recurses through App nodes; does not enter Law or Pin (different scope).
+    Used to substitute the virtual resume index with the actual open-continuation
+    application in dispatch arm bodies.
+    """
+    if isinstance(expr, int):
+        return replacement if expr == virtual_idx else expr
+    if isinstance(expr, A):
+        return A(_subst_virtual_resume(expr.fun, virtual_idx, replacement),
+                 _subst_virtual_resume(expr.arg, virtual_idx, replacement))
+    # L, P — don't recurse (different scope / pinned content)
+    return expr
+
+
 # ---------------------------------------------------------------------------
 # Compile-time environment
 # ---------------------------------------------------------------------------
@@ -234,16 +250,15 @@ class Compiler:
                 tag=int(val), arity=0, fq_name=name
             )
         # `pure v` — wrap a pure value as a no-op CPS computation.
-        # Law of arity 3: (value, dispatch, k) → k value
-        # N(1)=value, N(2)=dispatch (ignored), N(3)=k
-        # body = bapp(N(3), N(1)) = apply k to value
-        pure_law = L(3, encode_name('pure'), bapp(N(3), N(1)))
+        # Law of arity 3: (value, dispatch, k_open) → k_open(dispatch, value)
+        # N(1)=value, N(2)=dispatch, N(3)=k_open
+        # Open-continuation protocol: k_open is 2-arg (dispatch, value).
+        pure_law = L(3, encode_name('pure'), bapp(bapp(N(3), N(2)), N(1)))
         self.env.globals['pure'] = pure_law
-        # `run comp` — execute a CPS computation with null dispatch and identity k.
-        # L(1, "run", comp(null_dispatch, id))
-        # N(1)=comp, P(_NULL_DISPATCH)=dispatch_parent, P(_ID_LAW)=continuation
+        # `run comp` — execute a CPS computation with null dispatch and id_open.
+        # N(1)=comp, P(_NULL_DISPATCH)=dispatch_parent, P(_ID_OPEN)=open continuation
         run_law = L(1, encode_name('run'),
-                     bapp(bapp(N(1), P(self._NULL_DISPATCH)), P(self._ID_LAW)))
+                     bapp(bapp(N(1), P(self._NULL_DISPATCH)), P(self._ID_OPEN)))
         self.env.globals['run'] = run_law
 
     # -----------------------------------------------------------------------
@@ -1447,6 +1462,22 @@ class Compiler:
     # Used by handle to build composed return continuations.
     _COMPOSE = L(3, encode_name('_compose'), bapp(N(1), bapp(N(2), N(3))))
 
+    # Open-continuation CPS helpers (M13.3: shallow handler support).
+    # Continuations are 2-arg: (dispatch, value) → result.
+    # id_open: (dispatch, value) → value — root continuation for `run`
+    _ID_OPEN = L(2, 0, N(2))
+    # compose_open: (f_open, g, dispatch', x) → f_open(dispatch', g(x))
+    # Used by handle to build composed open return continuations.
+    _COMPOSE_OPEN = L(4, encode_name('_compose_open'),
+                       bapp(bapp(N(1), N(3)), bapp(N(2), N(4))))
+    # forward_k: (k_open, dispatch_fn_base, dispatch', v) → k_open(dispatch_fn_base(dispatch'), v)
+    # Used when forwarding an unhandled op to the parent dispatch.
+    # dispatch_fn_base is the current handler's dispatch partially applied with
+    # captures but NOT dp — applying dispatch' to it reinstalls the handler with
+    # dispatch' as the new parent.  This preserves nested handler layering.
+    _FORWARD_K = L(4, encode_name('_forward_k'),
+                    bapp(bapp(N(1), bapp(N(2), N(3))), N(4)))
+
     def _compile_if(self, expr: ExprIf, env: Env, name_hint: str) -> Any:
         """
         Compile if/then/else using Bool's nat encoding (False=0, True=1).
@@ -2608,14 +2639,14 @@ class Compiler:
         """
         Compile: handle comp { | return x → body_r | op args k → body_op }
 
-        Produces a CPS value: λ(dp, ko) → comp(dispatch(dp), compose(ko, ret_fn))
+        Produces a CPS value: λ(dp, ko_open) → comp(dispatch(dp), compose_open(ko_open, ret_fn))
 
-        dispatch_fn has arity n_cap+4: [caps] + [dp] + [tag] + [arg] + [k]
+        dispatch_fn has arity n_cap+4: [caps] + [dp] + [tag] + [arg] + [k_open]
         Applying dp partially gives a 3-arg dispatch function.
-        compose(ko, ret_fn) gives λ x → ko(ret_fn(x)).
+        compose_open(ko_open, ret_fn) gives (dispatch', x) → ko_open(dispatch', ret_fn(x)).
 
-        To run the resulting CPS value, apply it to (null_dispatch, id):
-          handle_cps(null_dispatch, id) → raw value
+        To run the resulting CPS value, apply it to (null_dispatch, id_open):
+          handle_cps(null_dispatch, id_open) → raw value
         Or use the `run` builtin.
         """
         # Collect free variables from all sub-expressions
@@ -2654,11 +2685,12 @@ class Compiler:
         # dispatch(dp): apply dp as first arg to dispatch_fn
         dispatch_applied = bapp(dispatch_fn, N(dp_idx))
 
-        # composed_k = compose(ko, return_fn) = λ x → ko(return_fn(x))
-        composed_k = bapp(bapp(P(self._COMPOSE), N(ko_idx)), return_fn)
+        # composed_k_open = compose_open(ko_open, return_fn)
+        # = (dispatch', x) → ko_open(dispatch', return_fn(x))
+        composed_k_open = bapp(bapp(P(self._COMPOSE_OPEN), N(ko_idx)), return_fn)
 
-        # CPS body: comp(dispatch(dp), composed_k)
-        cps_body = bapp(bapp(comp_val, dispatch_applied), composed_k)
+        # CPS body: comp(dispatch(dp), composed_k_open)
+        cps_body = bapp(bapp(comp_val, dispatch_applied), composed_k_open)
         cps_law  = L(n_cap + 2, encode_name(f'{name_hint}_handle'), cps_body)
 
         # Partially apply to captures from outer env
@@ -2683,19 +2715,31 @@ class Compiler:
             self._collect_free(body, bound, env, combined)
         return [k for k in env.locals if k in combined]
 
+    # Virtual de Bruijn index for resume during arm body compilation.
+    # Substituted with the real resume expression before embedding in the law body.
+    _RESUME_VIRTUAL_IDX = 9999999
+
     def _compile_dispatch_fn(self, op_arms: list, env: Env, name_hint: str) -> Any:
         """
         Build the handler dispatch law: L(n_cap+4, name, body)
-        Law args: [cap_1..cap_n_cap] + [dispatch_parent] + [op_tag] + [op_arg] + [resume/k]
+        Law args: [cap_1..cap_n_cap] + [dispatch_parent] + [op_tag] + [op_arg] + [k_open]
+
+        Open-continuation protocol (M13.3): k_open is 2-arg (dispatch, value).
+        For deep arms: resume = k_open(dispatch_current) — handler reinstalled.
+        For once arms: resume = k_open(dispatch_parent) — handler discharged.
 
         Dispatches on op_tag via nat ladder; each arm binds op_arg and resume.
-        Unhandled tags forward to dispatch_parent(op_tag, op_arg, k).
+        Unhandled tags forward to dispatch_parent(op_tag, op_arg, k_open).
         Free outer locals are lambda-lifted as leading parameters.
         """
         if not op_arms:
-            # No op arms: pure forwarder — dispatch_parent(tag, arg, k)
+            # No op arms: pure forwarder — dispatch_parent(tag, arg, k_open_forwarded)
+            # Wrap k_open with forward_k to preserve this handler layer.
+            # dispatch_fn_base = N(0) (self-ref, no captures)
+            # k_open_forwarded = forward_k(k_open, N(0), dispatch', v)
+            k_fwd = bapp(bapp(P(self._FORWARD_K), N(4)), N(0))
             return P(L(4, encode_name(f'{name_hint}_dispatch'),
-                       bapp(bapp(bapp(N(1), N(2)), N(3)), N(4))))
+                       bapp(bapp(bapp(N(1), N(2)), N(3)), k_fwd)))
 
         # Collect free vars from all arm bodies (excluding arm-specific names)
         all_bodies = []
@@ -2710,7 +2754,7 @@ class Compiler:
         free_locals = self._collect_free_for_handler(all_bodies, all_bounds, env)
         n_cap = len(free_locals)
 
-        # Build dispatch_env: [caps...] + [dispatch_parent] + [op_tag] + [op_arg] + [resume]
+        # Build dispatch_env: [caps...] + [dispatch_parent] + [op_tag] + [op_arg] + [k_open]
         dispatch_env = Env(globals=env.globals, arity=n_cap + 4,
                            self_ref_name=env.self_ref_name)
         for i, fv in enumerate(free_locals, 1):
@@ -2720,10 +2764,27 @@ class Compiler:
         op_arg_idx = n_cap + 3
         k_idx      = n_cap + 4
 
-        # Build forwarding default: dispatch_parent(op_tag, op_arg, k)
-        forward_body = bapp(bapp(bapp(N(dp_idx), N(op_tag_idx)), N(op_arg_idx)), N(k_idx))
+        # Build dispatch_fn_base: self-ref applied to captures but NOT dp.
+        # This is the dispatch function that takes dp as its next argument.
+        # Used by forward_k to thread the correct parent dispatch through
+        # nested handler layers.
+        dispatch_fn_base = N(0)
+        for i in range(1, n_cap + 1):
+            dispatch_fn_base = bapp(dispatch_fn_base, N(i))
 
-        # Compile each arm's body in arm_env (with op_arg and resume bound)
+        # dispatch_current = dispatch_fn_base(dp) — full dispatch for deep arms.
+        dispatch_current = bapp(dispatch_fn_base, N(dp_idx))
+
+        # Build forwarding default: wrap k_open so nested handlers are preserved.
+        # forward_k(k_open, dispatch_fn_base, dispatch', v) = k_open(dispatch_fn_base(dispatch'), v)
+        # The parent dispatch applies its own dispatch' to k_open_forwarded,
+        # which reinstalls this handler with dispatch' as the new parent.
+        k_open_forwarded = bapp(bapp(P(self._FORWARD_K), N(k_idx)), dispatch_fn_base)
+        forward_body = bapp(bapp(bapp(N(dp_idx), N(op_tag_idx)), N(op_arg_idx)), k_open_forwarded)
+
+        # Compile each arm's body in arm_env.
+        # Resume is compiled at a virtual index, then substituted with the
+        # appropriate open-continuation application (deep or shallow).
         tag_val_pairs = []
         for arm in op_arms:
             tag = self._lookup_op_tag(arm.op_name)
@@ -2732,8 +2793,17 @@ class Compiler:
                 pn = self._pat_var_name(p)
                 if pn not in ('_wild', '_pat', '__'):
                     arm_env.locals[pn] = op_arg_idx
-            arm_env.locals[arm.resume] = k_idx
+            arm_env.locals[arm.resume] = self._RESUME_VIRTUAL_IDX
             body_val = self._compile_expr(arm.body, arm_env, f'{name_hint}_op{tag}')
+
+            # Substitute virtual resume with actual open-continuation application.
+            if arm.once:
+                # Shallow: resume = k_open(dispatch_parent) — handler discharged
+                resume_expr = bapp(N(k_idx), N(dp_idx))
+            else:
+                # Deep: resume = k_open(dispatch_current) — handler reinstalled
+                resume_expr = bapp(N(k_idx), dispatch_current)
+            body_val = _subst_virtual_resume(body_val, self._RESUME_VIRTUAL_IDX, resume_expr)
             tag_val_pairs.append((tag, body_val))
 
         tag_val_pairs.sort(key=lambda t: t[0])
@@ -2807,19 +2877,23 @@ class Compiler:
         """
         Compile: x ← rhs_comp; body_expr   (effectful bind)
 
-        Result is a CPS computation value (a 2-arg function taking dispatch and k).
-        Encoding: λ dispatch k_outer → rhs_comp dispatch (λ x → body_comp dispatch k_outer)
+        Result is a CPS computation value (a 2-arg function taking dispatch and k_open).
+        Encoding: λ dispatch k_open_outer → rhs dispatch (inner_cont_open caps k_open_outer)
 
-        The inner continuation lambda captures dispatch and k_outer from the outer
-        2-arg law via lambda lifting.
+        Open-continuation protocol (M13.3): continuations are 2-arg (dispatch, value).
+        The inner continuation is NOT applied with dispatch — it remains "open" so
+        the dispatch function can choose deep (current dispatch) or shallow (parent
+        dispatch) when handling an operation.
 
         Outer law (arity = n_cap+2):
-          [caps...] + [dispatch] + [k_outer]
-          body = rhs_val dispatch (inner_cont caps dispatch k_outer)
+          [caps...] + [dispatch] + [k_open_outer]
+          body = rhs_val dispatch (inner_cont_open caps k_open_outer)
 
         Inner continuation law (arity = n_cap+3):
-          [caps...] + [dispatch] + [k_outer] + [x]
-          body = body_comp dispatch k_outer  (with x bound)
+          [caps...] + [k_open_outer] + [dispatch] + [x]
+          body = body_comp dispatch k_open_outer  (with x bound)
+
+        Partial application: inner_cont_open(caps, k_open_outer) is 2-arg (dispatch, x).
         """
         # Collect free vars from rhs and body (excluding the do-bound name x)
         all_free: set = set()
@@ -2830,11 +2904,13 @@ class Compiler:
 
         # Indices in the outer (n_cap+2)-arg law
         outer_dispatch_idx = n_cap + 1
-        outer_k_idx        = n_cap + 2
+        outer_k_open_idx   = n_cap + 2
 
         # Indices in the inner (n_cap+3)-arg continuation law
-        inner_dispatch_idx = n_cap + 1
-        inner_k_idx        = n_cap + 2
+        # Reordered: k_open_outer BEFORE dispatch so partial application
+        # with (caps, k_open_outer) gives a 2-arg open continuation.
+        inner_k_open_idx   = n_cap + 1
+        inner_dispatch_idx = n_cap + 2
         inner_x_idx        = n_cap + 3
 
         # --- Build inner continuation law ---
@@ -2843,12 +2919,12 @@ class Compiler:
         for i, fv in enumerate(free_locals, 1):
             inner_env.locals[fv] = i
         inner_env.locals['__dispatch__'] = inner_dispatch_idx
-        inner_env.locals['__k__']        = inner_k_idx
+        inner_env.locals['__k__']        = inner_k_open_idx
         inner_env.locals[expr.name]      = inner_x_idx  # do-bound variable
 
         body_cps = self._compile_expr(expr.body, inner_env, name_hint + '_body')
-        # Apply body_cps to dispatch (N(inner_dispatch_idx)) and k_outer (N(inner_k_idx))
-        inner_body = bapp(bapp(body_cps, N(inner_dispatch_idx)), N(inner_k_idx))
+        # Apply body_cps to dispatch and k_open_outer
+        inner_body = bapp(bapp(body_cps, N(inner_dispatch_idx)), N(inner_k_open_idx))
         inner_law  = P(L(n_cap + 3, encode_name(name_hint + '_cont'), inner_body))
 
         # --- Build outer 2-arg (+ captures) law ---
@@ -2857,19 +2933,19 @@ class Compiler:
         for i, fv in enumerate(free_locals, 1):
             outer_env.locals[fv] = i
         outer_env.locals['__dispatch__'] = outer_dispatch_idx
-        outer_env.locals['__k__']        = outer_k_idx
+        outer_env.locals['__k__']        = outer_k_open_idx
 
         rhs_val = self._compile_expr(expr.rhs, outer_env, name_hint + '_rhs')
 
-        # Partially apply inner_law to captures + dispatch + k_outer
-        inner_cont = inner_law
+        # Partially apply inner_law to captures + k_open_outer (NOT dispatch).
+        # Result is a 2-arg open continuation: (dispatch, x) → body(dispatch, k_open_outer)
+        inner_cont_open = inner_law
         for i in range(1, n_cap + 1):
-            inner_cont = bapp(inner_cont, N(i))
-        inner_cont = bapp(inner_cont, N(outer_dispatch_idx))
-        inner_cont = bapp(inner_cont, N(outer_k_idx))
+            inner_cont_open = bapp(inner_cont_open, N(i))
+        inner_cont_open = bapp(inner_cont_open, N(outer_k_open_idx))
 
-        # Outer body: rhs_comp dispatch inner_cont
-        outer_body = bapp(bapp(rhs_val, N(outer_dispatch_idx)), inner_cont)
+        # Outer body: rhs_comp dispatch inner_cont_open
+        outer_body = bapp(bapp(rhs_val, N(outer_dispatch_idx)), inner_cont_open)
         do_law     = L(n_cap + 2, encode_name(name_hint + '_do'), outer_body)
 
         if env.arity == 0:
