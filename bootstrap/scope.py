@@ -198,6 +198,10 @@ class Resolver:
         b_pure = BindingValue('pure', None, None, Loc('<builtin>', 0, 0))
         self.env.bindings['pure'] = b_pure
         self.frames[0].bind('pure', 'pure')
+        # `run comp` executes a CPS computation with null dispatch and identity k
+        b_run = BindingValue('run', None, None, Loc('<builtin>', 0, 0))
+        self.env.bindings['run'] = b_run
+        self.frames[0].bind('run', 'run')
 
     # ------------------------------------------------------------------
     # Frame management

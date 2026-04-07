@@ -19,29 +19,11 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Run PLAN evaluator tests
-        run: python3 tests/sanity/test_plan.py
+      - name: Install pytest
+        run: pip install pytest
 
-      - name: Run seed round-trip tests
-        run: python3 tests/sanity/test_seed.py
-
-      - name: Run bootstrap structural tests
-        run: python3 tests/bootstrap/test_bootstrap.py
-
-      - name: Run bootstrap lexer tests
-        run: python3 tests/bootstrap/test_lexer.py
-
-      - name: Run bootstrap parser tests
-        run: python3 tests/bootstrap/test_parser.py
-
-      - name: Run bootstrap scope resolver tests
-        run: python3 tests/bootstrap/test_scope.py
-
-      - name: Run bootstrap type checker tests
-        run: python3 tests/bootstrap/test_typecheck.py
-
-      - name: Run bootstrap codegen tests
-        run: python3 tests/bootstrap/test_codegen.py
+      - name: Run all Python-only tests
+        run: python3 -m pytest tests/bootstrap/ tests/compiler/ tests/prelude/ tests/sanity/ -v --tb=short
 
   # ── xocore PLAN VM seed validation (Linux x86-64 only) ──────────────────
   plan-vm:
@@ -54,6 +36,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Install pytest
+        run: pip install pytest
 
       - name: Install Nix
         uses: cachix/install-nix-action@v27
@@ -89,6 +74,6 @@ jobs:
         run: |
           echo "" | timeout 10 x/plan xseed/sire.seed || true
 
-      - name: Validate Python-compiled seeds against planvm
+      - name: Run all tests (planvm-gated tests now active)
         run: |
-          PLANVM=planvm python3 tests/planvm/test_seed_planvm.py
+          PLANVM=planvm python3 -m pytest tests/ -v --tb=short

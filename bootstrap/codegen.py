@@ -187,6 +187,8 @@ class Compiler:
         self.env = Env()
         # effect op tag lookup: fq_op_name → tag (and short_name → tag)
         self.effect_op_tags: dict[str, int] = {}
+        # Global op tag counter — ensures unique tags across all effects
+        self._next_op_tag: int = 0
         # Typeclass info: class_fq → ordered list of method short names
         self._class_methods: dict[str, list[str]] = {}
         # Constrained lets: fq → [(class_fq, [method_fq, ...])] per constraint
@@ -232,6 +234,12 @@ class Compiler:
         # body = bapp(N(3), N(1)) = apply k to value
         pure_law = L(3, encode_name('pure'), bapp(N(3), N(1)))
         self.env.globals['pure'] = pure_law
+        # `run comp` — execute a CPS computation with null dispatch and identity k.
+        # L(1, "run", comp(null_dispatch, id))
+        # N(1)=comp, P(_NULL_DISPATCH)=dispatch_parent, P(_ID_LAW)=continuation
+        run_law = L(1, encode_name('run'),
+                     bapp(bapp(N(1), P(self._NULL_DISPATCH)), P(self._ID_LAW)))
+        self.env.globals['run'] = run_law
 
     # -----------------------------------------------------------------------
     # Entry point
@@ -495,7 +503,9 @@ class Compiler:
         """
         fq_eff = f'{self.module}.{decl.name}'
         dummy_env = Env(globals=self.env.globals, arity=3)
-        for tag, op in enumerate(decl.ops):
+        for op in decl.ops:
+            tag = self._next_op_tag
+            self._next_op_tag += 1
             fq_op = f'{fq_eff}.{op.name}'
             # Tag literal inside a 3-arg law body: quote if tag <= 3
             tag_val = self._compile_nat_literal(tag, dummy_env)
@@ -860,7 +870,12 @@ class Compiler:
                 # not a pinned version that breaks Case_ dispatch.
                 if is_nat(val):
                     return self._compile_nat_literal(val, env)
-                return P(val) if not is_pin(val) else val
+                # Apps (partial applications) are safe as law body literals — kal
+                # returns them as-is.  Pinning them creates Pin(App(...)) which the
+                # evaluator can't exec when later saturated.
+                if is_app(val) or is_pin(val):
+                    return val
+                return P(val)
 
         # Last resort: try with module prefix stripped (for builtins)
         short = fq.split('.')[-1]
@@ -879,7 +894,9 @@ class Compiler:
                 return val
             if is_nat(val):
                 return self._compile_nat_literal(val, env)
-            return P(val) if not is_pin(val) else val
+            if is_app(val) or is_pin(val):
+                return val
+            return P(val)
 
         raise CodegenError(f'codegen: unbound variable {fq!r}')
 
@@ -997,7 +1014,9 @@ class Compiler:
             return val
         if is_nat(val):
             return self._compile_nat_literal(val, env)
-        return P(val) if not is_pin(val) else val
+        if is_app(val) or is_pin(val):
+            return val
+        return P(val)
 
     def _infer_type_key(self, expr: Any, env: Env) -> str | None:
         """Heuristically determine the type key of an expression for instance lookup.
@@ -1246,6 +1265,12 @@ class Compiler:
     # const2:   L(2, 0, N(1)) — takes 2 args, returns first
     _ID_LAW = L(1, 0, N(1))
     _CONST2_LAW = L(2, 0, N(1))
+    # Null dispatch: 3-arg law that returns 0. Used as dispatch_parent at the
+    # outermost handler level. Should never be reached in a well-typed program.
+    _NULL_DISPATCH = L(3, encode_name('_null_dispatch'), P(N(0)))
+    # Compose: L(3, name, f(g(x))) — compose(f, g, x) = f(g(x))
+    # Used by handle to build composed return continuations.
+    _COMPOSE = L(3, encode_name('_compose'), bapp(N(1), bapp(N(2), N(3))))
 
     def _compile_if(self, expr: ExprIf, env: Env, name_hint: str) -> Any:
         """
@@ -1970,15 +1995,29 @@ class Compiler:
             return step
 
     def _build_precompiled_nat_dispatch(self, tag_val_pairs: list, wild_body, wild_var,
-                                         scrutinee: Any, env: Env, name_hint: str) -> Any:
+                                         scrutinee: Any, env: Env, name_hint: str,
+                                         wild_precompiled: Any = None) -> Any:
         """
         Build a Case_ dispatch on pre-compiled (tag, value) pairs.
         Like _build_nat_dispatch but tag_val_pairs are already-compiled PLAN values.
+
+        wild_precompiled: optional pre-compiled PLAN value to use as the default
+        (fallback) case when no arm matches. Takes precedence over wild_body.
         """
         const2_pin = P(self._CONST2_LAW)
-        if not tag_val_pairs:
+
+        def _get_wild_val(e: Env) -> Any:
+            """Resolve the wildcard/default value for the given env."""
+            if wild_precompiled is not None:
+                return wild_precompiled
             if wild_body is not None:
-                return self._compile_expr(wild_body, env, name_hint + '_wild')
+                return self._compile_expr(wild_body, e, name_hint + '_wild')
+            return None
+
+        if not tag_val_pairs:
+            wv = _get_wild_val(env)
+            if wv is not None:
+                return wv
             return body_nat(0, env.arity)
 
         tag_val_pairs = sorted(tag_val_pairs, key=lambda t: t[0])
@@ -2005,12 +2044,15 @@ class Compiler:
             remaining = [(t - tag_val_pairs[idx][0] - 1, v) for t, v in tag_val_pairs[idx+1:]]
             if remaining:
                 body = self._build_precompiled_nat_dispatch(
-                    remaining, wild_body, wild_var, pred_ref, ext_env, name_hint
+                    remaining, wild_body, wild_var, pred_ref, ext_env, name_hint,
+                    wild_precompiled=wild_precompiled
                 )
-            elif wild_body is not None:
-                body = self._compile_expr(wild_body, ext_env, name_hint + '_wild')
             else:
-                body = body_nat(0, ext_env.arity)
+                wv = _get_wild_val(ext_env)
+                if wv is not None:
+                    body = wv
+                else:
+                    body = body_nat(0, ext_env.arity)
             succ_law = P(L(ext_env.arity, 0, body))
             return partially_apply(succ_law, env)
 
@@ -2018,26 +2060,21 @@ class Compiler:
         first_tag = tag_val_pairs[0][0]
 
         if len(tag_val_pairs) == 1:
-            if wild_body is not None:
-                wild_val = self._compile_expr(wild_body, env, name_hint + '_wild')
+            wild_val = _get_wild_val(env)
+            if wild_val is not None:
                 const_wild = bapp(const2_pin, wild_val) if env.arity > 0 else A(const2_pin, wild_val)
             else:
-                wild_val = None
                 const_wild = bapp(const2_pin, P(N(0))) if env.arity > 0 else A(const2_pin, N(0))
 
             if first_tag <= 0:
-                # first_tag==0: normal dispatch at tag 0.
-                # first_tag<0: unreachable (duplicate-tag arms shifted to negative);
-                # treat same as tag=0 — this arm never fires, so value is irrelevant.
                 return self._make_op2_dispatch(zero_val, const_wild, scrutinee, env)
             else:
-                # Non-zero first tag: fire zero_val at scrutinee=first_tag by building
-                # a succ chain of depth first_tag using recursive lambda-lifted laws.
                 z_val = wild_val if wild_val is not None else body_nat(0, env.arity)
                 ext_env, pred_ref = make_ext_env(env)
                 inner = self._build_precompiled_nat_dispatch(
                     [(first_tag - 1, zero_val)], wild_body, wild_var,
-                    pred_ref, ext_env, name_hint
+                    pred_ref, ext_env, name_hint,
+                    wild_precompiled=wild_precompiled
                 )
                 succ_law = P(L(ext_env.arity, 0, inner))
                 succ = partially_apply(succ_law, env)
@@ -2396,29 +2433,69 @@ class Compiler:
         """
         Compile: handle comp { | return x → body_r | op args k → body_op }
 
-        Encoding (CPS):
-          dispatch_fn = L(3+n_cap, name, nat_dispatch_body)   -- (op_tag, op_arg, k)
-          return_fn   = L(1+n_cap, name, return_body)         -- (x)
-          result = A(A(comp_val, dispatch_fn), return_fn)     -- [top level]
-                 = bapp(bapp(comp_val, dispatch_fn), return_fn)  -- [law body]
+        Produces a CPS value: λ(dp, ko) → comp(dispatch(dp), compose(ko, ret_fn))
 
-        When `comp` is an effect op call `E.op arg`, the assembly evaluates as:
-          op_law arg dispatch_fn return_fn
-          → dispatch_fn(tag, arg, return_fn)
-          → arm_body[arg_pats=arg, resume=return_fn]
+        dispatch_fn has arity n_cap+4: [caps] + [dp] + [tag] + [arg] + [k]
+        Applying dp partially gives a 3-arg dispatch function.
+        compose(ko, ret_fn) gives λ x → ko(ret_fn(x)).
+
+        To run the resulting CPS value, apply it to (null_dispatch, id):
+          handle_cps(null_dispatch, id) → raw value
+        Or use the `run` builtin.
         """
-        comp_val = self._compile_expr(expr.comp, env, name_hint + '_comp')
+        # Collect free variables from all sub-expressions
+        all_free: set = set()
+        self._collect_free(expr.comp, set(), env, all_free)
 
         return_arm = next((a for a in expr.arms if isinstance(a, HandlerReturn)), None)
         op_arms    = [a for a in expr.arms if isinstance(a, HandlerOp)]
 
-        dispatch_fn = self._compile_dispatch_fn(op_arms, env, name_hint)
-        return_fn   = self._compile_return_fn(return_arm, env, name_hint)
+        if return_arm:
+            pat_binds = self._pat_binds(return_arm.pattern)
+            self._collect_free(return_arm.body, pat_binds, env, all_free)
+        for arm in op_arms:
+            arm_bound: set = {arm.resume}
+            for p in arm.arg_pats:
+                arm_bound |= self._pat_binds(p)
+            self._collect_free(arm.body, arm_bound, env, all_free)
 
+        free_locals = [k for k in env.locals if k in all_free]
+        n_cap = len(free_locals)
+
+        # CPS handle law: L(n_cap + 2, name, body)
+        # Layout: [cap_1..cap_n_cap] + [dp] + [ko]
+        cps_env = Env(globals=env.globals, arity=n_cap + 2,
+                      self_ref_name=env.self_ref_name)
+        for i, fv in enumerate(free_locals, 1):
+            cps_env.locals[fv] = i
+        dp_idx = n_cap + 1
+        ko_idx = n_cap + 2
+
+        # Compile comp, dispatch, return in cps_env
+        comp_val    = self._compile_expr(expr.comp, cps_env, name_hint + '_comp')
+        dispatch_fn = self._compile_dispatch_fn(op_arms, cps_env, name_hint)
+        return_fn   = self._compile_return_fn(return_arm, cps_env, name_hint)
+
+        # dispatch(dp): apply dp as first arg to dispatch_fn
+        dispatch_applied = bapp(dispatch_fn, N(dp_idx))
+
+        # composed_k = compose(ko, return_fn) = λ x → ko(return_fn(x))
+        composed_k = bapp(bapp(P(self._COMPOSE), N(ko_idx)), return_fn)
+
+        # CPS body: comp(dispatch(dp), composed_k)
+        cps_body = bapp(bapp(comp_val, dispatch_applied), composed_k)
+        cps_law  = L(n_cap + 2, encode_name(f'{name_hint}_handle'), cps_body)
+
+        # Partially apply to captures from outer env
         if env.arity == 0:
-            return A(A(comp_val, dispatch_fn), return_fn)
+            result = cps_law
+            for fv in free_locals:
+                result = A(result, env.globals.get(fv, N(0)))
         else:
-            return bapp(bapp(comp_val, dispatch_fn), return_fn)
+            result = P(cps_law)
+            for fv in free_locals:
+                result = bapp(result, N(env.locals[fv]))
+        return result
 
     def _collect_free_for_handler(self, bodies: list, arm_bounds: list, env: Env) -> list:
         """
@@ -2433,15 +2510,17 @@ class Compiler:
 
     def _compile_dispatch_fn(self, op_arms: list, env: Env, name_hint: str) -> Any:
         """
-        Build the handler dispatch law: L(n_cap+3, name, body)
-        Law args: [cap_1..cap_n_cap] + [op_tag] + [op_arg] + [resume/k]
+        Build the handler dispatch law: L(n_cap+4, name, body)
+        Law args: [cap_1..cap_n_cap] + [dispatch_parent] + [op_tag] + [op_arg] + [resume/k]
 
         Dispatches on op_tag via nat ladder; each arm binds op_arg and resume.
+        Unhandled tags forward to dispatch_parent(op_tag, op_arg, k).
         Free outer locals are lambda-lifted as leading parameters.
         """
         if not op_arms:
-            # No op arms: unreachable dispatch; return a 3-arg stub
-            return P(L(3, encode_name(f'{name_hint}_dispatch'), body_nat(0, 3)))
+            # No op arms: pure forwarder — dispatch_parent(tag, arg, k)
+            return P(L(4, encode_name(f'{name_hint}_dispatch'),
+                       bapp(bapp(bapp(N(1), N(2)), N(3)), N(4))))
 
         # Collect free vars from all arm bodies (excluding arm-specific names)
         all_bodies = []
@@ -2456,14 +2535,18 @@ class Compiler:
         free_locals = self._collect_free_for_handler(all_bodies, all_bounds, env)
         n_cap = len(free_locals)
 
-        # Build dispatch_env: [caps...] + [op_tag] + [op_arg] + [resume]
-        dispatch_env = Env(globals=env.globals, arity=n_cap + 3,
+        # Build dispatch_env: [caps...] + [dispatch_parent] + [op_tag] + [op_arg] + [resume]
+        dispatch_env = Env(globals=env.globals, arity=n_cap + 4,
                            self_ref_name=env.self_ref_name)
         for i, fv in enumerate(free_locals, 1):
             dispatch_env.locals[fv] = i
-        op_tag_idx = n_cap + 1
-        op_arg_idx = n_cap + 2
-        k_idx      = n_cap + 3
+        dp_idx     = n_cap + 1
+        op_tag_idx = n_cap + 2
+        op_arg_idx = n_cap + 3
+        k_idx      = n_cap + 4
+
+        # Build forwarding default: dispatch_parent(op_tag, op_arg, k)
+        forward_body = bapp(bapp(bapp(N(dp_idx), N(op_tag_idx)), N(op_arg_idx)), N(k_idx))
 
         # Compile each arm's body in arm_env (with op_arg and resume bound)
         tag_val_pairs = []
@@ -2482,12 +2565,13 @@ class Compiler:
 
         dispatch_body = self._build_precompiled_nat_dispatch(
             tag_val_pairs, None, None,
-            N(op_tag_idx), dispatch_env, f'{name_hint}_dispatch'
+            N(op_tag_idx), dispatch_env, f'{name_hint}_dispatch',
+            wild_precompiled=forward_body
         )
 
-        dispatch_law = P(L(n_cap + 3, encode_name(f'{name_hint}_dispatch'), dispatch_body))
+        dispatch_law = P(L(n_cap + 4, encode_name(f'{name_hint}_dispatch'), dispatch_body))
 
-        # Partially apply to free_locals in outer env
+        # Partially apply to free_locals in outer env (NOT to dispatch_parent)
         if env.arity == 0:
             result = dispatch_law
             for fv in free_locals:
