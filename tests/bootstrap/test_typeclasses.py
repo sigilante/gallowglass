@@ -649,10 +649,10 @@ def _load_prelude_with_deps(filename: str, module: str,
 
 
 def test_prelude_nat_eq_instance_emitted():
-    """Core.Nat: inst_Eq_Nat is in the compiled output."""
+    """Core.Nat: inst_Eq_Nat method keys are in the compiled output."""
     c = _load_prelude('Nat.gls', 'Core.Nat')
-    assert 'Core.Nat.inst_Eq_Nat' in c
     assert 'Core.Nat.inst_Eq_Nat_eq' in c
+    assert 'Core.Nat.inst_Eq_Nat_neq' in c
 
 
 def test_prelude_nat_eq_equal():
@@ -698,10 +698,10 @@ _BOOL_DEPS = [('Core.Nat', 'Nat.gls')]
 
 
 def test_prelude_bool_eq_instance_emitted():
-    """Core.Bool: inst_Eq_Bool is in the compiled output."""
+    """Core.Bool: inst_Eq_Bool method keys are in the compiled output."""
     c = _load_prelude_with_deps('Bool.gls', 'Core.Bool', _BOOL_DEPS)
-    assert 'Core.Bool.inst_Eq_Bool' in c
     assert 'Core.Bool.inst_Eq_Bool_eq' in c
+    assert 'Core.Bool.inst_Eq_Bool_neq' in c
 
 
 def test_prelude_bool_eq_true_true():

@@ -168,6 +168,7 @@ def build_modules(
     # ------------------------------------------------------------------
     module_envs: dict[str, Env] = {}   # module_name → resolved Env
     all_compiled: dict[str, Any] = {}  # accumulated FQ → PLAN value
+    module_compilers: dict = {}        # module_name → Compiler (for class metadata)
 
     for module_name in order:
         prog = parsed[module_name]
@@ -183,11 +184,23 @@ def build_modules(
         for mod_env in module_envs.values():
             pre_class_methods.update(mod_env.class_methods)
 
+        # Collect class defaults and constraints from prior compilations.
+        pre_class_defaults: dict = {}
+        pre_class_constraints: dict = {}
+        for prev_compiler in module_compilers.values():
+            pre_class_defaults.update(prev_compiler._class_defaults)
+            pre_class_constraints.update(prev_compiler._class_constraints)
+
         # Compile — cross-module globals from all_compiled; class metadata from
         # pre_class_methods enables cross-module instance and constraint resolution.
-        compiled = compile_program(resolved, module_name,
-                                   pre_compiled=all_compiled,
-                                   pre_class_methods=pre_class_methods)
+        from bootstrap.codegen import Compiler
+        compiler = Compiler(module=module_name,
+                            pre_compiled=all_compiled,
+                            pre_class_methods=pre_class_methods,
+                            pre_class_defaults=pre_class_defaults,
+                            pre_class_constraints=pre_class_constraints)
+        compiled = compiler.compile(resolved)
+        module_compilers[module_name] = compiler
 
         # Merge this module's output into the accumulator
         all_compiled.update(compiled)
