@@ -189,7 +189,23 @@ tests/
     test_selfhost.py           ← M8.8 self-hosting; 17 active + 5 planvm-gated
     test_m11.py                ← M11.5 GLS DeclClass/DeclInst (20 tests)
     test_m12_effects.py        ← M12.2/M12.4 GLS effects + DeclUse (25 tests)
+  demos/
+    __init__.py
+    test_calculator.py         ← Calculator demo: compile + arithmetic eval (9 tests)
+    test_csv_table.py          ← CSV table demo: E2E data pipeline eval (10 tests)
 ```
+
+---
+
+## Known Issue: planvm SIGILL on CI (2026-04-07)
+
+The planvm binary built via `nix develop --command make all` crashes with `Illegal
+instruction (core dumped)` on GitHub Actions runners. All ~89 planvm-gated tests
+skip silently. The CI now has a "Verify planvm runs" step that fails the job early
+if the binary crashes, rather than reporting a misleading green result.
+
+See `DECISIONS.md` § "planvm SIGILL on GitHub Actions runners" for details and
+upstream fix plan (xocore-tech/PLAN issue).
 
 ---
 

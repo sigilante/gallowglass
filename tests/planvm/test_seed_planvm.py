@@ -38,13 +38,20 @@ PLANVM = os.environ.get('PLANVM', 'planvm')
 
 
 def planvm_available() -> bool:
-    """Return True if planvm is on PATH (or PLANVM env var points to it)."""
+    """Return True if planvm is on PATH (or PLANVM env var points to it) and runs without crashing."""
     try:
         r = subprocess.run(
-            [PLANVM, '--help'],
+            [PLANVM, '/dev/null'],
             capture_output=True, timeout=5
         )
-        return True          # any response means it exists
+        # Negative returncode = killed by signal (e.g. SIGILL = -4)
+        if r.returncode < 0:
+            import signal
+            sig = -r.returncode
+            signame = signal.Signals(sig).name if sig in signal.Signals._value2member_map_ else str(sig)
+            print(f'planvm crashed with signal {signame} — binary may be incompatible with this CPU', flush=True)
+            return False
+        return True
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 

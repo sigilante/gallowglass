@@ -23,7 +23,7 @@ jobs:
         run: pip install pytest
 
       - name: Run all Python-only tests
-        run: python3 -m pytest tests/bootstrap/ tests/compiler/ tests/prelude/ tests/sanity/ -v --tb=short
+        run: python3 -m pytest tests/bootstrap/ tests/compiler/ tests/prelude/ tests/sanity/ tests/demos/ -v --tb=short
 
   # ── xocore PLAN VM seed validation (Linux x86-64 only) ──────────────────
   plan-vm:
@@ -66,14 +66,26 @@ jobs:
       - name: Install planvm
         run: |
           cp /tmp/planvm-src/x/plan /usr/local/bin/planvm
-          planvm --help 2>&1 || true
           echo "planvm: $(which planvm)"
 
-      - name: Smoke-test VM (Sire REPL on empty input)
-        working-directory: /tmp/planvm-src
+      - name: Verify planvm runs (detect SIGILL / bad build)
         run: |
-          echo "" | timeout 10 x/plan xseed/sire.seed || true
+          # planvm with no args should exit quickly (non-zero is fine, crash is not)
+          timeout 10 planvm /dev/null 2>&1 || CODE=$?
+          if [ "${CODE:-0}" -gt 128 ]; then
+            echo "::error::planvm crashed with signal $((CODE - 128)) — binary incompatible with runner CPU"
+            exit 1
+          fi
+          echo "planvm binary OK (exit code ${CODE:-0})"
 
       - name: Run all tests (planvm-gated tests now active)
         run: |
           PLANVM=planvm python3 -m pytest tests/ -v --tb=short
+
+      - name: Verify planvm_available() agrees
+        run: |
+          PLANVM=planvm python3 -c "
+          from tests.planvm.test_seed_planvm import planvm_available
+          assert planvm_available(), 'planvm_available() returned False — tests would skip'
+          print('planvm_available() = True')
+          "
