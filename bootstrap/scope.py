@@ -34,7 +34,7 @@ from bootstrap.ast import (
     TyUnit, TyBottom, TyEmpty, TyConstrained, TyRefined, EffRow,
     # Patterns
     PatWild, PatVar, PatCon, PatNat, PatText, PatTuple, PatList,
-    PatCons, PatAs, PatOr,
+    PatCons, PatRecord, PatAs, PatOr,
     # Expressions
     ExprVar, ExprApp, ExprLam, ExprLet, ExprMatch, ExprHandle,
     HandlerReturn, HandlerOp, ExprIf, ExprTuple, ExprList, ExprNat,
@@ -126,6 +126,7 @@ class Env:
     bindings: dict[str, Binding] = field(default_factory=dict)
     module_exports: dict[str, set[str]] = field(default_factory=dict)
     class_methods: dict[str, set[str]] = field(default_factory=dict)
+    record_fields: dict[str, list[str]] = field(default_factory=dict)
 
     def lookup(self, fq_name: str) -> Binding | None:
         return self.bindings.get(fq_name)
@@ -185,6 +186,8 @@ class Resolver:
         # Module alias map: short prefix → fq module name
         # e.g. 'List' → 'Core.List' after  use Core.List
         self.module_aliases: dict[str, str] = {}
+        # Record field-set → fq type name reverse lookup (for ExprRecord/PatRecord)
+        self._field_to_record: dict[frozenset[str], str] = {}
         # Pre-declare keyword constructors (True, False, Unit, Never)
         # These are built-in and don't belong to any user module.
         for kw, ty in [('True', 'Bool'), ('False', 'Bool'),
@@ -357,12 +360,13 @@ class Resolver:
             fq = f"{mod}.{decl.name}"
             b = BindingType(fq, len(decl.params), decl.loc)
             self._safe_register_type(fq, b, decl.name, top_level=top_level)
-            # Synthetic constructor shares fq with type for records
-            if fq not in self.env.bindings:
-                bc = BindingCon(fq, fq, len(decl.fields), decl.loc)
-                self.env.bindings[fq] = bc
-                if top_level:
-                    self.frames[0].bind(decl.name, fq)
+            # Constructor shares fq with type for records (allowed by _safe_register_con)
+            bc = BindingCon(fq, fq, len(decl.fields), decl.loc)
+            self._safe_register_con(fq, bc, decl.name, top_level=top_level)
+            # Store field metadata for desugaring ExprRecord/ExprRecordUpdate/PatRecord
+            field_names = [name for name, _ in decl.fields]
+            self.env.record_fields[fq] = field_names
+            self._field_to_record[frozenset(field_names)] = fq
 
         elif isinstance(decl, DeclEff):
             fq = f"{mod}.{decl.name}"
@@ -481,7 +485,12 @@ class Resolver:
         if isinstance(decl, DeclType):
             return decl   # constructors are in env; types erased at runtime
 
-        if isinstance(decl, (DeclTypeAlias, DeclTypeBuiltin, DeclRecord, DeclEff)):
+        if isinstance(decl, DeclRecord):
+            # Desugar: record → single-constructor ADT with tag 0
+            con = Constructor(decl.name, [ty for _, ty in decl.fields], decl.loc)
+            return DeclType(decl.name, decl.params, [con], decl.loc)
+
+        if isinstance(decl, (DeclTypeAlias, DeclTypeBuiltin, DeclEff)):
             return decl
 
         if isinstance(decl, DeclClass):
@@ -544,6 +553,11 @@ class Resolver:
         # in Core.Bool when Eq is declared in Core.Nat).
         for class_fq, method_fqs in other_env.class_methods.items():
             self.env.class_methods.setdefault(class_fq, set()).update(method_fqs)
+
+        # Propagate record field metadata for cross-module record desugaring
+        for rec_fq, fnames in other_env.record_fields.items():
+            self.env.record_fields[rec_fq] = fnames
+            self._field_to_record[frozenset(fnames)] = rec_fq
 
         if decl.spec is None:
             # use Mod  — qualified access only; no new unqualified names
@@ -672,15 +686,31 @@ class Resolver:
             return ExprLet(expr.pattern, type_ann, rhs, body, expr.loc)
 
         if isinstance(expr, ExprMatch):
+            # Flatten or-patterns: PatOr([p1, p2], ...) with body b
+            # becomes two arms: (p1, guard, b), (p2, guard, b)
+            expanded_arms = []
+            for (pat, guard, body) in expr.arms:
+                if isinstance(pat, PatOr):
+                    for sub_pat in pat.pats:
+                        expanded_arms.append((sub_pat, guard, body))
+                else:
+                    expanded_arms.append((pat, guard, body))
+
+            has_guards = any(g is not None for _, g, _ in expanded_arms)
+            if has_guards:
+                # Desugar guards: wrap scrutinee in a let and transform each
+                # guarded arm | pat if guard → body into
+                # | pat → if guard then body else match __scrut { remaining }
+                return self._desugar_guarded_match(expr.scrutinee, expanded_arms, expr.loc)
+
             scrutinee = self._resolve_expr(expr.scrutinee)
             arms = []
-            for (pat, guard, body) in expr.arms:
+            for (pat, guard, body) in expanded_arms:
                 self._push_frame()
                 resolved_pat = self._resolve_pat(pat)
-                guard_r = self._resolve_expr(guard) if guard else None
                 body_r = self._resolve_expr(body)
                 self._pop_frame()
-                arms.append((resolved_pat, guard_r, body_r))
+                arms.append((resolved_pat, None, body_r))
             return ExprMatch(scrutinee, arms, expr.loc)
 
         if isinstance(expr, ExprHandle):
@@ -699,7 +729,13 @@ class Resolver:
             return ExprTuple([self._resolve_expr(e) for e in expr.elems], expr.loc)
 
         if isinstance(expr, ExprList):
-            return ExprList([self._resolve_expr(e) for e in expr.elems], expr.loc)
+            # Desugar [a, b, c] → Cons a (Cons b (Cons c Nil))
+            result: Any = ExprVar(QualName(['Nil'], expr.loc), expr.loc)
+            for elem in reversed(expr.elems):
+                result = ExprApp(
+                    ExprApp(ExprVar(QualName(['Cons'], expr.loc), expr.loc), elem, expr.loc),
+                    result, expr.loc)
+            return self._resolve_expr(result)
 
         if isinstance(expr, ExprPin):
             rhs = self._resolve_expr(expr.rhs)
@@ -745,13 +781,12 @@ class Resolver:
                 expr.loc)
 
         if isinstance(expr, ExprRecord):
-            fields = [(n, self._resolve_expr(v)) for n, v in expr.fields]
-            return ExprRecord(fields, expr.loc)
+            # Desugar { x = 1, y = 2 } → RecordCon 1 2
+            return self._desugar_record_expr(expr)
 
         if isinstance(expr, ExprRecordUpdate):
-            base = self._resolve_expr(expr.base)
-            fields = [(n, self._resolve_expr(v)) for n, v in expr.fields]
-            return ExprRecordUpdate(base, fields, expr.loc)
+            # Desugar base { x = 3 } → match base { | Rec __f0 __f1 → Rec 3 __f1 }
+            return self._desugar_record_update(expr)
 
         # Literals and ExprUnit: no names
         return expr
@@ -780,6 +815,109 @@ class Resolver:
                 fq_op_name = arm.op_name
             return HandlerOp(arm.once, fq_op_name, arm.arg_pats, arm.resume, body, arm.loc)
         return arm
+
+    def _desugar_guarded_match(self, scrutinee_expr, arms, loc):
+        """Desugar a match with guards into nested if-else + re-match.
+
+        Each guarded arm `| pat if guard → body` becomes
+        `| pat → if guard then body else match __scrut { remaining_arms }`.
+
+        The scrutinee is bound to a fresh variable to avoid re-evaluation.
+        """
+        scrut_name = '__guard_scrut'
+        scrut_pat = PatVar(scrut_name, loc)
+        scrut_var = ExprVar(QualName([scrut_name], loc), loc)
+
+        def build_match_from(arm_index):
+            """Build a match expression from arm_index onward."""
+            remaining = arms[arm_index:]
+            if not remaining:
+                # No remaining arms — this shouldn't happen with well-formed
+                # exhaustive matches, but emit a 0 (abort-like) as fallback
+                return ExprNat(0, loc)
+
+            new_arms = []
+            for i, (pat, guard, body) in enumerate(remaining):
+                if guard is not None:
+                    # Guard present: body becomes if guard then body else <fallback>
+                    fallback = build_match_from(arm_index + i + 1)
+                    guarded_body = ExprIf(guard, body, fallback, loc)
+                    new_arms.append((pat, None, guarded_body))
+                else:
+                    new_arms.append((pat, None, body))
+            return ExprMatch(scrut_var, new_arms, loc)
+
+        inner_match = build_match_from(0)
+
+        # Wrap in let __guard_scrut = scrutinee in <inner_match>
+        let_expr = ExprLet(scrut_pat, None, scrutinee_expr, inner_match, loc)
+        return self._resolve_expr(let_expr)
+
+    def _lookup_record_by_fields(self, field_names: set[str], loc) -> tuple[str, list[str]]:
+        """Look up a record type by its field names. Returns (fq_type, decl_order_fields)."""
+        # Exact match first
+        key = frozenset(field_names)
+        fq = self._field_to_record.get(key)
+        if fq is not None:
+            return fq, self.env.record_fields[fq]
+        raise ScopeError(
+            f"no record type matches fields {{{', '.join(sorted(field_names))}}}",
+            loc)
+
+    def _lookup_record_by_subset(self, field_names: set[str], loc) -> tuple[str, list[str]]:
+        """Look up a record type where field_names is a subset of its fields."""
+        candidates = [fq for fq, fnames in self.env.record_fields.items()
+                      if field_names <= set(fnames)]
+        if len(candidates) == 1:
+            fq = candidates[0]
+            return fq, self.env.record_fields[fq]
+        if len(candidates) == 0:
+            raise ScopeError(
+                f"no record type contains fields {{{', '.join(sorted(field_names))}}}",
+                loc)
+        raise ScopeError(
+            f"ambiguous record update: fields {{{', '.join(sorted(field_names))}}} "
+            f"match multiple record types: {', '.join(sorted(candidates))}",
+            loc)
+
+    def _desugar_record_expr(self, expr: ExprRecord):
+        """Desugar { x = 1, y = 2 } → RecordCon 1 2 (fields in declaration order)."""
+        loc = expr.loc
+        field_names = set(name for name, _ in expr.fields)
+        fq_type, decl_order = self._lookup_record_by_fields(field_names, loc)
+        # Reorder fields to declaration order
+        field_map = dict(expr.fields)
+        short = fq_type.split('.')[-1]
+        result: Any = ExprVar(QualName([short], loc), loc)
+        for fname in decl_order:
+            if fname not in field_map:
+                raise ScopeError(
+                    f"record '{short}' missing field '{fname}'", loc)
+            result = ExprApp(result, field_map[fname], loc)
+        return self._resolve_expr(result)
+
+    def _desugar_record_update(self, expr: ExprRecordUpdate):
+        """Desugar base { x = 3 } → match base { | Rec __f0 __f1 → Rec 3 __f1 }."""
+        loc = expr.loc
+        update_names = set(name for name, _ in expr.fields)
+        fq_type, decl_order = self._lookup_record_by_subset(update_names, loc)
+        update_map = dict(expr.fields)
+        short = fq_type.split('.')[-1]
+        # Build pattern: RecordCon __f_x __f_y
+        temp_names = [f'__f_{fname}' for fname in decl_order]
+        sub_pats = [PatVar(tname, loc) for tname in temp_names]
+        pat = PatCon(QualName([short], loc), sub_pats, loc)
+        # Build rebuild: RecordCon (override_or_temp) ...
+        rebuild: Any = ExprVar(QualName([short], loc), loc)
+        for i, fname in enumerate(decl_order):
+            if fname in update_map:
+                rebuild = ExprApp(rebuild, update_map[fname], loc)
+            else:
+                rebuild = ExprApp(rebuild,
+                    ExprVar(QualName([temp_names[i]], loc), loc), loc)
+        # match base { | pat → rebuild }
+        match_expr = ExprMatch(expr.base, [(pat, None, rebuild)], loc)
+        return self._resolve_expr(match_expr)
 
     # ------------------------------------------------------------------
     # Pattern resolution
@@ -822,13 +960,26 @@ class Resolver:
             return PatTuple([self._resolve_pat(p) for p in pat.pats], pat.loc)
 
         if isinstance(pat, PatList):
-            return PatList([self._resolve_pat(p) for p in pat.pats], pat.loc)
+            # Desugar [a, b, c] → Cons a (Cons b (Cons c Nil))
+            result: Any = PatCon(QualName(['Nil'], pat.loc), [], pat.loc)
+            for p in reversed(pat.pats):
+                result = PatCon(QualName(['Cons'], pat.loc), [p, result], pat.loc)
+            return self._resolve_pat(result)
 
         if isinstance(pat, PatCons):
-            return PatCons(
-                self._resolve_pat(pat.head),
-                self._resolve_pat(pat.tail),
-                pat.loc)
+            # Desugar h :: t → Cons h t
+            result = PatCon(QualName(['Cons'], pat.loc), [pat.head, pat.tail], pat.loc)
+            return self._resolve_pat(result)
+
+        if isinstance(pat, PatRecord):
+            # Desugar { x = px, y = _ } → RecordCon px _
+            field_names = set(name for name, _ in pat.fields)
+            fq_type, decl_order = self._lookup_record_by_fields(field_names, pat.loc)
+            pat_map = dict(pat.fields)
+            short = fq_type.split('.')[-1]
+            sub_pats = [pat_map.get(fname, PatWild(pat.loc)) for fname in decl_order]
+            result = PatCon(QualName([short], pat.loc), sub_pats, pat.loc)
+            return self._resolve_pat(result)
 
         # PatWild, PatNat, PatText: no names
         return pat
@@ -852,6 +1003,9 @@ class Resolver:
         elif isinstance(pat, PatCon):
             for a in pat.args:
                 self._bind_pat_names(a)
+        elif isinstance(pat, PatRecord):
+            for _, p in pat.fields:
+                self._bind_pat_names(p)
         elif isinstance(pat, PatOr):
             for p in pat.pats:
                 self._bind_pat_names(p)

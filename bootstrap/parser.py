@@ -1132,6 +1132,9 @@ class Parser:
         # Text literals
         if t.kind == KIND_TEXT:
             self._advance()
+            if isinstance(t.value, list):
+                # Interpolated text: desugar to text_concat chain
+                return self._desugar_interpolation(t.value, loc)
             return ExprText(t.value, loc)
         if t.kind == KIND_RAWTEXT:
             self._advance()
@@ -1155,6 +1158,39 @@ class Parser:
 
         raise self._error(f"unexpected token {t.kind!r} {t.value!r} in expression")
 
+    def _desugar_interpolation(self, fragments: list, loc) -> Any:
+        """Desugar interpolated text fragments into text_concat/show chain.
+
+        Fragments: list of str | ('interp', raw_expr_text).
+        Result: text_concat(frag1, text_concat(frag2, ...))
+        where interp fragments become show(parsed_expr).
+        """
+        from bootstrap.lexer import lex
+        parts = []
+        for frag in fragments:
+            if isinstance(frag, tuple) and frag[0] == 'interp':
+                # Parse the raw expression text
+                tokens = lex(frag[1], f'{loc.file}:interp')
+                sub_parser = Parser(tokens, f'{loc.file}:interp')
+                expr = sub_parser._parse_expr()
+                # Wrap in show(expr)
+                show_var = ExprVar(QualName(['show'], loc), loc)
+                parts.append(ExprApp(show_var, expr, loc))
+            elif frag:  # non-empty string literal
+                parts.append(ExprText(frag, loc))
+
+        if not parts:
+            return ExprText('', loc)
+        if len(parts) == 1:
+            return parts[0]
+
+        # Build right-associative text_concat chain
+        concat_var = ExprVar(QualName(['text_concat'], loc), loc)
+        result = parts[-1]
+        for part in reversed(parts[:-1]):
+            result = ExprApp(ExprApp(concat_var, part, loc), result, loc)
+        return result
+
     def _parse_list_expr(self) -> ExprList:
         loc = self._loc()
         self._eat(KIND_PUNCT, '[')
@@ -1169,14 +1205,24 @@ class Parser:
         self._eat(KIND_PUNCT, ']')
         return ExprList(elems, loc)
 
+    def _parse_record_field_name(self) -> str:
+        """Parse a field name — accepts snake_case, type vars, and row vars."""
+        t = self._peek()
+        if t.kind in (KIND_SNAKE, KIND_TYPEVAR, KIND_ROWVAR):
+            return self._advance().value
+        return self._eat(KIND_SNAKE).value
+
     def _parse_record_expr(self) -> ExprRecord:
         loc = self._loc()
         self._eat(KIND_PUNCT, '{')
         fields = []
         while not self._check(KIND_PUNCT, '}'):
-            f_name = self._eat(KIND_SNAKE).value
-            self._eat(KIND_PUNCT, '=')
-            f_val = self._parse_expr()
+            f_name = self._parse_record_field_name()
+            if self._try_eat(KIND_PUNCT, '='):
+                f_val = self._parse_expr()
+            else:
+                # Punning: { x } means { x = x }
+                f_val = ExprVar(QualName([f_name], loc), loc)
             fields.append((f_name, f_val))
             if not self._try_eat(KIND_PUNCT, ','):
                 break
@@ -1296,6 +1342,10 @@ class Parser:
             self._eat(KIND_PUNCT, ')')
             return first
 
+        # Record pattern: { field = pat, ... }
+        if t.kind == KIND_PUNCT and t.value == '{':
+            return self._parse_record_pat()
+
         # List pattern
         if t.kind == KIND_PUNCT and t.value == '[':
             return self._parse_list_pat()
@@ -1325,6 +1375,23 @@ class Parser:
             pats.append(self._parse_pattern())
         self._eat(KIND_PUNCT, ']')
         return PatList(pats, loc)
+
+    def _parse_record_pat(self) -> 'PatRecord':
+        loc = self._loc()
+        self._eat(KIND_PUNCT, '{')
+        fields = []
+        while not self._check(KIND_PUNCT, '}'):
+            f_name = self._parse_record_field_name()
+            if self._try_eat(KIND_PUNCT, '='):
+                f_pat = self._parse_pattern()
+            else:
+                # Punning: { x } means { x = x }
+                f_pat = PatVar(f_name, loc)
+            fields.append((f_name, f_pat))
+            if not self._try_eat(KIND_PUNCT, ','):
+                break
+        self._eat(KIND_PUNCT, '}')
+        return PatRecord(fields, loc)
 
     # =========================================================================
     # Predicates (parsed but ignored in bootstrap)

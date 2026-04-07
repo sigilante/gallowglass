@@ -367,35 +367,75 @@ dependency chain: Combinators → Nat → Bool → Option → List → Text.
 Goal: close the gap between the restricted dialect and `spec/06-surface-syntax.md`.
 The parser already handles most forms; codegen rejects them.
 
-### M15.1 — Record types, construction, update, patterns
+### ✅ M15.1 — Record types, construction, update, patterns
 
-`DeclRecord`, `ExprRecord`, `ExprRecordUpdate`, `PatRecord` — all parsed, none
-compiled. Encoding: record = ADT with one constructor and named fields.
+Records desugar to single-constructor ADTs during scope resolution:
+- `DeclRecord` → `DeclType` with one constructor (tag 0), fields become positional args
+- `ExprRecord { x = 1, y = 2 }` → constructor application, fields reordered to declaration order
+- `ExprRecordUpdate base { x = 3 }` → match + rebuild with overrides
+- `PatRecord { x = px }` → `PatCon` with positional sub-patterns, missing fields become `PatWild`
+- Field-set → record-type reverse lookup for type inference from field names
+- Punning: `{ x }` in both expressions and patterns means `{ x = x }`
+- 7 new integration tests in `tests/bootstrap/test_programs.py`.
 
-### M15.2 — Type aliases
+### ✅ M15.2 — Type aliases
 
-`DeclTypeAlias` parsed. Codegen: expand at scope resolution time.
+`DeclTypeAlias` parsed, scope-resolved, type-checked. No codegen needed — types are
+fully erased. Type aliases produce no runtime code by design.
 
-### M15.3 — List/Cons patterns
+### ✅ M15.3 — List/Cons expressions and patterns
 
-`PatList` and `PatCons` parsed. Codegen: desugar to nested `Cons`/`Nil` constructor
-patterns.
+Desugared during scope resolution to constructor forms, then compiled normally:
+- `ExprList [a, b, c]` → `Cons a (Cons b (Cons c Nil))` (nested constructor applications)
+- `PatCons h :: t` → `PatCon("Cons", [h, t])` (single-level constructor pattern)
+- `PatList []` → `PatCon("Nil", [])` (nullary constructor pattern)
 
-### M15.4 — Or patterns
+Multi-element `PatList [a, b]` desugars to nested `PatCon` which requires nested match
+compilation (not yet supported by the bootstrap match codegen). Single-level patterns
+(`[]`, `h :: t`) work now; nested list patterns deferred to nested match compilation.
 
-`PatOr` parsed. Codegen: duplicate the arm body for each alternative.
+7 new tests in `tests/bootstrap/test_programs.py`.
 
-### M15.5 — Guards in match arms
+### ✅ M15.4 — Or patterns
 
-Guards parsed and extracted. Codegen: compile guard as if-then-else wrapping the
-arm body, with fallthrough to the next arm.
+`PatOr` desugared during scope resolution: each alternative in `p1 | p2 → body`
+becomes a separate match arm with the same body. 6 new tests in
+`tests/bootstrap/test_programs.py`.
 
-### M15.6 — String interpolation
+### ✅ M15.5 — Guards in match arms
 
-Parsed. Requires `Show` instances (M14) for embedded expressions. Codegen: desugar
-to `text_concat (show x) ...`.
+Desugared during scope resolution: `| pat if guard → body` becomes
+`| pat → if guard then body else match __scrut { remaining_arms }`. Scrutinee
+bound to a fresh variable to avoid re-evaluation. Guard failure falls through
+to a re-match on remaining arms. 5 new tests in `tests/bootstrap/test_programs.py`.
 
-### M15.7 — GLS compiler parity for M15.1–M15.6
+### ✅ M15.6 — String interpolation
+
+Desugared during parsing: `"hello #{x} world"` becomes
+`text_concat "hello " (text_concat (show x) " world")`. Lexer fixed to produce
+fragment lists for interpolated text; parser sub-parses interpolation expressions
+and builds the `text_concat`/`show` chain. Requires `Show` and `text_concat` in
+scope at the use site. 3 new tests in `tests/bootstrap/test_programs.py`.
+
+### ✅ M15.7 — GLS compiler parity (partial: 7a–7d complete, 7e–7f deferred)
+
+GLS self-hosting compiler updated to handle surface syntax features:
+- **M15.7a** Type aliases: `parse_type_decl_body` detects non-ADT type decls (`type Foo = Bar`,
+  `type Nat : builtin`), skips them via `skip_to_decl_boundary`, emits no-op DLet.
+  `type Byte = Nat` added to Compiler.gls as validation.
+- **M15.7b** List/Cons syntax: `TkLBracket`, `TkRBracket`, `TkColonColon` tokens added.
+  `[a, b, c]` in expressions → nested `Cons(a, Cons(b, Cons(c, Nil)))`.
+  `[]` in patterns → `ArmCon(Nil, [])`. `h :: t` in patterns → `ArmCon(Cons, [h, t])`.
+- **M15.7c** Or-patterns: `arm_con_upper_pe` recursively parses `| Con1 | Con2 → body`,
+  returns `List MatchArm` (body duplicated per alternative). `parse_match_arms_pe` uses `append`.
+- **M15.7d** Guards: `| Con fields if guard → body` detected in `arm_con_upper_pe`.
+  Guard body encoded as `EIf guard body (EVar 0)` sentinel. `parse_match_expr_pe`
+  post-processes: `replace_guard_sentinels` replaces `EVar 0` with
+  `match __gs { remaining_arms }`, wraps scrutinee in `let __gs = scrut`.
+- **M15.7e** String interpolation: deferred (byte-level lexer modification).
+- **M15.7f** Records: deferred (requires field-name-to-type lookup table threading).
+
+17 tests in `tests/compiler/test_m15.py`.
 
 **Deferred past 1.0:** macros/quotation, contract solver tiers, module export
 enforcement, package declarations.
