@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
 **Last updated:** 2026-04-08
-**Current status:** Alpha — M8–M18 complete. M18 (type-annotated Glass IR) complete. 1149 tests passing, 145 skipped.
+**Current status:** Alpha — M8–M19 complete. M19 (pattern match exhaustiveness checking) complete. 1175 tests passing, 145 skipped.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -563,6 +563,37 @@ for pattern/expression inference. All 8 prelude modules typecheck (89 type entri
 Prelude type fixes: replaced Bool/Nat type puns (`is_zero(nat_lt ...)`) with
 type-correct patterns (`nat_gte`, `if/then/else`). Added `Core.Nat.nat_gte`.
 5 tests.
+
+---
+
+## ✅ M19 — Pattern match exhaustiveness checking
+
+Implements Maranget's usefulness algorithm (spec/03-exhaustiveness.md) as a new
+module `bootstrap/exhaustiveness.py`. Integrated at typecheck time after pattern
+type inference.
+
+### ✅ M19.1 — Constructor registry + exhaustiveness module
+
+`TypeChecker.type_constructors` maps FQ type → [(con_name, arity)]. Populated
+during `_register_decl_type` and `_init_builtins` (Bool). `bootstrap/exhaustiveness.py`
+implements the full Maranget algorithm: pattern matrix, constructor specialization,
+default matrix, sigma completeness. Handles algebraic types, Bool, Nat/Text (infinite),
+tuples, nested patterns. 26 tests.
+
+### ✅ M19.2 — Wire into typechecker
+
+`_check_exhaustiveness()` called after match inference in `TypeChecker.infer`.
+Non-exhaustive matches raise `TypecheckError`. `typecheck()` gains
+`prior_type_constructors` parameter for cross-module support.
+
+### ✅ M19.3 — Redundancy warnings
+
+Redundant arms detected via usefulness predicate on preceding rows. Emitted as
+`warnings.warn()` (not errors). 4 redundancy tests.
+
+### ✅ M19.4 — Validation
+
+All 1175 tests pass. No prelude or existing test matches were non-exhaustive.
 
 ---
 

@@ -112,7 +112,7 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
 
 ## Current Phase
 
-**Alpha.** All Milestone 8 phases complete. M9–M18 complete. 112 prelude definitions (65 source-level lets + instance methods) across 8 modules. Eq/Ord/Show/Debug typeclasses with constrained instances. 1149 tests passing.
+**Alpha.** All Milestone 8 phases complete. M9–M19 complete. 112 prelude definitions (65 source-level lets + instance methods) across 8 modules. Eq/Ord/Show/Debug typeclasses with constrained instances. 1175 tests passing.
 
 - Phase 0 (spec): complete.
 - Phase 1 (Python bootstrap compiler): complete. Milestones 1–7.5 done. Core prelude: 112 definitions (65 lets + instance methods), planvm-valid.
@@ -147,6 +147,7 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
 - M16: Pin-based module loading — complete (PinId via BLAKE3-256, pin-wrapped compilation, prelude as 110-pin DAG, pin store, full-cycle integration tests).
 - M17: Glass IR emission — complete (AST-based renderer, FQ names, pin hashes, SCC groups, dependency rendering, round-trip verification, prelude Glass IR emission).
 - M18: Type-annotated Glass IR — complete (standalone type serializer pp_type/pp_scheme, constraint preservation in Scheme, TypeEnv wired into Glass IR renderer, cross-module typechecking via prior_type_env, all 8 prelude modules typecheck).
+- M19: Pattern match exhaustiveness checking — complete (Maranget usefulness algorithm, constructor registry, nested/tuple/literal pattern support, redundancy warnings, integrated at typecheck time).
 
 The bootstrap compiler compiles the **restricted dialect** of Gallowglass only.
 See `bootstrap/BOOTSTRAP.md` for what the restricted dialect permits.
@@ -181,7 +182,7 @@ python3 -m pytest tests/            # all tests
 
 ### Test skip categories
 
-1149 passing, 145 skipped. The skips are all expected:
+1175 passing, 145 skipped. The skips are all expected:
 
 - **planvm-gated (75):** Seed loading and VM execution tests that require the
   `planvm` binary. These run in the `plan-vm` CI job (builds planvm via Nix).

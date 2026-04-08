@@ -162,6 +162,16 @@ match expr {
 | `p1 \| p2`         | Or-pattern (duplicates arm body)     |
 | `pat if guard`     | Guard (desugars to if-else + rematch)|
 
+### Exhaustiveness Checking
+
+Match expressions are statically checked for exhaustiveness at typecheck time.
+A non-exhaustive match is a **compile error**. Redundant arms produce warnings.
+
+- Algebraic types: all constructors must be covered (or a wildcard present)
+- `Nat`, `Text`: infinite types — always require a wildcard or variable arm
+- `Bool`: `True` + `False` must both be covered (or a wildcard present)
+- Nested patterns are checked recursively (Maranget algorithm)
+
 ### If-Then-Else
 
 ```gallowglass
