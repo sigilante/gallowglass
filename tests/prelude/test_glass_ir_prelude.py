@@ -189,10 +189,8 @@ class TestPreludeTypedGlassIR(unittest.TestCase):
         cls.type_env = _TYPEENV_CACHE
 
     def test_type_env_has_entries(self):
-        """Type environment has entries for typechecked modules."""
-        # Combinators(10) + Bool(~6) + Pair(~6) = ~22, but some are
-        # non-let entries; 15+ let-level entries expected
-        self.assertGreater(len(self.type_env), 15)
+        """Type environment has entries for all prelude modules."""
+        self.assertGreater(len(self.type_env), 80)
 
     def test_typed_fragments_have_annotations(self):
         """Definitions with type info get annotations in Glass IR."""
@@ -212,7 +210,7 @@ class TestPreludeTypedGlassIR(unittest.TestCase):
                                     if l.startswith('let ')][0]
                         self.assertIn(':', let_line)
                         annotated += 1
-        self.assertGreater(annotated, 15)
+        self.assertGreater(annotated, 50)
 
     def test_combinators_id_type(self):
         """Core.Combinators.id has type ∀ a. a → a."""
@@ -232,6 +230,20 @@ class TestPreludeTypedGlassIR(unittest.TestCase):
     def test_pair_fst_type(self):
         """Core.Pair.fst has a polymorphic type."""
         scheme = self.type_env.get('Core.Pair.fst')
+        self.assertIsNotNone(scheme)
+        rendered = pp_scheme(scheme)
+        self.assertIn('∀', rendered)
+        self.assertIn('→', rendered)
+
+    def test_nat_add_type(self):
+        """Core.Nat.add has type Nat → Nat → Nat."""
+        scheme = self.type_env.get('Core.Nat.add')
+        self.assertIsNotNone(scheme)
+        self.assertEqual(pp_scheme(scheme), 'Nat → Nat → Nat')
+
+    def test_list_map_type(self):
+        """Core.List.map has a polymorphic function type."""
+        scheme = self.type_env.get('Core.List.map')
         self.assertIsNotNone(scheme)
         rendered = pp_scheme(scheme)
         self.assertIn('∀', rendered)

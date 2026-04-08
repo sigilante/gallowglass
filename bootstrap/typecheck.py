@@ -654,7 +654,13 @@ class TypeChecker:
             bound[ty.name] = m
             return m
         if isinstance(ty, AstTyCon):
-            return TCon(str(ty.name))
+            name = str(ty.name)
+            # If bare name, check for FQ equivalent in type_arity
+            if '.' not in name:
+                fq_name = f"{self.module}.{name}"
+                if fq_name in self.type_arity:
+                    name = fq_name
+            return TCon(name)
         if isinstance(ty, AstTyApp):
             return TApp(self.ast_to_mono(ty.fun, bound), self.ast_to_mono(ty.arg, bound))
         if isinstance(ty, AstTyArr):
@@ -776,6 +782,14 @@ class TypeChecker:
     def _lookup_op(self, op: str) -> Scheme:
         """Return the type scheme for a built-in operator, or a fresh scheme."""
         return self._op_types.get(op, Scheme([], self.fresh()))
+
+    def _resolve_list_tycon(self) -> str:
+        """Resolve the List type constructor name, preferring FQ if registered."""
+        # Check for module-qualified List (e.g. Core.List.List)
+        for name in self.type_arity:
+            if name.endswith('.List') and self.type_arity[name] == 1:
+                return name
+        return 'List'
 
     # ------------------------------------------------------------------ #
     # Constructor type reconstruction from DeclType                        #
@@ -920,13 +934,13 @@ class TypeChecker:
                 t, b = self.infer_pat(p, lenv)
                 self.unify(elem_ty, t, p.loc)
                 bindings.update(b)
-            list_ty = TApp(TCon('List'), elem_ty)
+            list_ty = TApp(TCon(self._resolve_list_tycon()), elem_ty)
             return list_ty, bindings
 
         if isinstance(pat, PatCons):
             head_ty, head_b = self.infer_pat(pat.head, lenv)
             tail_ty, tail_b = self.infer_pat(pat.tail, lenv)
-            list_ty = TApp(TCon('List'), head_ty)
+            list_ty = TApp(TCon(self._resolve_list_tycon()), head_ty)
             self.unify(list_ty, tail_ty, pat.loc)
             return list_ty, {**head_b, **tail_b}
 
@@ -1042,7 +1056,7 @@ class TypeChecker:
             for e in expr.elems:
                 t = self.infer(lenv, e)
                 self.unify(elem_ty, t, e.loc)
-            return TApp(TCon('List'), elem_ty)
+            return TApp(TCon(self._resolve_list_tycon()), elem_ty)
 
         if isinstance(expr, ExprOp):
             op_scheme = self._lookup_op(expr.op)

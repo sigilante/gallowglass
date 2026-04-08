@@ -13,7 +13,7 @@
 -- Dependencies:
 --   Core.Nat — nat_eq, nat_lt, add, mul, pred, is_zero, Eq class
 
-use Core.Nat { Eq, add, mul, sub, div_nat, mod_nat, nat_eq, nat_lt, pred, is_zero }
+use Core.Nat { Eq, add, mul, sub, div_nat, mod_nat, nat_eq, nat_lt, nat_gte, pred, is_zero }
 
 external mod Core.Text.Prim {
   mk_text  : Nat → Nat → Text
@@ -76,7 +76,7 @@ let show_digit : Nat → Text
 -- Succ arm (n >= 10): recursive — deferred via PatVar k.
 let show_nat_rev : Nat → Text → Text
   = λ n acc →
-      match (is_zero (nat_lt n 10)) {
+      match (nat_gte n 10) {
         | 0 → text_concat (show_digit n) acc
         | k → show_nat_rev (div_nat n 10) (text_concat (show_digit (mod_nat n 10)) acc)
       }
