@@ -13,6 +13,9 @@ Public API:
         Emit all top-level values as a single pinned record.
 """
 
+import os
+
+from bootstrap.pin import build_manifest, save_manifest
 from dev.harness.plan import P, A, N, is_pin
 from dev.harness.seed import save_seed
 
@@ -53,3 +56,31 @@ def emit_all(compiled: dict) -> bytes:
     for v in vals[1:]:
         result = A(result, v)
     return save_seed(result)
+
+
+def emit_pinned(compiled: dict, module: str, out_dir: str) -> dict:
+    """
+    Emit each definition as a separate seed file plus a manifest.
+
+    Args:
+        compiled: dict mapping FQ name -> PLAN value
+        module:   module name (e.g. 'Core.Nat')
+        out_dir:  output directory for seed files and manifest
+
+    Returns:
+        The manifest dict (also saved to out_dir/manifest.json).
+    """
+    os.makedirs(out_dir, exist_ok=True)
+
+    prefix = module + '.'
+    for fq_name, val in sorted(compiled.items()):
+        if fq_name.startswith(prefix):
+            # Use FQ name as filename (dots replaced with underscores)
+            safe_name = fq_name.replace('.', '_')
+            seed_path = os.path.join(out_dir, f'{safe_name}.seed')
+            with open(seed_path, 'wb') as f:
+                f.write(save_seed(val))
+
+    manifest = build_manifest(compiled, module)
+    save_manifest(manifest, os.path.join(out_dir, 'manifest.json'))
+    return manifest

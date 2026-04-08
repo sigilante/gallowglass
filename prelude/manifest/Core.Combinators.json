@@ -1,0 +1,12 @@
+{
+  "module": "Core.Combinators",
+  "pins": {
+    "Core.Combinators.apply": "a4db5966ad5156a0ec566d6c64c7adb2ed3407720b97dc4768a2e87f08ff2c1a",
+    "Core.Combinators.compose": "33ee510ba0e9d3d291bc7db7a7c073b703918251e9a311594f06918927ce0db3",
+    "Core.Combinators.const": "d9030548db532e30b0806187ef74bcf24bb2ba235d93ac6d19f808c50d64388f",
+    "Core.Combinators.fixpoint": "9a3c8bfcc956d5e03638b5a0733a071f658cd99d0752ae90e9471daa4e58ba89",
+    "Core.Combinators.flip": "b4c7ee58e44e291b357c2624e2ac738a16376e74e6f3c43007b04f21414da8a2",
+    "Core.Combinators.id": "e9ef508f013a7626263f039e490e2a0ac84536e713b69de6b8bfe60a4f62e0df",
+    "Core.Combinators.pipe": "96cd17a2630650864401b4763944021c1d525cb0cd4b470d4d40e296fc18d38b"
+  }
+}

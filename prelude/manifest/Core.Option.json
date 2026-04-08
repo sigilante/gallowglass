@@ -1,0 +1,18 @@
+{
+  "module": "Core.Option",
+  "pins": {
+    "Core.Option.None": "2c45c6a002a3573e7154aec27c29beba6b334b72dd3fe6593dbc0a454598e3c7",
+    "Core.Option.Some": "ecf9e6d4e8b36b0436b1101008883b75f9dc069285d02e9b174bb62b3936c01b",
+    "Core.Option.bind_option": "1a6cd9ab95bd5f4ffda159d7d36833fddb511f89bfbe279a28daa9efa7dca734",
+    "Core.Option.inst_Debug_Option": "2db062d427722b427d291170e855b6a141ac726e89f36ebc1b8a057383fd01da",
+    "Core.Option.inst_Debug_Option_debug": "2db062d427722b427d291170e855b6a141ac726e89f36ebc1b8a057383fd01da",
+    "Core.Option.inst_Eq_Option_eq": "11174d71653a7f96db715d2e597a9f7b0b634270f3d4a880b954900b439e55d2",
+    "Core.Option.inst_Eq_Option_neq": "a3bcfacb9ae6942568137cfae58fa90d8b7fda8b0d1f69d8876cdc143fed3e32",
+    "Core.Option.inst_Show_Option": "60b94f1cecae92cfabd6b4a29374d70855301349919a02d2ada14526639e9e9a",
+    "Core.Option.inst_Show_Option_show": "60b94f1cecae92cfabd6b4a29374d70855301349919a02d2ada14526639e9e9a",
+    "Core.Option.is_none": "dc9d6492f3de64ac1e5d3e8d113ba6cd48a1111470d7e939ad1d87a5521d5d0b",
+    "Core.Option.is_some": "927af1e1f4cfd775f5a88a50b057164960887631d342374e93abb8ad5e145956",
+    "Core.Option.map_option": "bc35479fac5c951a4ecb1f20096ceb46932ae9db4429c07a8667feb1fa557871",
+    "Core.Option.with_default": "4343d84d8f1ff23a2ac6ea25fc4dd77255916cf68ca6467db5434f7e7dcf39a3"
+  }
+}

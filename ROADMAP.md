@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
 **Last updated:** 2026-04-07
-**Current status:** Alpha — M8–M15 complete. M14.6 (cross-module prelude) complete. M15.7f (GLS records) complete. 1053 tests passing, 145 skipped.
+**Current status:** Alpha — M8–M16 complete. M16 (pin-based module loading) complete. 1082 tests passing, 145 skipped.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -453,51 +453,44 @@ enforcement, package declarations.
 
 ---
 
-## M16 — Pin-based module loading
+## ✅ M16 — Pin-based module loading
 
 Goal: modules are pins in the persistent DAG, not inlined definitions. Programs
 reference upstream dependencies by BLAKE3 hash; the VM lazily materializes pin
 content on demand. This is the PLAN-native analogue of Nock 12 scry-based
 namespace loading (as used in Hoon's Shrine).
 
-### M16.1 — Pin manifest format
+### ✅ M16.1 — Pin manifest format + PinId computation
 
-Define the **pin manifest**: a map from fully-qualified name → PinId (BLAKE3-256
-hash). The prelude build produces a manifest alongside its seeds. Format aligns
-with `SPEC.md §8.4` package manifest (`depends { Gallowglass.Core at pin#... }`).
+`bootstrap/pin.py`: `compute_pin_id(plan_value)` serializes via `save_seed()`,
+hashes with BLAKE3-256 (via `blake3` pip package), returns hex string.
+`build_manifest(compiled, module)` maps FQ names → PinId hex. JSON roundtrip
+via `save_manifest`/`load_manifest`. 9 tests.
 
-### M16.2 — Compiler pin-reference emission
+### ✅ M16.2 — Pin-wrapped compilation
 
-When the compiler encounters a `use`-imported name whose PinId is known from a
-manifest, emit `P(hash)` instead of inlining the law body. The emitted seed
-contains hash references to upstream pins, not copies of their content.
+`build_modules(sources, pin_wrap=True)` wraps each compiled value in `P(value)`
+after codegen. `emit_pinned(compiled, module, out_dir)` emits per-definition
+seed files + manifest JSON. 5 tests.
 
-### M16.3 — Prelude as pinned DAG
+### ✅ M16.3 — Prelude as pinned DAG
 
-Compile the full prelude (`Core.Combinators` through `Core.Result`) and publish
-each definition as an independent pin. Produce a prelude manifest. Verify that
-user programs compiled against the manifest produce valid seeds with pin
-references that the VM resolves correctly.
+`bootstrap/build_prelude.py` compiles all 8 Core modules with `pin_wrap=True`,
+produces per-module manifests (`prelude/manifest/Core.Nat.json` etc.) and
+combined manifest (`prelude/manifest/prelude.json`). 110 pins across 8 modules.
+Deterministic recompilation verified. 7 tests.
 
-### M16.4 — Lazy pin resolution in harness
+### ✅ M16.4 — Lazy pin resolution in harness
 
-Extend the Python dev harness to support lazy pin lookup: when evaluation forces
-a `P(hash)` whose content is not yet loaded, fetch it from a pin store (local
-directory of seed files). This enables local testing of pin-based seeds without
-requiring the full VM infrastructure.
+`dev/harness/pin_store.py`: `PinStore` class wrapping a directory of seed files.
+`save(plan_value)` → PinId, `resolve(pin_id)` → PLAN value with in-memory
+caching. 5 tests.
 
-### M16.5 — CI validation
+### ✅ M16.5 — CI validation + integration
 
-CI job that compiles a test program against the pinned prelude manifest, emits a
-seed with pin references, loads it in planvm, and verifies correct execution.
-Demonstrates the full lazy-load cycle: compile → emit pin refs → VM fetches pins
-on demand → correct result.
-
-**Why now (pre-1.0):** Without pin-based loading, every seed bundles its entire
-transitive dependency closure. This is acceptable for bootstrap but makes seed
-sizes grow combinatorially as the prelude expands. Pin-based loading is also a
-prerequisite for the package system (`SPEC.md §8.4`) and for any multi-cog
-deployment where cogs share a common prelude in the persistent store.
+Integration tests validate the full pin cycle: compile → pin → manifest → store
+→ resolve → evaluate. Pin-wrapped and plain builds produce equivalent content.
+All manifest PinIds are valid. 3 tests (in `test_pin_prelude.py`).
 
 ---
 

@@ -1,0 +1,16 @@
+{
+  "module": "Core.Result",
+  "pins": {
+    "Core.Result.Err": "e80d094d0a8b1c5915539f1ec2bc81c93d65df0009c452fdb385ab287eb3c6cc",
+    "Core.Result.Ok": "ff4b2e56b2fee7b853749b5a48d73ade142f72dfe390f5caa9d44c53a93442c1",
+    "Core.Result.bind_result": "802a8f23529a4d9d823ef261380a3d99092fb40e5cbd0439a955beb1aed7b3c6",
+    "Core.Result.inst_Eq_Result_eq": "149eebfb231bb7191297fc35a2407aae0d68488187f2be4110886ad8f2b8387e",
+    "Core.Result.inst_Eq_Result_neq": "a3bcfacb9ae6942568137cfae58fa90d8b7fda8b0d1f69d8876cdc143fed3e32",
+    "Core.Result.is_err": "9f62c8a594a129787dd07ee651fbc272512d4aa9f64257d8652f58c5d292a4b2",
+    "Core.Result.is_ok": "1899d6d7d07db903a060c06a680491ecebc6a5cd17077d7b7757b37dafc8d7b2",
+    "Core.Result.map_err": "70034900e1775ec54b95615a47fc8b82657be9f7c0694d56b3e748dcf6fa8231",
+    "Core.Result.map_ok": "28bb039a9706f0dfb918ab55b519ef9e5f9335a370a3b148e659b2698e0c5b8e",
+    "Core.Result.with_err": "e7236df59d6c4ac6b14557f67853b554f020ae0cf6321310c5bd56fd05f94eea",
+    "Core.Result.with_ok": "8c288112476b5476de8ff819e6eb1f0a69a7569dc5cfff7f2bedaa304b6328a1"
+  }
+}
