@@ -352,5 +352,95 @@ class TestRoundtrip(unittest.TestCase):
         self.assertEqual(len(results), 3)
 
 
+class TestTypeAnnotatedRendering(unittest.TestCase):
+    """M18.2: Type annotations in Glass IR."""
+
+    def _compile_typed(self, src, module='Test'):
+        """Compile and typecheck source."""
+        from bootstrap.typecheck import typecheck
+        prog = parse(lex(src, '<test>'), '<test>')
+        resolved, env = resolve(prog, module, {}, '<test>')
+        compiled = compile_program(resolved, module)
+        pin_ids = {fq: compute_pin_id(v) for fq, v in compiled.items()}
+        type_env = typecheck(resolved, env, module, '<test>')
+        return resolved, compiled, pin_ids, type_env
+
+    def test_fragment_with_type_env(self):
+        """Fragment with type_env renders : Type annotation."""
+        resolved, _, pin_ids, type_env = self._compile_typed('let foo = 42')
+        decl = resolved.decls[0]
+        frag = render_fragment('Test.foo', decl, pin_id=pin_ids.get('Test.foo'),
+                               module='Test', type_env=type_env)
+        self.assertIn(': Nat', frag)
+
+    def test_fragment_without_type_env(self):
+        """Fragment without type_env renders no annotation (backward compatible)."""
+        resolved, _, pin_ids, _ = self._compile_typed('let foo = 42')
+        decl = resolved.decls[0]
+        frag = render_fragment('Test.foo', decl, pin_id=pin_ids.get('Test.foo'),
+                               module='Test')
+        self.assertNotIn(':', frag.split('\n')[4])  # body line, no colon
+
+    def test_nat_arrow_type(self):
+        """Function type renders correctly."""
+        resolved, _, pin_ids, type_env = self._compile_typed(
+            'let inc = λ nn → nn')
+        decl = resolved.decls[0]
+        frag = render_fragment('Test.inc', decl, pin_id=pin_ids.get('Test.inc'),
+                               module='Test', type_env=type_env)
+        # Should have an arrow type annotation
+        self.assertIn('→', frag.split('let Test.inc')[1].split('\n')[0])
+
+    def test_polymorphic_renders_forall(self):
+        """Polymorphic definition renders ∀."""
+        resolved, _, pin_ids, type_env = self._compile_typed(
+            'let ident = λ xx → xx')
+        decl = resolved.decls[0]
+        frag = render_fragment('Test.ident', decl, pin_id=pin_ids.get('Test.ident'),
+                               module='Test', type_env=type_env)
+        self.assertIn('∀', frag)
+
+    def test_render_decl_with_type(self):
+        """render_decl with type_env adds annotation."""
+        resolved, _, pin_ids, type_env = self._compile_typed('let foo = 42')
+        decl = resolved.decls[0]
+        text = render_decl(decl, 'Test', pin_ids, type_env=type_env)
+        self.assertIn(': Nat', text)
+
+    def test_render_module_with_types(self):
+        """render_module threads type_env correctly."""
+        resolved, _, pin_ids, type_env = self._compile_typed(
+            'let foo = 42\nlet bar = λ xx → xx')
+        manifest = {'pins': pin_ids}
+        text = render_module(resolved, 'Test', manifest, type_env=type_env)
+        self.assertIn(': Nat', text)
+        self.assertIn('∀', text)
+
+    def test_constrained_type_renders(self):
+        """Constrained type with ⇒ renders correctly."""
+        src = '''class Eq a {
+  eq : a -> a -> Bool
+}
+
+let neq : Eq a => a -> a -> Bool = λ xx yy ->
+  match eq xx yy {
+    | True -> False
+    | False -> True
+  }'''
+        resolved, _, pin_ids, type_env = self._compile_typed(src)
+        # Find the neq decl
+        from bootstrap.ast import DeclLet
+        for decl in resolved.decls:
+            if isinstance(decl, DeclLet) and decl.name == 'neq':
+                frag = render_fragment('Test.neq', decl,
+                                       pin_id=pin_ids.get('Test.neq'),
+                                       module='Test', type_env=type_env)
+                self.assertIn('⇒', frag)
+                self.assertIn('Eq', frag)
+                break
+        else:
+            self.fail("neq not found")
+
+
 if __name__ == '__main__':
     unittest.main()

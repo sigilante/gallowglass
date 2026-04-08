@@ -95,12 +95,14 @@ def _emit_glass_ir(sources, manifest):
     from bootstrap.lexer import lex
     from bootstrap.parser import parse
     from bootstrap.scope import resolve
+    from bootstrap.typecheck import typecheck
     from bootstrap.ast import DeclLet
 
     os.makedirs(GLASS_IR_DIR, exist_ok=True)
 
     pin_ids = manifest.get('pins', {})
     module_envs = {}
+    all_type_env = {}
 
     for mod, source_text in sources:
         filename = f'<{mod}>'
@@ -108,13 +110,23 @@ def _emit_glass_ir(sources, manifest):
         resolved, env = resolve(prog, mod, module_envs, filename)
         module_envs[mod] = env
 
+        # Type-check module, accumulating type environment
+        try:
+            type_env = typecheck(resolved, env, mod, filename,
+                                 prior_type_env=all_type_env)
+            all_type_env.update(type_env)
+        except Exception:
+            # If typechecking fails, continue without types
+            pass
+
         for decl in resolved.decls:
             if isinstance(decl, DeclLet):
                 fq = f'{mod}.{decl.name}'
                 pin_id = pin_ids.get(fq)
                 deps = collect_pin_deps(fq, decl, mod, manifest)
                 frag = render_fragment(fq, decl, pin_id=pin_id,
-                                       module=mod, deps=deps)
+                                       module=mod, deps=deps,
+                                       type_env=all_type_env)
                 safe_name = fq.replace('.', '_')
                 path = os.path.join(GLASS_IR_DIR, f'{safe_name}.gls')
                 with open(path, 'w') as f:

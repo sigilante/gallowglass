@@ -113,11 +113,13 @@ class TBound:
     name: str
 
 
-# Scheme: ∀ vars. body
+# Scheme: ∀ vars. constraints ⇒ body
 @dataclass
 class Scheme:
     vars: list[str]
     body: Any  # MonoType
+    constraints: list[tuple[str, list]] = field(default_factory=list)
+    # Each constraint is (class_name, [MonoType args])
 
 
 # TypeEnv: maps fq_name -> Scheme
@@ -175,6 +177,70 @@ def _pp(ty: Any, checker: 'TypeChecker') -> str:
     elif isinstance(ty, TComp):
         return _pp(ty.row, checker) + ' ' + _pp(ty.ty, checker)
     return repr(ty)
+
+
+# ---------------------------------------------------------------------------
+# Standalone type pretty-printing (no TypeChecker needed)
+# ---------------------------------------------------------------------------
+# Post-generalization types contain no TMeta, so these work on resolved types.
+
+def pp_type(ty: Any) -> str:
+    """Pretty-print a MonoType without a TypeChecker instance."""
+    if isinstance(ty, TCon):
+        return ty.name
+    elif isinstance(ty, TBound):
+        return ty.name
+    elif isinstance(ty, TArr):
+        d = pp_type(ty.dom)
+        c = pp_type(ty.cod)
+        dom_pp = f"({d})" if isinstance(ty.dom, TArr) else d
+        return f"{dom_pp} → {c}"
+    elif isinstance(ty, TApp):
+        f_ = pp_type(ty.fun)
+        a_ = pp_type(ty.arg)
+        needs_parens = isinstance(ty.arg, (TApp, TArr))
+        a_pp = f"({a_})" if needs_parens else a_
+        return f"{f_} {a_pp}"
+    elif isinstance(ty, TTup):
+        return "(" + ", ".join(pp_type(e) for e in ty.elems) + ")"
+    elif isinstance(ty, TRow):
+        parts = []
+        for name in sorted(ty.effects.keys()):
+            args = ty.effects[name]
+            if args:
+                parts.append(name + ' ' + ' '.join(pp_type(a) for a in args))
+            else:
+                parts.append(name)
+        inner = ', '.join(parts) if parts else '∅'
+        if ty.tail is not None:
+            inner += ' | ' + pp_type(ty.tail)
+        return '{' + inner + '}'
+    elif isinstance(ty, TComp):
+        return pp_type(ty.row) + ' ' + pp_type(ty.ty)
+    elif isinstance(ty, TMeta):
+        return f"?{ty.id}"
+    return repr(ty)
+
+
+def pp_scheme(scheme: Scheme) -> str:
+    """Pretty-print a Scheme with ∀ quantifier and constraints."""
+    body = pp_type(scheme.body)
+    constraint_str = ''
+    if scheme.constraints:
+        parts = []
+        for class_name, type_args in scheme.constraints:
+            args = ' '.join(pp_type(a) for a in type_args)
+            parts.append(f'{class_name} {args}' if args else class_name)
+        if len(parts) == 1:
+            constraint_str = f'{parts[0]} ⇒ '
+        else:
+            constraint_str = '(' + ', '.join(parts) + ') ⇒ '
+    if scheme.vars:
+        vs = ' '.join(scheme.vars)
+        return f"∀ {vs}. {constraint_str}{body}"
+    if constraint_str:
+        return f"{constraint_str}{body}"
+    return body
 
 
 # ---------------------------------------------------------------------------
@@ -637,18 +703,21 @@ class TypeChecker:
 
         Free TyVars become universally quantified.
         Explicit TyForall vars also become universally quantified.
+        Constraints from TyConstrained are preserved.
         """
         if ty is None:
             return Scheme([], self.fresh())
 
-        # Unwrap outermost TyForall if present
+        # Unwrap outermost TyForall/TyConstrained if present
         explicit_vars: list[str] = []
+        ast_constraints: list[tuple[str, list]] = []
         inner_ty = ty
         if isinstance(ty, TyForall):
             explicit_vars = list(ty.vars)
             inner_ty = ty.body
         elif isinstance(ty, TyConstrained):
-            # Peel off constraint wrapper
+            # Peel off constraint wrapper, preserving constraints
+            ast_constraints = list(ty.constraints)
             inner_ty = ty.ty
             if isinstance(inner_ty, TyForall):
                 explicit_vars = list(inner_ty.vars)
@@ -661,7 +730,14 @@ class TypeChecker:
         # Build bound map
         bound = {v: TBound(v) for v in all_vars}
         body = self.ast_to_mono(inner_ty, bound)
-        return Scheme(all_vars, body)
+
+        # Convert AST constraints to Scheme constraints
+        scheme_constraints = []
+        for class_name, type_args in ast_constraints:
+            mono_args = [self.ast_to_mono(a, bound) for a in type_args]
+            scheme_constraints.append((class_name, mono_args))
+
+        return Scheme(all_vars, body, scheme_constraints)
 
     # ------------------------------------------------------------------ #
     # Built-in types and operators                                         #
@@ -1363,11 +1439,18 @@ def typecheck(
     scope_env: Env,
     module: str = 'Main',
     filename: str = '<stdin>',
+    prior_type_env: TypeEnv | None = None,
 ) -> TypeEnv:
     """Type-check a resolved program; return the final TypeEnv.
+
+    Args:
+        prior_type_env: Pre-existing type environment from other modules.
+            Entries are copied into the checker before checking begins.
 
     Raises TypecheckError on the first type error.
     """
     tc = TypeChecker(module, filename)
+    if prior_type_env:
+        tc.type_env.update(prior_type_env)
     tc.check(program, scope_env)
     return tc.type_env
