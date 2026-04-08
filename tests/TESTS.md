@@ -1,6 +1,6 @@
 # Test Strategy
 
-**Last updated:** 2026-04-08 — M19 exhaustiveness checking (1190 tests: 1190 pass, 145 skip)
+**Last updated:** 2026-04-08 — M20 0.999 syntax (1210 tests: 1210 pass, 145 skip)
 
 This document describes the test architecture, what each layer verifies,
 and the known gap between what is tested and what is not.

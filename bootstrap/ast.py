@@ -467,6 +467,12 @@ class DeclUse:
     loc: Loc
 
 @dataclass
+class DeclExport:
+    """Export list declaration: export { name1, name2, ... }"""
+    items: list[str]   # bare names to export
+    loc: Loc
+
+@dataclass
 class ModItem:
     """A declaration inside a mod { } block."""
     decl: Any   # any Decl

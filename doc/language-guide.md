@@ -475,7 +475,9 @@ These are explicitly deferred, not bugs.
 | Quotation / metaprogramming| spec/06 SS6.11    | Parsed, not evaluated           |
 | Macros                     | spec/06           | Not implemented                 |
 | Package declarations       | spec/06           | Reserved keywords only          |
-| Export lists               | spec/06           | All bindings implicitly exported|
+| Export lists               | spec/06           | ✅ Enforced (M20.3)             |
+| Where clauses              | spec/06           | ✅ Desugared to let (M20.1)     |
+| Operator sections          | spec/06           | ✅ Desugared to lambdas (M20.2) |
 | Nested list patterns       | spec/06           | `[a, b]` pattern deferred; `h :: t` and `[]` work |
 | Deriving                   | spec/06           | Not implemented                 |
 

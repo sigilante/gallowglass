@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
 **Last updated:** 2026-04-08
-**Current status:** Alpha — M8–M19 complete. M19 (pattern match exhaustiveness checking) complete. 1190 tests passing, 145 skipped.
+**Current status:** Alpha — M8–M20 complete. M20 (0.999 syntax: where, operator sections, export lists) complete. 1210 tests passing, 145 skipped.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -594,6 +594,30 @@ Redundant arms detected via usefulness predicate on preceding rows. Emitted as
 ### ✅ M19.4 — Validation
 
 All 1175 tests pass. No prelude or existing test matches were non-exhaustive.
+
+---
+
+## ✅ M20 — 0.999 syntax: where clauses, operator sections, export lists
+
+Three ergonomic features completing the surface syntax for the 0.999 release.
+
+### ✅ M20.1 — where clauses
+
+`where` added to `KEYWORDS` in the lexer. Parser desugars `expr where { a = e1 ; b = e2 }` into nested `ExprLet` nodes — no scope or codegen changes needed.
+
+### ✅ M20.2 — Operator sections
+
+Parser detects `(op)`, `(op expr)`, and `(expr op)` inside the `(` branch of `_parse_atom_expr` and desugars to lambdas with synthetic parameter names `__sec_a`/`__sec_b`. Left sections use backtracking to distinguish from grouping parens.
+
+### ✅ M20.3 — Export list enforcement
+
+`DeclExport` AST node stores bare names from `export { ... }`. Scope resolver records the export list, then filters `module_exports` after all declarations are collected. Cross-module `use` checks the exporting module's export set and raises `ScopeError` for non-exported names. Without an export declaration, all names are exported (backward compatible).
+
+### ✅ M20.4 — Validation
+
+20 tests: 3 where-parse, 4 where-eval, 5 operator-section-parse, 1 operator-section-eval, 1 export-parse, 6 export-scope (including cross-module positive and negative).
+
+All 1210 tests pass.
 
 ---
 
