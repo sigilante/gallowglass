@@ -55,7 +55,7 @@ KEYWORDS = frozenset([
     'pre', 'post', 'inv', 'law',
     'if', 'then', 'else',
     'forall', 'exists',
-    'external', 'use', 'as', 'at', 'with', 'unqualified',
+    'external', 'use', 'as', 'at', 'with', 'unqualified', 'where',
     'export', 'depends', 'modules', 'version', 'package',
     'import', 'from', 'macro',
     'True', 'False', 'Unit', 'Never',

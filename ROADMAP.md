@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
-**Last updated:** 2026-04-07
-**Current status:** Alpha — M8–M17 complete. M17 (Glass IR emission) complete. 1120 tests passing, 145 skipped.
+**Last updated:** 2026-04-08
+**Current status:** Alpha — M8–M20 complete. M20 (0.999 syntax: where, operator sections, export lists) complete. 1210 tests passing, 145 skipped.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -528,6 +528,96 @@ Full Glass IR text round-trip deferred to self-hosting compiler. 4 tests.
 `bootstrap/build_prelude.py --glass-ir` emits per-definition Glass IR fragments
 to `prelude/glass_ir/`. 64 fragments across 8 modules. Round-trip verified for
 Core.Combinators and Core.Nat. 7 tests.
+
+---
+
+## ✅ M18 — Type-annotated Glass IR
+
+Goal: every `let` declaration in emitted Glass IR carries its inferred type
+signature, making fragments useful to IDEs and LLMs.
+
+### ✅ M18.1 — Standalone type serializer
+
+`pp_type(MonoType) -> str` and `pp_scheme(Scheme) -> str` in `bootstrap/typecheck.py`.
+Work on post-generalization types without a TypeChecker instance. Handle function
+arrows, type applications, tuples, effect rows, bound variables. 10 tests.
+
+### ✅ M18.2 — Wire TypeEnv into Glass IR renderer
+
+`render_fragment()`, `render_decl()`, `render_module()` accept optional `type_env`
+parameter. When present, `let` declarations render `: Type` annotations.
+`build_prelude.py` calls `typecheck()` per module during Glass IR emission. 6 tests.
+
+### ✅ M18.3 — Constraint annotations
+
+`Scheme` extended with `constraints` field (previously stripped by `ast_to_scheme`).
+`pp_scheme` renders constraints with `⇒` arrow. Glass IR fragments for constrained
+definitions show their constraints. 7 tests.
+
+### ✅ M18.4 — Prelude integration + type fixes
+
+`typecheck()` gains `prior_type_env` parameter for cross-module type accumulation.
+Bare type names resolved to FQ equivalents in `ast_to_mono`. List tycon resolution
+for pattern/expression inference. All 8 prelude modules typecheck (89 type entries).
+
+Prelude type fixes: replaced Bool/Nat type puns (`is_zero(nat_lt ...)`) with
+type-correct patterns (`nat_gte`, `if/then/else`). Added `Core.Nat.nat_gte`.
+5 tests.
+
+---
+
+## ✅ M19 — Pattern match exhaustiveness checking
+
+Implements Maranget's usefulness algorithm (spec/03-exhaustiveness.md) as a new
+module `bootstrap/exhaustiveness.py`. Integrated at typecheck time after pattern
+type inference.
+
+### ✅ M19.1 — Constructor registry + exhaustiveness module
+
+`TypeChecker.type_constructors` maps FQ type → [(con_name, arity)]. Populated
+during `_register_decl_type` and `_init_builtins` (Bool). `bootstrap/exhaustiveness.py`
+implements the full Maranget algorithm: pattern matrix, constructor specialization,
+default matrix, sigma completeness. Handles algebraic types, Bool, Nat/Text (infinite),
+tuples, nested patterns. 26 tests.
+
+### ✅ M19.2 — Wire into typechecker
+
+`_check_exhaustiveness()` called after match inference in `TypeChecker.infer`.
+Non-exhaustive matches raise `TypecheckError`. `typecheck()` gains
+`prior_type_constructors` parameter for cross-module support.
+
+### ✅ M19.3 — Redundancy warnings
+
+Redundant arms detected via usefulness predicate on preceding rows. Emitted as
+`warnings.warn()` (not errors). 4 redundancy tests.
+
+### ✅ M19.4 — Validation
+
+All 1175 tests pass. No prelude or existing test matches were non-exhaustive.
+
+---
+
+## ✅ M20 — 0.999 syntax: where clauses, operator sections, export lists
+
+Three ergonomic features completing the surface syntax for the 0.999 release.
+
+### ✅ M20.1 — where clauses
+
+`where` added to `KEYWORDS` in the lexer. Parser desugars `expr where { a = e1 ; b = e2 }` into nested `ExprLet` nodes — no scope or codegen changes needed.
+
+### ✅ M20.2 — Operator sections
+
+Parser detects `(op)`, `(op expr)`, and `(expr op)` inside the `(` branch of `_parse_atom_expr` and desugars to lambdas with synthetic parameter names `__sec_a`/`__sec_b`. Left sections use backtracking to distinguish from grouping parens.
+
+### ✅ M20.3 — Export list enforcement
+
+`DeclExport` AST node stores bare names from `export { ... }`. Scope resolver records the export list, then filters `module_exports` after all declarations are collected. Cross-module `use` checks the exporting module's export set and raises `ScopeError` for non-exported names. Without an export declaration, all names are exported (backward compatible).
+
+### ✅ M20.4 — Validation
+
+20 tests: 3 where-parse, 4 where-eval, 5 operator-section-parse, 1 operator-section-eval, 1 export-parse, 6 export-scope (including cross-module positive and negative).
+
+All 1210 tests pass.
 
 ---
 

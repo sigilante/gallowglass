@@ -45,7 +45,7 @@ from bootstrap.ast import (
     ContractClause, DeclLet, Constructor, DeclType, DeclTypeAlias,
     DeclTypeBuiltin, DeclRecord, EffOp, DeclEff, ClassMember, ClassLaw,
     DeclClass, InstanceMember, DeclInst, ExtItem, DeclExt, UseSpec,
-    DeclUse, ModItem, DeclMod,
+    DeclUse, DeclExport, ModItem, DeclMod,
 )
 
 
@@ -188,6 +188,8 @@ class Resolver:
         self.module_aliases: dict[str, str] = {}
         # Record field-set → fq type name reverse lookup (for ExprRecord/PatRecord)
         self._field_to_record: dict[frozenset[str], str] = {}
+        # Export list: None means export everything (default); set means restrict
+        self._export_list: set[str] | None = None
         # Pre-declare keyword constructors (True, False, Unit, Never)
         # These are built-in and don't belong to any user module.
         for kw, ty in [('True', 'Bool'), ('False', 'Bool'),
@@ -441,6 +443,15 @@ class Resolver:
             # use declarations are order-sensitive; handled in Phase 2.
             pass
 
+        elif isinstance(decl, DeclExport):
+            # Record the export list; filtering happens after collection.
+            self._export_list = set()
+            for item in decl.items:
+                # items are bare names; qualify with module prefix
+                self._export_list.add(f"{mod}.{item}")
+                # Also keep bare name for type/constructor matching
+                self._export_list.add(item)
+
     def _safe_register_type(self, fq: str, b: Binding, short: str, top_level: bool = True) -> None:
         if fq in self.env.bindings:
             raise ScopeError(
@@ -468,6 +479,11 @@ class Resolver:
     def resolve_program(self, program: Program) -> Program:
         # Pre-pass: collect all top-level names
         self._collect_decls(program.decls)
+        # Apply export list filtering if present
+        if self._export_list is not None:
+            exports = self.env.module_exports.get(self.module_name, set())
+            filtered = {fq for fq in exports if fq in self._export_list}
+            self.env.module_exports[self.module_name] = filtered
         # Resolution pass
         resolved = [self._resolve_decl(d) for d in program.decls]
         return Program(resolved, program.loc)
@@ -572,7 +588,8 @@ class Resolver:
                 if short is None:
                     continue   # 'instances' wildcard — no value binding
                 fq = f"{mod_path}.{short}"
-                if fq not in other_env.bindings:
+                mod_exports = other_env.exports_of(mod_path)
+                if fq not in other_env.bindings or (mod_exports and fq not in mod_exports):
                     raise ScopeError(
                         f"'{short}' is not exported by module '{mod_path}'",
                         decl.spec.loc)
@@ -585,6 +602,11 @@ class Resolver:
                 if short is None:
                     continue
                 fq = f"{mod_path}.{short}"
+                mod_exports = other_env.exports_of(mod_path)
+                if mod_exports and fq not in mod_exports:
+                    raise ScopeError(
+                        f"'{short}' is not exported by module '{mod_path}'",
+                        decl.spec.loc)
                 self._bind_in_top(short, fq)
                 self._import_class_methods(fq, other_env)
 

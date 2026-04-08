@@ -236,17 +236,17 @@ class Parser:
             return ('type', self._advance().value)
         return ('name', self._eat(KIND_SNAKE).value)
 
-    def _parse_export_decl(self) -> Any:
-        """Parse export { ... } — store as a raw list, not used by bootstrap."""
+    def _parse_export_decl(self) -> DeclExport:
+        """Parse export { name1, name2, ... } — restricts module exports."""
         loc = self._loc()
         self._eat(KIND_KEYWORD, 'export')
         self._eat(KIND_PUNCT, '{')
-        items = []
+        items: list[str] = []
         while not self._check(KIND_PUNCT, '}'):
             items.append(self._advance().value)
             self._try_eat(KIND_PUNCT, ',')
         self._eat(KIND_PUNCT, '}')
-        return ('export', items, loc)
+        return DeclExport(items, loc)
 
     # =========================================================================
     # Let declaration
@@ -832,7 +832,33 @@ class Parser:
         if self._try_eat(KIND_PUNCT, ':'):
             ty = self._parse_type()
             return ExprAnn(expr, ty, loc)
+        # where clause: expr where { name = rhs ; ... }
+        # Desugars to nested let: let name = rhs in ... in expr
+        if self._check(KIND_KEYWORD, 'where'):
+            return self._desugar_where(expr, loc)
         return expr
+
+    def _desugar_where(self, body_expr: Any, loc) -> Any:
+        """Desugar `expr where { n1 = e1 ; n2 = e2 }` to nested ExprLet."""
+        self._eat(KIND_KEYWORD, 'where')
+        self._eat(KIND_PUNCT, '{')
+        bindings: list[tuple[str, Any, Any]] = []  # (name, type_ann, rhs)
+        while not self._check(KIND_PUNCT, '}'):
+            name = self._eat(KIND_SNAKE).value
+            type_ann = None
+            if self._try_eat(KIND_PUNCT, ':'):
+                type_ann = self._parse_type()
+            self._eat(KIND_PUNCT, '=')
+            rhs = self._parse_expr()
+            bindings.append((name, type_ann, rhs))
+            # Allow ; or newline as separator (try_eat is lenient)
+            self._try_eat(KIND_PUNCT, ';')
+        self._eat(KIND_PUNCT, '}')
+        # Build nested let from last binding inward
+        result = body_expr
+        for name, type_ann, rhs in reversed(bindings):
+            result = ExprLet(PatVar(name, loc), type_ann, rhs, result, loc)
+        return result
 
     # -- operator precedence climbing --
 
@@ -1100,13 +1126,66 @@ class Parser:
             self._advance()
             return ExprVar(QualName([t.value], loc), loc)
 
-        # Unit: ()
+        # Unit: () / operator sections: (+), (+ 1), (1 +)
         if t.kind == KIND_PUNCT and t.value == '(':
             self._advance()
             if self._check(KIND_PUNCT, ')'):
                 self._advance()
                 return ExprUnit(loc)
-            first = self._parse_expr()
+
+            # Check for operator section: (op ...) or (op)
+            if self._check(KIND_OP) and self._peek().value not in ('→', '←', '¬'):
+                op_tok = self._peek()
+                op = op_tok.value
+                next_tok = self._peek2()
+                if next_tok.kind == KIND_PUNCT and next_tok.value == ')':
+                    # Full section: (+) → λ __sec_a __sec_b → __sec_a + __sec_b
+                    self._advance()  # consume op
+                    self._advance()  # consume )
+                    va = QualName(['__sec_a'], loc)
+                    vb = QualName(['__sec_b'], loc)
+                    body = ExprOp(op, ExprVar(va, loc), ExprVar(vb, loc), loc)
+                    return ExprLam([PatVar('__sec_a', loc), PatVar('__sec_b', loc)], body, loc)
+                else:
+                    # Right section: (+ expr) → λ __sec_a → __sec_a + expr
+                    self._advance()  # consume op
+                    rhs = self._parse_expr()
+                    self._eat(KIND_PUNCT, ')')
+                    va = QualName(['__sec_a'], loc)
+                    body = ExprOp(op, ExprVar(va, loc), rhs, loc)
+                    return ExprLam([PatVar('__sec_a', loc)], body, loc)
+
+            # Try parsing expression; if it fails (e.g. left section),
+            # backtrack and try left section parsing
+            saved_pos = self.pos
+            try:
+                first = self._parse_expr()
+            except ParseError:
+                # Might be a left section: (expr op)
+                self.pos = saved_pos
+                first = self._parse_cons_expr()
+                if self._check(KIND_OP) and self._peek().value not in ('→', '←', '¬'):
+                    op = self._peek().value
+                    next_tok = self._peek2()
+                    if next_tok.kind == KIND_PUNCT and next_tok.value == ')':
+                        self._advance()  # consume op
+                        self._advance()  # consume )
+                        vb = QualName(['__sec_b'], loc)
+                        body = ExprOp(op, first, ExprVar(vb, loc), loc)
+                        return ExprLam([PatVar('__sec_b', loc)], body, loc)
+                raise  # re-raise if not a left section
+
+            # Left section: (expr op) → λ __sec_b → expr op __sec_b
+            if self._check(KIND_OP) and self._peek().value not in ('→', '←', '¬'):
+                op = self._peek().value
+                next_tok = self._peek2()
+                if next_tok.kind == KIND_PUNCT and next_tok.value == ')':
+                    self._advance()  # consume op
+                    self._advance()  # consume )
+                    vb = QualName(['__sec_b'], loc)
+                    body = ExprOp(op, first, ExprVar(vb, loc), loc)
+                    return ExprLam([PatVar('__sec_b', loc)], body, loc)
+
             if self._try_eat(KIND_PUNCT, ','):
                 elems = [first, self._parse_expr()]
                 while self._try_eat(KIND_PUNCT, ','):

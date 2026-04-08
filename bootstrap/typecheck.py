@@ -260,6 +260,8 @@ class TypeChecker:
         self.instance_db: dict[str, set[str]] = {}
         # Type arity: type_fq -> number of params
         self.type_arity: dict[str, int] = {}
+        # Type constructors: type_fq -> [(con_fq, arity)]
+        self.type_constructors: dict[str, list[tuple[str, int]]] = {}
         self._init_builtins()
 
     # ------------------------------------------------------------------ #
@@ -758,6 +760,7 @@ class TypeChecker:
         # Bool constructors (pre-resolved keyword constructors from scope)
         for fq in ('True', 'False'):
             self.type_env[fq] = Scheme([], TCon('Bool'))
+        self.type_constructors['Bool'] = [('True', 0), ('False', 0)]
 
         # Unit keyword constructor
         self.type_env['Unit'] = Scheme([], TCon('⊤'))
@@ -792,6 +795,29 @@ class TypeChecker:
         return 'List'
 
     # ------------------------------------------------------------------ #
+    # Exhaustiveness checking                                             #
+    # ------------------------------------------------------------------ #
+
+    def _check_exhaustiveness(self, scrutinee, scr_ty, arms, loc):
+        """Check pattern match exhaustiveness; raise TypecheckError if incomplete."""
+        import warnings as _warnings
+        from bootstrap.exhaustiveness import (
+            check_exhaustiveness, ExhaustivenessError,
+        )
+        resolved_ty = self.deref(scr_ty)
+        try:
+            redundancy_warnings = check_exhaustiveness(
+                resolved_ty, arms, self.type_constructors, self.deref, loc
+            )
+            for idx, desc in redundancy_warnings:
+                _warnings.warn(
+                    f"redundant match arm at index {idx}: {desc}",
+                    stacklevel=2,
+                )
+        except ExhaustivenessError as e:
+            raise TypecheckError(str(e), e.loc) from None
+
+    # ------------------------------------------------------------------ #
     # Constructor type reconstruction from DeclType                        #
     # ------------------------------------------------------------------ #
 
@@ -808,6 +834,7 @@ class TypeChecker:
         self.type_arity[fq_type] = len(decl.params)
         result = self._build_result_type(fq_type, decl.params)
         bound = {v: TBound(v) for v in decl.params}
+        con_list: list[tuple[str, int]] = []
         for con in decl.constructors:
             fq_con = f"{fq_prefix}.{con.name}" if fq_prefix else con.name
             # Build arrow type: arg1 → arg2 → ... → result
@@ -815,6 +842,8 @@ class TypeChecker:
             for arg_ty in reversed(con.arg_types):
                 con_ty = TArr(self.ast_to_mono(arg_ty, dict(bound)), con_ty)
             self.type_env[fq_con] = Scheme(list(decl.params), con_ty)
+            con_list.append((fq_con, len(con.arg_types)))
+        self.type_constructors[fq_type] = con_list
 
     def _register_decl_class(self, fq_prefix: str, decl: DeclClass) -> None:
         """Register class methods with their parameterized schemes."""
@@ -1038,6 +1067,8 @@ class TypeChecker:
                     self.unify(g_ty, TCon('Bool'), guard.loc)
                 body_ty = self.infer(lenv2, body)
                 self.unify(result_ty, body_ty, body.loc)
+            # Exhaustiveness check
+            self._check_exhaustiveness(expr.scrutinee, scr_ty, expr.arms, expr.loc)
             return result_ty
 
         if isinstance(expr, ExprIf):
@@ -1454,17 +1485,22 @@ def typecheck(
     module: str = 'Main',
     filename: str = '<stdin>',
     prior_type_env: TypeEnv | None = None,
+    prior_type_constructors: dict[str, list[tuple[str, int]]] | None = None,
 ) -> TypeEnv:
     """Type-check a resolved program; return the final TypeEnv.
 
     Args:
         prior_type_env: Pre-existing type environment from other modules.
             Entries are copied into the checker before checking begins.
+        prior_type_constructors: Pre-existing type constructor registry from
+            other modules (type_fq → [(con_fq, arity)]).
 
     Raises TypecheckError on the first type error.
     """
     tc = TypeChecker(module, filename)
     if prior_type_env:
         tc.type_env.update(prior_type_env)
+    if prior_type_constructors:
+        tc.type_constructors.update(prior_type_constructors)
     tc.check(program, scope_env)
     return tc.type_env
