@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
 **Last updated:** 2026-04-08
-**Current status:** Alpha — M8–M19 complete. M19 (pattern match exhaustiveness checking) complete. 1175 tests passing, 145 skipped.
+**Current status:** Alpha — M8–M19 complete. M19 (pattern match exhaustiveness checking) complete. 1190 tests passing, 145 skipped.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 

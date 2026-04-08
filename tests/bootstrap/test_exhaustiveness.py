@@ -331,3 +331,163 @@ class TestRedundancy:
         )
         assert len(warnings) == 1
         assert warnings[0][0] == 2  # third arm (wildcard)
+
+
+# ------------------------------------------------------------------ #
+# E2E tests: full pipeline (source → lex → parse → scope → typecheck) #
+# ------------------------------------------------------------------ #
+
+from bootstrap.lexer import lex
+from bootstrap.parser import parse
+from bootstrap.scope import resolve
+from bootstrap.typecheck import typecheck, TypecheckError
+from bootstrap.scope import ScopeError
+
+
+def _pipeline(src: str, module: str = 'Test'):
+    """Lex → parse → resolve → typecheck."""
+    prog = parse(lex(src, '<test>'), '<test>')
+    resolved, env = resolve(prog, module, {}, '<test>')
+    return typecheck(resolved, env, module, '<test>')
+
+
+def _check_error(src: str, fragment: str, module: str = 'Test'):
+    """Assert that source fails typechecking with error containing fragment."""
+    try:
+        _pipeline(src, module)
+        assert False, f"expected error containing {fragment!r}"
+    except (TypecheckError, ScopeError) as exc:
+        assert fragment in str(exc), \
+            f"expected {fragment!r} in error: {str(exc)!r}"
+
+
+class TestE2ENonExhaustive:
+    """End-to-end: non-exhaustive matches must be rejected."""
+
+    def test_option_missing_none(self):
+        """Option match missing None arm."""
+        src = '''
+type Option a = | Some a | None
+let unwrap = λ x → match x { | Some v → v }
+'''
+        _check_error(src, 'non-exhaustive')
+
+    def test_option_missing_some(self):
+        """Option match missing Some arm."""
+        src = '''
+type Option a = | Some a | None
+let is_none = λ x → match x { | None → 1 }
+'''
+        _check_error(src, 'non-exhaustive')
+
+    def test_bool_missing_false(self):
+        """Bool match missing False."""
+        src = '''
+let fn1 = λ bb → match bb { | True → 1 }
+'''
+        _check_error(src, 'non-exhaustive')
+
+    def test_bool_missing_true(self):
+        """Bool match missing True."""
+        src = '''
+let fn1 = λ bb → match bb { | False → 0 }
+'''
+        _check_error(src, 'non-exhaustive')
+
+    def test_three_constructors_missing_one(self):
+        """Three-constructor type missing one arm."""
+        src = '''
+type Color = | Red | Green | Blue
+let name = λ c → match c {
+  | Red → 0
+  | Green → 1
+}
+'''
+        _check_error(src, 'non-exhaustive')
+
+    def test_nat_no_wildcard(self):
+        """Nat literals without a catch-all."""
+        src = '''
+let name = λ n → match n {
+  | 0 → 10
+  | 1 → 20
+}
+'''
+        _check_error(src, 'non-exhaustive')
+
+    def test_result_missing_err(self):
+        """Result match missing Err arm."""
+        src = '''
+type Result a b = | Ok a | Err b
+let get = λ r → match r { | Ok v → v }
+'''
+        _check_error(src, 'non-exhaustive')
+
+
+class TestE2EExhaustive:
+    """End-to-end: exhaustive matches must pass."""
+
+    def test_option_both_arms(self):
+        """Option with both constructors."""
+        src = '''
+type Option a = | Some a | None
+let unwrap = λ x → match x { | Some v → v | None → 0 }
+'''
+        _pipeline(src)  # should not raise
+
+    def test_option_with_wildcard(self):
+        """Option with one arm + wildcard."""
+        src = '''
+type Option a = | Some a | None
+let is_some = λ x → match x { | Some v → 1 | _ → 0 }
+'''
+        _pipeline(src)
+
+    def test_bool_both(self):
+        """Bool with both constructors."""
+        src = '''
+let to_nat = λ b → match b { | True → 1 | False → 0 }
+'''
+        _pipeline(src)
+
+    def test_nat_with_variable(self):
+        """Nat with literal + variable catch-all."""
+        src = '''
+let pred = λ n → match n { | 0 → 0 | k → k }
+'''
+        _pipeline(src)
+
+    def test_nat_with_wildcard(self):
+        """Nat with literal + wildcard."""
+        src = '''
+let is_zero = λ n → match n { | 0 → 1 | _ → 0 }
+'''
+        _pipeline(src)
+
+    def test_single_constructor(self):
+        """Single-constructor type is exhaustive with one arm."""
+        src = '''
+type Wrapper a = | Wrap a
+let unwrap = λ w → match w { | Wrap v → v }
+'''
+        _pipeline(src)
+
+    def test_three_constructors_all_covered(self):
+        """All three constructors covered."""
+        src = '''
+type Color = | Red | Green | Blue
+let rank = λ c → match c {
+  | Red → 0
+  | Green → 1
+  | Blue → 2
+}
+'''
+        _pipeline(src)
+
+    def test_wildcard_alone(self):
+        """Single wildcard arm covers anything."""
+        src = '''
+type Option a = | Some a | None
+let always = λ x → match x { | _ → 42 }
+'''
+        _pipeline(src)

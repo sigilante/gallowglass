@@ -1,6 +1,6 @@
 # Test Strategy
 
-**Last updated:** 2026-04-08 — M19 exhaustiveness checking (1175 tests: 1175 pass, 145 skip)
+**Last updated:** 2026-04-08 — M19 exhaustiveness checking (1190 tests: 1190 pass, 145 skip)
 
 This document describes the test architecture, what each layer verifies,
 and the known gap between what is tested and what is not.
@@ -167,7 +167,7 @@ tests/
     test_coverage_gaps.py      ← edge cases, superclass constraints
     test_modules.py            ← M12 multi-module build (18 tests)
     test_data_csv.py           ← M12.5 Data.Csv E2E effects (9 tests)
-    test_exhaustiveness.py     ← M19 pattern match exhaustiveness (26 tests)
+    test_exhaustiveness.py     ← M19 pattern match exhaustiveness (41 tests)
   planvm/
     __init__.py
     test_seed_planvm.py        ← Layer 2: seed loading (7 tests; skips locally)

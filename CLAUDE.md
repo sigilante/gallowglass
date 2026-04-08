@@ -112,7 +112,7 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
 
 ## Current Phase
 
-**Alpha.** All Milestone 8 phases complete. M9–M19 complete. 112 prelude definitions (65 source-level lets + instance methods) across 8 modules. Eq/Ord/Show/Debug typeclasses with constrained instances. 1175 tests passing.
+**Alpha.** All Milestone 8 phases complete. M9–M19 complete. 112 prelude definitions (65 source-level lets + instance methods) across 8 modules. Eq/Ord/Show/Debug typeclasses with constrained instances. 1190 tests passing.
 
 - Phase 0 (spec): complete.
 - Phase 1 (Python bootstrap compiler): complete. Milestones 1–7.5 done. Core prelude: 112 definitions (65 lets + instance methods), planvm-valid.
@@ -182,7 +182,7 @@ python3 -m pytest tests/            # all tests
 
 ### Test skip categories
 
-1175 passing, 145 skipped. The skips are all expected:
+1190 passing, 145 skipped. The skips are all expected:
 
 - **planvm-gated (75):** Seed loading and VM execution tests that require the
   `planvm` binary. These run in the `plan-vm` CI job (builds planvm via Nix).
