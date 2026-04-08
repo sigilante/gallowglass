@@ -1,0 +1,30 @@
+{
+  "module": "Core.Text",
+  "pins": {
+    "Core.Text.Prim.mk_text": "24ed471e4d4eb6be77c8c976305e9d3a05e5e2a58af5e2f3873b199a4f627de4",
+    "Core.Text.Prim.text_len": "73d86b7d7cbe47661d7e4bb5557603a620ba53a7cc80a543cbc2ac61838c5dbc",
+    "Core.Text.Prim.text_nat": "e5621c401ba30f3e2300f6e2c4217acfa14902639da7249d02e40cae6be8c544",
+    "Core.Text.debug_bool": "f4835be69799dfa88308e1bf09c96e53e0e3e3e85a829e46862502810da0ae9f",
+    "Core.Text.debug_nat": "a850ed5f1272f22a185d8394d519f064801c16093ac8b5800d56a4a8cce46a6e",
+    "Core.Text.inst_Debug_Bool": "f4835be69799dfa88308e1bf09c96e53e0e3e3e85a829e46862502810da0ae9f",
+    "Core.Text.inst_Debug_Bool_debug": "f4835be69799dfa88308e1bf09c96e53e0e3e3e85a829e46862502810da0ae9f",
+    "Core.Text.inst_Debug_Nat": "a850ed5f1272f22a185d8394d519f064801c16093ac8b5800d56a4a8cce46a6e",
+    "Core.Text.inst_Debug_Nat_debug": "a850ed5f1272f22a185d8394d519f064801c16093ac8b5800d56a4a8cce46a6e",
+    "Core.Text.inst_Eq_Text_eq": "3acd42a136daf0fe7a2d6c323c00bfa8bf851d53bcd2f74faa8b7fa0df5fbcfe",
+    "Core.Text.inst_Eq_Text_neq": "8ddd13da56e16260af79921114b2fa02a55842fa8983b3ac10a5bd880875098f",
+    "Core.Text.inst_Show_Bool": "86d284b1bf967f6b6cc4c4c406212f43ef4b90479ee0b4bb4ab7e10a956ca606",
+    "Core.Text.inst_Show_Bool_show": "86d284b1bf967f6b6cc4c4c406212f43ef4b90479ee0b4bb4ab7e10a956ca606",
+    "Core.Text.inst_Show_Nat": "394487d9b10b2a1865400167585954fe19a29098ebadb5c7cfa85d32cf4f4302",
+    "Core.Text.inst_Show_Nat_show": "394487d9b10b2a1865400167585954fe19a29098ebadb5c7cfa85d32cf4f4302",
+    "Core.Text.pow2": "dd16c2e4fd186fd91180a5eefdf87314bdff531e7568dc9401075d043055db02",
+    "Core.Text.show_bool": "86d284b1bf967f6b6cc4c4c406212f43ef4b90479ee0b4bb4ab7e10a956ca606",
+    "Core.Text.show_digit": "1a0b9a1e98a0af62610f1e45e734b97f299995adebf9a6c6015bad31aa37dc85",
+    "Core.Text.show_nat": "394487d9b10b2a1865400167585954fe19a29098ebadb5c7cfa85d32cf4f4302",
+    "Core.Text.show_nat_rev": "516007cd0299ce30ee9ccdcf84b84f3bcf5a9194c7a30ff3eda062a738c4debb",
+    "Core.Text.text_concat": "cab69bfddd654a40342e6ca91d165ccc7745b047d956740d41307ac7df676206",
+    "Core.Text.text_content": "2ce709997be8c56997db0aebce0be0b0d18ffeea3a6fdd5358aad2de9de94252",
+    "Core.Text.text_eq": "3acd42a136daf0fe7a2d6c323c00bfa8bf851d53bcd2f74faa8b7fa0df5fbcfe",
+    "Core.Text.text_is_empty": "71322f58803f187065ec779801971e361763675e108b43782a0270558e6f8f65",
+    "Core.Text.text_length": "44d1ba13eafc785dd46c7a6ee8b28bfb37087ca7106a8fb330aba4772ecb2613"
+  }
+}

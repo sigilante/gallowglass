@@ -1,0 +1,11 @@
+{
+  "module": "Core.Pair",
+  "pins": {
+    "Core.Pair.MkPair": "f9b11404780b62c71b08ff6d66873448487185fa00e3f2b18b5a22a98d766f71",
+    "Core.Pair.fst": "fa11e250fd30f5529b8992c5345a47d5c78c54b3165551938e22950157bac1cc",
+    "Core.Pair.map_fst": "f41b220b65e3d72edea45c1689b5f8e66ac1aea4ea6901bb581ab55aa372a45f",
+    "Core.Pair.map_snd": "fd850f885093fc3a9e32e593822a16b7ebbea2dacb7848f986e869a85a7dfc57",
+    "Core.Pair.snd": "9d5c3aeadafe3a8f304c8316a76efaeb2ab2cb05cb44862c39357165b0f2fcd2",
+    "Core.Pair.swap": "0f696d13ddcd61fe5893d9360287d828cd43ed9faeb082285dafb7b055601ad5"
+  }
+}

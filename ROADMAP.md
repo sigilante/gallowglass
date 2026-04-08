@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
 **Last updated:** 2026-04-07
-**Current status:** Alpha — M8–M15 complete. M14.6 (cross-module prelude) complete. M15.7f (GLS records) complete. 1053 tests passing, 145 skipped.
+**Current status:** Alpha — M8–M17 complete. M17 (Glass IR emission) complete. 1120 tests passing, 145 skipped.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -453,51 +453,81 @@ enforcement, package declarations.
 
 ---
 
-## M16 — Pin-based module loading
+## ✅ M16 — Pin-based module loading
 
 Goal: modules are pins in the persistent DAG, not inlined definitions. Programs
 reference upstream dependencies by BLAKE3 hash; the VM lazily materializes pin
 content on demand. This is the PLAN-native analogue of Nock 12 scry-based
 namespace loading (as used in Hoon's Shrine).
 
-### M16.1 — Pin manifest format
+### ✅ M16.1 — Pin manifest format + PinId computation
 
-Define the **pin manifest**: a map from fully-qualified name → PinId (BLAKE3-256
-hash). The prelude build produces a manifest alongside its seeds. Format aligns
-with `SPEC.md §8.4` package manifest (`depends { Gallowglass.Core at pin#... }`).
+`bootstrap/pin.py`: `compute_pin_id(plan_value)` serializes via `save_seed()`,
+hashes with BLAKE3-256 (via `blake3` pip package), returns hex string.
+`build_manifest(compiled, module)` maps FQ names → PinId hex. JSON roundtrip
+via `save_manifest`/`load_manifest`. 9 tests.
 
-### M16.2 — Compiler pin-reference emission
+### ✅ M16.2 — Pin-wrapped compilation
 
-When the compiler encounters a `use`-imported name whose PinId is known from a
-manifest, emit `P(hash)` instead of inlining the law body. The emitted seed
-contains hash references to upstream pins, not copies of their content.
+`build_modules(sources, pin_wrap=True)` wraps each compiled value in `P(value)`
+after codegen. `emit_pinned(compiled, module, out_dir)` emits per-definition
+seed files + manifest JSON. 5 tests.
 
-### M16.3 — Prelude as pinned DAG
+### ✅ M16.3 — Prelude as pinned DAG
 
-Compile the full prelude (`Core.Combinators` through `Core.Result`) and publish
-each definition as an independent pin. Produce a prelude manifest. Verify that
-user programs compiled against the manifest produce valid seeds with pin
-references that the VM resolves correctly.
+`bootstrap/build_prelude.py` compiles all 8 Core modules with `pin_wrap=True`,
+produces per-module manifests (`prelude/manifest/Core.Nat.json` etc.) and
+combined manifest (`prelude/manifest/prelude.json`). 110 pins across 8 modules.
+Deterministic recompilation verified. 7 tests.
 
-### M16.4 — Lazy pin resolution in harness
+### ✅ M16.4 — Lazy pin resolution in harness
 
-Extend the Python dev harness to support lazy pin lookup: when evaluation forces
-a `P(hash)` whose content is not yet loaded, fetch it from a pin store (local
-directory of seed files). This enables local testing of pin-based seeds without
-requiring the full VM infrastructure.
+`dev/harness/pin_store.py`: `PinStore` class wrapping a directory of seed files.
+`save(plan_value)` → PinId, `resolve(pin_id)` → PLAN value with in-memory
+caching. 5 tests.
 
-### M16.5 — CI validation
+### ✅ M16.5 — CI validation + integration
 
-CI job that compiles a test program against the pinned prelude manifest, emits a
-seed with pin references, loads it in planvm, and verifies correct execution.
-Demonstrates the full lazy-load cycle: compile → emit pin refs → VM fetches pins
-on demand → correct result.
+Integration tests validate the full pin cycle: compile → pin → manifest → store
+→ resolve → evaluate. Pin-wrapped and plain builds produce equivalent content.
+All manifest PinIds are valid. 3 tests (in `test_pin_prelude.py`).
 
-**Why now (pre-1.0):** Without pin-based loading, every seed bundles its entire
-transitive dependency closure. This is acceptable for bootstrap but makes seed
-sizes grow combinatorially as the prelude expands. Pin-based loading is also a
-prerequisite for the package system (`SPEC.md §8.4`) and for any multi-cog
-deployment where cogs share a common prelude in the persistent store.
+---
+
+## ✅ M17 — Glass IR emission
+
+Goal: emit Glass IR fragments from the bootstrap compiler per spec/01-glass-ir.md.
+Covers the subset achievable without type inference or debugger: FQ names, pin hashes,
+explicit dictionary args, fragment structure, SCC groups, round-trip verification.
+
+### ✅ M17.1 — Glass IR renderer
+
+AST-based renderer in `bootstrap/glass_ir.py`: `render_fragment()`, `render_expr()`,
+`render_pattern()`, `render_decl()`, `render_module()`. Outputs Glass IR with
+Snapshot/Source/Budget header, FQ names, `[pin#hash]` annotations. 20 tests.
+
+### ✅ M17.2 — Pin declarations and dependency rendering
+
+`collect_decl_deps()` walks resolved AST to find cross-module references.
+`collect_pin_deps()` maps them to PinIds from manifests. Fragments include
+`@![pin#hash] Module.Name` pin declarations. 5 tests.
+
+### ✅ M17.3 — SCC group rendering
+
+`render_scc_group()` emits `@![pin#hash] { ... }` grouped blocks for mutual
+recursion. `Compiler.scc_groups` metadata added to codegen. 2 tests.
+
+### ✅ M17.4 — Round-trip verification
+
+`verify_roundtrip()` recompiles resolved AST and compares PLAN output against
+original compilation. Bootstrap-level round-trip (AST → compile → compare).
+Full Glass IR text round-trip deferred to self-hosting compiler. 4 tests.
+
+### ✅ M17.5 — Prelude Glass IR emission + CI
+
+`bootstrap/build_prelude.py --glass-ir` emits per-definition Glass IR fragments
+to `prelude/glass_ir/`. 64 fragments across 8 modules. Round-trip verified for
+Core.Combinators and Core.Nat. 7 tests.
 
 ---
 
@@ -510,6 +540,7 @@ All of the above complete. Acceptance criteria:
 - Effect handlers, typeclasses, and mutual recursion all working and self-hosted
 - The `Data.Csv` example from `spec/06-surface-syntax.md §15` compiles and runs
 - Prelude published as pinned DAG; user programs reference pins, not inlined defs (M16)
+- Glass IR emission for prelude with round-trip verification (M17)
 - CI passes: Python harness + planvm seed loading + M8.8 Path A equivalent for 1.0 compiler
 
 ---

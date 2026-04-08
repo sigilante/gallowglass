@@ -35,6 +35,7 @@ from bootstrap.codegen import compile_program
 from bootstrap.lexer import lex
 from bootstrap.parser import parse
 from bootstrap.scope import Env, resolve
+from dev.harness.plan import P
 
 
 class BuildError(Exception):
@@ -110,6 +111,7 @@ def _topo_sort(
 
 def build_modules(
     sources: list[tuple[str, str]],
+    pin_wrap: bool = False,
 ) -> dict[str, Any]:
     """
     Compile multiple Gallowglass source files in dependency order.
@@ -201,6 +203,10 @@ def build_modules(
                             pre_class_constraints=pre_class_constraints)
         compiled = compiler.compile(resolved)
         module_compilers[module_name] = compiler
+
+        # Optionally wrap each value in a Pin for content-addressing
+        if pin_wrap:
+            compiled = {k: P(v) for k, v in compiled.items()}
 
         # Merge this module's output into the accumulator
         all_compiled.update(compiled)
