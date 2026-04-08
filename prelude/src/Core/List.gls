@@ -84,7 +84,7 @@ let list_eq_go : ∀ a. (a → a → Bool) → List a → List a → Bool
     | Nil → match ys { | Nil → True | Cons _ _ → False }
     | Cons h t → match ys {
       | Nil → False
-      | Cons h2 t2 → match (elem_eq h h2) { | 0 → False | k → list_eq_go elem_eq t t2 }
+      | Cons h2 t2 → if elem_eq h h2 then list_eq_go elem_eq t t2 else False
     }
   }
 

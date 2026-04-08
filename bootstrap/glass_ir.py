@@ -298,21 +298,27 @@ def render_pattern(pat) -> str:
 # Declaration rendering
 # ---------------------------------------------------------------------------
 
-def render_decl(decl, module: str, pin_ids: dict | None = None) -> str:
+def render_decl(decl, module: str, pin_ids: dict | None = None,
+                type_env: dict | None = None) -> str:
     """Render a resolved AST declaration as Glass IR.
 
     Args:
         decl: Resolved AST declaration (DeclLet, DeclType, etc.)
         module: Module name for FQ naming
         pin_ids: Optional dict of fq_name -> pin_id hex string
+        type_env: Optional dict of fq_name -> Scheme for type annotations
     """
     pin_ids = pin_ids or {}
 
     if isinstance(decl, ast.DeclLet):
         fq = f'{module}.{decl.name}'
         pin_ann = f' [pin#{pin_ids[fq][:8]}]' if fq in pin_ids else ''
+        type_ann = ''
+        if type_env and fq in type_env:
+            from bootstrap.typecheck import pp_scheme
+            type_ann = f' : {pp_scheme(type_env[fq])}'
         body = render_expr(decl.body, 1)
-        return f'let {fq}{pin_ann}\n  = {body}'
+        return f'let {fq}{pin_ann}{type_ann}\n  = {body}'
 
     if isinstance(decl, ast.DeclType):
         fq = f'{module}.{decl.name}'
@@ -368,6 +374,7 @@ def render_fragment(
     module: str = '',
     deps: dict | None = None,
     budget: int = 4096,
+    type_env: dict | None = None,
 ) -> str:
     """Render a single definition as a Glass IR fragment.
 
@@ -378,6 +385,7 @@ def render_fragment(
         module: Module name
         deps: Dict of fq_name -> pin_id for dependencies (optional)
         budget: Token budget for the fragment header
+        type_env: Optional dict of fq_name -> Scheme for type annotations
 
     Returns:
         Glass IR fragment text.
@@ -399,7 +407,7 @@ def render_fragment(
 
     # Body declaration
     pin_ids = {fq_name: pin_id} if pin_id else {}
-    lines.append(render_decl(decl, module, pin_ids))
+    lines.append(render_decl(decl, module, pin_ids, type_env=type_env))
 
     return '\n'.join(lines) + '\n'
 
@@ -606,6 +614,7 @@ def render_module(
     resolved,
     module: str,
     manifest: dict | None = None,
+    type_env: dict | None = None,
 ) -> str:
     """Render all declarations in a resolved program as Glass IR.
 
@@ -613,6 +622,7 @@ def render_module(
         resolved: Resolved Program AST
         module: Module name
         manifest: Optional manifest dict with 'pins' key
+        type_env: Optional dict of fq_name -> Scheme for type annotations
 
     Returns:
         Glass IR text for the entire module.
@@ -620,6 +630,6 @@ def render_module(
     pin_ids = manifest.get('pins', {}) if manifest else {}
     parts = []
     for decl in resolved.decls:
-        rendered = render_decl(decl, module, pin_ids)
+        rendered = render_decl(decl, module, pin_ids, type_env=type_env)
         parts.append(rendered)
     return '\n\n'.join(parts) + '\n'

@@ -19,7 +19,8 @@ from bootstrap.parser import parse
 from bootstrap.scope import resolve
 from bootstrap.typecheck import (
     typecheck, TypecheckError, TypeEnv,
-    TCon, TArr, TApp, TTup, TBound, TMeta, Scheme,
+    TCon, TArr, TApp, TTup, TBound, TMeta, TRow, TComp, Scheme,
+    pp_type, pp_scheme,
 )
 from bootstrap.scope import ScopeError
 
@@ -745,6 +746,114 @@ def test_row_var_generalized():
     cod = s.body.cod
     assert isinstance(cod, TComp)
     assert cod.row.tail is not None   # open row — tail not None
+
+
+# ---------------------------------------------------------------------------
+# pp_type / pp_scheme — standalone type pretty-printing
+# ---------------------------------------------------------------------------
+
+def test_pp_type_tcon():
+    assert pp_type(TCon('Nat')) == 'Nat'
+    assert pp_type(TCon('Bool')) == 'Bool'
+    assert pp_type(TCon('Text')) == 'Text'
+
+
+def test_pp_type_tarr():
+    # Nat → Nat
+    assert pp_type(TArr(TCon('Nat'), TCon('Nat'))) == 'Nat → Nat'
+    # (Nat → Nat) → Nat — left-arg needs parens
+    assert pp_type(TArr(TArr(TCon('Nat'), TCon('Nat')), TCon('Nat'))) == '(Nat → Nat) → Nat'
+    # Nat → Nat → Nat — right-associative, no parens
+    assert pp_type(TArr(TCon('Nat'), TArr(TCon('Nat'), TCon('Nat')))) == 'Nat → Nat → Nat'
+
+
+def test_pp_type_tapp():
+    # List Nat
+    assert pp_type(TApp(TCon('List'), TCon('Nat'))) == 'List Nat'
+    # Result Text Nat
+    assert pp_type(TApp(TApp(TCon('Result'), TCon('Text')), TCon('Nat'))) == 'Result Text Nat'
+    # List (List Nat) — nested app needs parens
+    assert pp_type(TApp(TCon('List'), TApp(TCon('List'), TCon('Nat')))) == 'List (List Nat)'
+
+
+def test_pp_type_tvar():
+    assert pp_type(TBound('a')) == 'a'
+    assert pp_type(TBound('b')) == 'b'
+
+
+def test_pp_type_ttup():
+    assert pp_type(TTup([TCon('Nat'), TCon('Bool')])) == '(Nat, Bool)'
+    assert pp_type(TTup([TCon('Nat'), TCon('Bool'), TCon('Text')])) == '(Nat, Bool, Text)'
+
+
+def test_pp_type_effect_row():
+    # {IO} Nat
+    row = TRow({'IO': []}, None)
+    assert pp_type(TComp(row, TCon('Nat'))) == '{IO} Nat'
+    # {IO | r} — open row with tail
+    tail = TBound('r')
+    row_open = TRow({'IO': []}, tail)
+    assert pp_type(TComp(row_open, TCon('Nat'))) == '{IO | r} Nat'
+    # {Exn Text, IO} — multiple effects, sorted
+    row_multi = TRow({'IO': [], 'Exn': [TCon('Text')]}, None)
+    assert pp_type(TComp(row_multi, TCon('Nat'))) == '{Exn Text, IO} Nat'
+
+
+def test_pp_scheme_no_vars():
+    s = Scheme([], TArr(TCon('Nat'), TCon('Nat')))
+    assert pp_scheme(s) == 'Nat → Nat'
+
+
+def test_pp_scheme_with_vars():
+    s = Scheme(['a'], TArr(TBound('a'), TBound('a')))
+    assert pp_scheme(s) == '∀ a. a → a'
+
+
+def test_pp_scheme_multi_vars():
+    s = Scheme(['a', 'b'], TArr(TBound('a'), TArr(TBound('b'),
+        TApp(TApp(TCon('Pair'), TBound('a')), TBound('b')))))
+    assert pp_scheme(s) == '∀ a b. a → b → Pair a b'
+
+
+def test_pp_type_arrow_in_app_arg():
+    """List (Nat → Nat) — arrow type as app arg needs parens."""
+    assert pp_type(TApp(TCon('List'), TArr(TCon('Nat'), TCon('Nat')))) == 'List (Nat → Nat)'
+
+
+# ---------------------------------------------------------------------------
+# pp_scheme with constraints
+# ---------------------------------------------------------------------------
+
+def test_pp_scheme_single_constraint():
+    s = Scheme(['a'], TArr(TBound('a'), TArr(TBound('a'), TCon('Bool'))),
+               constraints=[('Eq', [TBound('a')])])
+    assert pp_scheme(s) == '∀ a. Eq a ⇒ a → a → Bool'
+
+
+def test_pp_scheme_multiple_constraints():
+    s = Scheme(['a'], TArr(TBound('a'), TCon('Text')),
+               constraints=[('Eq', [TBound('a')]), ('Show', [TBound('a')])])
+    assert pp_scheme(s) == '∀ a. (Eq a, Show a) ⇒ a → Text'
+
+
+def test_pp_scheme_no_constraints():
+    """pp_scheme with empty constraints = same as before."""
+    s = Scheme(['a'], TArr(TBound('a'), TBound('a')), constraints=[])
+    assert pp_scheme(s) == '∀ a. a → a'
+
+
+def test_scheme_preserves_constraints():
+    """Scheme dataclass preserves constraint field."""
+    s = Scheme(['a'], TBound('a'), [('Eq', [TBound('a')])])
+    assert len(s.constraints) == 1
+    assert s.constraints[0][0] == 'Eq'
+
+
+def test_pp_scheme_constraint_no_vars():
+    """Monomorphic constrained type."""
+    s = Scheme([], TArr(TCon('Nat'), TCon('Bool')),
+               constraints=[('Eq', [TCon('Nat')])])
+    assert pp_scheme(s) == 'Eq Nat ⇒ Nat → Bool'
 
 
 # ---------------------------------------------------------------------------

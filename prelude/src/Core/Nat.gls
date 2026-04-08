@@ -102,10 +102,17 @@ let sub : Nat → Nat → Nat
     | k → sub (pred m) k
   }
 
+-- nat_gte: m ≥ n? Returns 0 if m < n, 1 otherwise (as Nat for match)
+let nat_gte : Nat → Nat → Nat
+  = λ m n → match n {
+    | 0 → 1
+    | k → match m { | 0 → 0 | j → nat_gte j k }
+  }
+
 -- div_nat: floor division (assumes n > 0; div_nat m 0 diverges)
 let div_nat : Nat → Nat → Nat
   = λ m n →
-      match (is_zero (nat_lt m n)) {
+      match (nat_gte m n) {
         | 0 → 0
         | k → add 1 (div_nat (sub m n) n)
       }
@@ -113,7 +120,7 @@ let div_nat : Nat → Nat → Nat
 -- mod_nat: remainder (assumes n > 0; mod_nat m 0 diverges)
 let mod_nat : Nat → Nat → Nat
   = λ m n →
-      match (is_zero (nat_lt m n)) {
+      match (nat_gte m n) {
         | 0 → m
         | k → mod_nat (sub m n) n
       }

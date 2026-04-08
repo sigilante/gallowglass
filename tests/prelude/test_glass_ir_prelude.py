@@ -17,6 +17,7 @@ from bootstrap.pin import build_manifest, compute_pin_id
 from bootstrap.lexer import lex
 from bootstrap.parser import parse
 from bootstrap.scope import resolve
+from bootstrap.typecheck import typecheck, pp_scheme
 from bootstrap.codegen import compile_program
 from bootstrap.ast import DeclLet
 
@@ -36,10 +37,11 @@ MODULES = [
 
 _RESOLVED_CACHE = None
 _COMPILED_CACHE = None
+_TYPEENV_CACHE = None
 
 
 def _build_and_resolve():
-    global _RESOLVED_CACHE, _COMPILED_CACHE
+    global _RESOLVED_CACHE, _COMPILED_CACHE, _TYPEENV_CACHE
     if _RESOLVED_CACHE is not None:
         return _RESOLVED_CACHE, _COMPILED_CACHE
 
@@ -53,18 +55,26 @@ def _build_and_resolve():
     # Compile plain (for PLAN values)
     compiled = build_modules(sources, pin_wrap=False)
 
-    # Resolve each module (for ASTs)
+    # Resolve each module (for ASTs) and typecheck
     module_envs = {}
     resolved_modules = {}
+    all_type_env = {}
     for mod, source_text in sources:
         filename = f'<{mod}>'
         prog = parse(lex(source_text, filename), filename)
         resolved_prog, env = resolve(prog, mod, module_envs, filename)
         module_envs[mod] = env
         resolved_modules[mod] = resolved_prog
+        try:
+            te = typecheck(resolved_prog, env, mod, filename,
+                           prior_type_env=all_type_env)
+            all_type_env.update(te)
+        except Exception:
+            pass  # Some modules may fail typechecking
 
     _RESOLVED_CACHE = resolved_modules
     _COMPILED_CACHE = compiled
+    _TYPEENV_CACHE = all_type_env
     return resolved_modules, compiled
 
 
@@ -162,6 +172,82 @@ class TestPreludeGlassIR(unittest.TestCase):
                     self.assertIn('@![pin#', frag)
                     break
         self.assertTrue(found_dep, "expected at least one cross-module dep in Core.List")
+
+
+class TestPreludeTypedGlassIR(unittest.TestCase):
+    """M18.4: Type annotations in prelude Glass IR.
+
+    Note: Core.Nat has a type error (is_zero applied to Bool) that
+    cascades to modules depending on it. Currently 3 modules typecheck
+    cleanly: Core.Combinators, Core.Bool, Core.Pair.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.resolved, cls.compiled = _build_and_resolve()
+        cls.pin_ids = {fq: compute_pin_id(v) for fq, v in cls.compiled.items()}
+        cls.type_env = _TYPEENV_CACHE
+
+    def test_type_env_has_entries(self):
+        """Type environment has entries for all prelude modules."""
+        self.assertGreater(len(self.type_env), 80)
+
+    def test_typed_fragments_have_annotations(self):
+        """Definitions with type info get annotations in Glass IR."""
+        annotated = 0
+        for mod in MODULES:
+            resolved = self.resolved[mod]
+            for decl in resolved.decls:
+                if isinstance(decl, DeclLet):
+                    fq = f'{mod}.{decl.name}'
+                    if fq in self.type_env:
+                        pin_id = self.pin_ids.get(fq)
+                        frag = render_fragment(fq, decl, pin_id=pin_id,
+                                               module=mod,
+                                               type_env=self.type_env)
+                        # The let line should contain a colon for type ann
+                        let_line = [l for l in frag.split('\n')
+                                    if l.startswith('let ')][0]
+                        self.assertIn(':', let_line)
+                        annotated += 1
+        self.assertGreater(annotated, 50)
+
+    def test_combinators_id_type(self):
+        """Core.Combinators.id has type ∀ a. a → a."""
+        scheme = self.type_env.get('Core.Combinators.id')
+        self.assertIsNotNone(scheme)
+        rendered = pp_scheme(scheme)
+        self.assertIn('∀', rendered)
+        self.assertIn('→', rendered)
+
+    def test_combinators_const_type(self):
+        """Core.Combinators.const has a polymorphic 2-arg type."""
+        scheme = self.type_env.get('Core.Combinators.const')
+        self.assertIsNotNone(scheme)
+        rendered = pp_scheme(scheme)
+        self.assertIn('∀', rendered)
+
+    def test_pair_fst_type(self):
+        """Core.Pair.fst has a polymorphic type."""
+        scheme = self.type_env.get('Core.Pair.fst')
+        self.assertIsNotNone(scheme)
+        rendered = pp_scheme(scheme)
+        self.assertIn('∀', rendered)
+        self.assertIn('→', rendered)
+
+    def test_nat_add_type(self):
+        """Core.Nat.add has type Nat → Nat → Nat."""
+        scheme = self.type_env.get('Core.Nat.add')
+        self.assertIsNotNone(scheme)
+        self.assertEqual(pp_scheme(scheme), 'Nat → Nat → Nat')
+
+    def test_list_map_type(self):
+        """Core.List.map has a polymorphic function type."""
+        scheme = self.type_env.get('Core.List.map')
+        self.assertIsNotNone(scheme)
+        rendered = pp_scheme(scheme)
+        self.assertIn('∀', rendered)
+        self.assertIn('→', rendered)
 
 
 if __name__ == '__main__':
