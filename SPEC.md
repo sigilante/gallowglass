@@ -21,9 +21,12 @@ The current implementation status:
 
 ```
 Phase 0: Foundation documents          ✅ complete
-Phase 1: Python bootstrap compiler     ✅ complete (Milestones 1–7.5)
+Phase 1: Python bootstrap compiler     ✅ complete (Milestones 1–7.5, M9–M18)
          → compiles restricted Gallowglass dialect to Plan Assembler
-         → Core prelude: 36 definitions across 5 modules, planvm-valid
+         → Core prelude: 112 definitions across 8 modules, planvm-valid
+         → M16: pin-based module loading (111 pins, BLAKE3-256)
+         → M17: Glass IR emission with round-trip verification
+         → M18: type-annotated Glass IR (all modules typecheck)
 Phase 2: (merged into Phase 1)
 Phase 3: Self-hosting compiler         ✅ ALPHA CANDIDATE (Milestone 8)
          → restricted Gallowglass compiler written in restricted Gallowglass

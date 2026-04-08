@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
-**Last updated:** 2026-04-07
-**Current status:** Alpha — M8–M17 complete. M17 (Glass IR emission) complete. 1120 tests passing, 145 skipped.
+**Last updated:** 2026-04-08
+**Current status:** Alpha — M8–M18 complete. M18 (type-annotated Glass IR) complete. 1149 tests passing, 145 skipped.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -528,6 +528,41 @@ Full Glass IR text round-trip deferred to self-hosting compiler. 4 tests.
 `bootstrap/build_prelude.py --glass-ir` emits per-definition Glass IR fragments
 to `prelude/glass_ir/`. 64 fragments across 8 modules. Round-trip verified for
 Core.Combinators and Core.Nat. 7 tests.
+
+---
+
+## ✅ M18 — Type-annotated Glass IR
+
+Goal: every `let` declaration in emitted Glass IR carries its inferred type
+signature, making fragments useful to IDEs and LLMs.
+
+### ✅ M18.1 — Standalone type serializer
+
+`pp_type(MonoType) -> str` and `pp_scheme(Scheme) -> str` in `bootstrap/typecheck.py`.
+Work on post-generalization types without a TypeChecker instance. Handle function
+arrows, type applications, tuples, effect rows, bound variables. 10 tests.
+
+### ✅ M18.2 — Wire TypeEnv into Glass IR renderer
+
+`render_fragment()`, `render_decl()`, `render_module()` accept optional `type_env`
+parameter. When present, `let` declarations render `: Type` annotations.
+`build_prelude.py` calls `typecheck()` per module during Glass IR emission. 6 tests.
+
+### ✅ M18.3 — Constraint annotations
+
+`Scheme` extended with `constraints` field (previously stripped by `ast_to_scheme`).
+`pp_scheme` renders constraints with `⇒` arrow. Glass IR fragments for constrained
+definitions show their constraints. 7 tests.
+
+### ✅ M18.4 — Prelude integration + type fixes
+
+`typecheck()` gains `prior_type_env` parameter for cross-module type accumulation.
+Bare type names resolved to FQ equivalents in `ast_to_mono`. List tycon resolution
+for pattern/expression inference. All 8 prelude modules typecheck (89 type entries).
+
+Prelude type fixes: replaced Bool/Nat type puns (`is_zero(nat_lt ...)`) with
+type-correct patterns (`nat_gte`, `if/then/else`). Added `Core.Nat.nat_gte`.
+5 tests.
 
 ---
 

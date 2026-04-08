@@ -1,6 +1,6 @@
 # Test Strategy
 
-**Last updated:** 2026-04-07 — M13.4 GLS compiler parity (1008 tests: 907 pass, 101 skip)
+**Last updated:** 2026-04-08 — M18 type-annotated Glass IR (1149 tests: 1149 pass, 145 skip)
 
 This document describes the test architecture, what each layer verifies,
 and the known gap between what is tested and what is not.
