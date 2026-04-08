@@ -207,5 +207,172 @@ class TestGuards(unittest.TestCase):
         self.assertEqual(result, expected)
 
 
+# ============================================================
+# M15.7e — String interpolation
+# ============================================================
+
+class TestStringInterpolation(unittest.TestCase):
+    """String interpolation support in GLS compiler."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.bc = compile_module()
+
+    def test_compiler_compiles_with_interp(self):
+        """Compiler.gls compiles cleanly after string interpolation support."""
+        self.assertIsNotNone(self.bc)
+        self.assertGreater(len(self.bc), 100)
+
+    def test_interp_helpers_present(self):
+        """Interpolation-related functions are in compiled output."""
+        self.assertIn('Compiler.find_close_brace', self.bc)
+        self.assertIn('Compiler.lex_scan_interp_go', self.bc)
+        self.assertIn('Compiler.has_interp', self.bc)
+        self.assertIn('Compiler.desugar_interp_frag', self.bc)
+        self.assertIn('Compiler.desugar_interp_chain', self.bc)
+
+    def test_nn_text_concat_value(self):
+        """nn_text_concat encodes 'text_concat' as little-endian nat."""
+        expected = int.from_bytes(b'text_concat', 'little')
+        result = bevaluate(self.bc['Compiler.nn_text_concat'])
+        self.assertEqual(result, expected)
+
+    def test_nn_show_value(self):
+        """nn_show encodes 'show' as little-endian nat."""
+        expected = int.from_bytes(b'show', 'little')
+        result = bevaluate(self.bc['Compiler.nn_show'])
+        self.assertEqual(result, expected)
+
+    def test_tok_eat_interp_token_present(self):
+        """tok_eat_interp_token helper is in compiled output."""
+        self.assertIn('Compiler.tok_eat_interp_token', self.bc)
+
+    def test_bootstrap_interp_desugar(self):
+        """Bootstrap compiler desugars string interpolation correctly."""
+        from bootstrap.lexer import lex
+        from bootstrap.parser import parse
+        from bootstrap.scope import resolve
+        from bootstrap.codegen import compile_program
+        # Simple interpolation: "hello #{42} world"
+        # This uses show(42) which requires Show in scope, so test at parser level
+        src = 'use Core.Text unqualified { text_concat, show }\nlet main = "value: #{42}"'
+        prog = parse(lex(src, '<test>'), '<test>')
+        # Parser should desugar to text_concat chain
+        # The main body should be an ExprApp (text_concat chain), not ExprText
+        from bootstrap.ast import ExprApp, ExprText
+        main_body = prog.decls[1].body
+        self.assertIsInstance(main_body, ExprApp,
+                              "interpolated text should desugar to ExprApp")
+
+
+# ============================================================
+# M15.7f — Records
+# ============================================================
+
+class TestRecords(unittest.TestCase):
+    """Record support in GLS compiler."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.bc = compile_module()
+
+    def test_compiler_compiles_with_records(self):
+        """Compiler.gls compiles cleanly after record support."""
+        self.assertIsNotNone(self.bc)
+        self.assertGreater(len(self.bc), 100)
+
+    def test_record_helpers_present(self):
+        """Record rt helpers are in compiled output."""
+        self.assertIn('Compiler.rt_lookup', self.bc)
+        self.assertIn('Compiler.rt_lookup_subset', self.bc)
+        self.assertIn('Compiler.rt_has_field', self.bc)
+        self.assertIn('Compiler.rt_all_in', self.bc)
+        self.assertIn('Compiler.rt_sets_equal', self.bc)
+
+    def test_record_desugaring_helpers_present(self):
+        """Record expression/pattern desugaring helpers are present."""
+        self.assertIn('Compiler.rt_find_field_expr', self.bc)
+        self.assertIn('Compiler.rt_reorder_exprs', self.bc)
+        self.assertIn('Compiler.build_con_app', self.bc)
+        self.assertIn('Compiler.collect_field_names', self.bc)
+        self.assertIn('Compiler.parse_record_expr_fields_pe', self.bc)
+        self.assertIn('Compiler.parse_record_pat_fields', self.bc)
+
+    def test_record_update_helpers_present(self):
+        """Record update desugaring helpers are present."""
+        self.assertIn('Compiler.rt_find_update_expr', self.bc)
+        self.assertIn('Compiler.build_update_body_exprs', self.bc)
+
+    def test_collect_record_types_present(self):
+        """collect_record_types is in compiled output."""
+        self.assertIn('Compiler.collect_record_types', self.bc)
+        self.assertIn('Compiler.collect_record_types_go', self.bc)
+
+    def test_rt_threading_through_parser(self):
+        """Key parser functions have been updated (still present in output)."""
+        self.assertIn('Compiler.parse_expr', self.bc)
+        self.assertIn('Compiler.parse_expr_dispatch', self.bc)
+        self.assertIn('Compiler.parse_atom_expr_pe', self.bc)
+        self.assertIn('Compiler.parse_app_go_pe', self.bc)
+        self.assertIn('Compiler.parse_match_arm_pe', self.bc)
+        self.assertIn('Compiler.parse_program', self.bc)
+
+    def test_bootstrap_record_construct(self):
+        """Bootstrap compiler handles record construction."""
+        from bootstrap.lexer import lex
+        from bootstrap.parser import parse
+        from bootstrap.scope import resolve
+        from bootstrap.codegen import compile_program
+        src = "type Point = { x : Nat, y : Nat }\nlet main = { x = 10, y = 20 }"
+        prog = parse(lex(src, '<test>'), '<test>')
+        resolved, _ = resolve(prog, 'Test', {}, '<test>')
+        compiled = compile_program(resolved, 'Test')
+        self.assertIn('Test.main', compiled)
+        result = bevaluate(compiled['Test.main'])
+        # Point 10 20 = App(App(Nat(0), Nat(10)), Nat(20))
+        self.assertTrue(is_app(result))
+
+    def test_bootstrap_record_match(self):
+        """Bootstrap compiler handles record patterns in match."""
+        from bootstrap.lexer import lex
+        from bootstrap.parser import parse
+        from bootstrap.scope import resolve
+        from bootstrap.codegen import compile_program
+        from bootstrap.ast import ExprMatch
+        src = (
+            "type Point = { x : Nat, y : Nat }\n"
+            "let get_x = λ p → match p {\n"
+            "  | { x = px, y = _ } → px\n"
+            "}\n"
+            "let main = get_x { x = 42, y = 99 }"
+        )
+        prog = parse(lex(src, '<test>'), '<test>')
+        resolved, _ = resolve(prog, 'Test', {}, '<test>')
+        compiled = compile_program(resolved, 'Test')
+        # Both get_x and main should compile
+        self.assertIn('Test.get_x', compiled)
+        self.assertIn('Test.main', compiled)
+
+    def test_bootstrap_record_update(self):
+        """Bootstrap compiler handles record updates."""
+        from bootstrap.lexer import lex
+        from bootstrap.parser import parse
+        from bootstrap.scope import resolve
+        from bootstrap.codegen import compile_program
+        from bootstrap.ast import ExprMatch
+        src = (
+            "type Point = { x : Nat, y : Nat }\n"
+            "let update_x = λ p → p { x = 99 }\n"
+            "let main = 42"
+        )
+        prog = parse(lex(src, '<test>'), '<test>')
+        resolved, _ = resolve(prog, 'Test', {}, '<test>')
+        compiled = compile_program(resolved, 'Test')
+        self.assertIn('Test.update_x', compiled)
+        self.assertIn('Test.main', compiled)
+        result = bevaluate(compiled['Test.main'])
+        self.assertEqual(result, 42)
+
+
 if __name__ == '__main__':
     unittest.main()

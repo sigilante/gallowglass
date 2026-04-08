@@ -492,6 +492,7 @@ type Token =
   | TkLBracket
   | TkRBracket
   | TkColonColon
+  | TkInterp Nat
 
 -- AST types (parser output)
 -- Note: constructors are limited to arity ≤ 2 (bootstrap codegen restriction).
@@ -968,6 +969,110 @@ let lex_scan_text_go : Pair Nat Nat → LexPos → Nat → Nat → Pair LexPos (
             MkPair pos (MkPair tlen tnat)
       }
 
+-- find_close_brace: scan forward from offset to find matching '}'.
+-- depth = number of unmatched '{' seen so far (starts at 1 after '#{').
+-- Returns offset of the matching '}'.
+let find_close_brace : Pair Nat Nat → Nat → Nat → Nat
+  = λ src offset depth →
+      let b = bytes_at src offset in
+      match (nat_eq b 0x7B) {
+        | 0 →
+            match (nat_eq b 0x7D) {
+              | 0 → find_close_brace src (Core.PLAN.inc offset) depth
+              | k →
+                  match (nat_eq depth 1) {
+                    | 0 → find_close_brace src (Core.PLAN.inc offset) (sub depth 1)
+                    | k → offset
+                  }
+            }
+        | k → find_close_brace src (Core.PLAN.inc offset) (Core.PLAN.inc depth)
+      }
+
+-- lex_scan_interp_go: scan text with interpolation support.
+-- Accumulates text byte-by-byte. On #{, saves current text fragment,
+-- finds matching }, creates expr fragment with bytes_slice, continues.
+-- frags: accumulated fragments (in reverse order).
+-- Fragment encoding:
+--   MkPair 0 (MkPair tlen tnat)  = text fragment (byte_len, content_nat)
+--   MkPair 1 inner_src           = expr fragment (source bytes to sub-lex)
+-- Returns MkPair (List frag) end_pos.
+let lex_scan_interp_go : Pair Nat Nat → LexPos → Nat → Nat → List (Pair Nat Nat) → Pair (List (Pair Nat Nat)) LexPos
+  = λ src pos tlen tnat frags →
+      match (nat_eq (lexpos_offset pos) (bytes_length src)) {
+        | 0 →
+            let b = bytes_at src (lexpos_offset pos) in
+            match (nat_eq b 0x22) {
+              | 0 →
+                  match (nat_eq b 0x5C) {
+                    | 0 →
+                        match (nat_eq b 0x23) {
+                          | 0 →
+                              lex_scan_interp_go src (lexpos_advance pos)
+                                (Core.PLAN.inc tlen)
+                                (bit_or tnat (shift_left b (mul 8 tlen)))
+                                frags
+                          | k →
+                              match (nat_eq (bytes_at src (Core.PLAN.inc (lexpos_offset pos))) 0x7B) {
+                                | 0 →
+                                    lex_scan_interp_go src (lexpos_advance pos)
+                                      (Core.PLAN.inc tlen)
+                                      (bit_or tnat (shift_left 0x23 (mul 8 tlen)))
+                                      frags
+                                | k →
+                                    let text_frag = MkPair 0 (MkPair tlen tnat) in
+                                    let off_after = add (lexpos_offset pos) 2 in
+                                    let pos2 = lexpos_advance_n pos 2 in
+                                    let close_off = find_close_brace src off_after 1 in
+                                    let inner_len = sub close_off off_after in
+                                    let inner_src = bytes_slice src off_after inner_len in
+                                    let expr_frag = MkPair 1 inner_src in
+                                    let pos3 = lexpos_advance_n pos2 (Core.PLAN.inc inner_len) in
+                                    lex_scan_interp_go src pos3 0 0
+                                      (Cons expr_frag (Cons text_frag frags))
+                              }
+                        }
+                    | k →
+                        match (nat_eq (Core.PLAN.inc (lexpos_offset pos)) (bytes_length src)) {
+                          | 0 →
+                              let b2 = bytes_at src (Core.PLAN.inc (lexpos_offset pos)) in
+                              lex_scan_interp_go src (lexpos_advance_n pos 2)
+                                (Core.PLAN.inc tlen)
+                                (bit_or tnat (shift_left b2 (mul 8 tlen)))
+                                frags
+                          | k →
+                              let final_frag = MkPair 0 (MkPair tlen tnat) in
+                              MkPair (reverse (Cons final_frag frags)) pos
+                        }
+                  }
+              | k →
+                  let final_frag = MkPair 0 (MkPair tlen tnat) in
+                  MkPair (reverse (Cons final_frag frags)) (lexpos_advance pos)
+            }
+        | k →
+            let final_frag = MkPair 0 (MkPair tlen tnat) in
+            MkPair (reverse (Cons final_frag frags)) pos
+      }
+
+-- has_interp: 1 if source bytes between start and end contain '#{'
+let has_interp : Pair Nat Nat → Nat → Nat → Nat
+  = λ src start end_off →
+      match (nat_eq start end_off) {
+        | 0 →
+            match (nat_eq (bytes_at src start) 0x23) {
+              | 0 → has_interp src (Core.PLAN.inc start) end_off
+              | k →
+                  match (nat_eq (Core.PLAN.inc start) end_off) {
+                    | 0 →
+                        match (nat_eq (bytes_at src (Core.PLAN.inc start)) 0x7B) {
+                          | 0 → has_interp src (Core.PLAN.inc start) end_off
+                          | k → 1
+                        }
+                    | k → 0
+                  }
+            }
+        | k → 0
+      }
+
 -- =====================================================================
 -- Section 17: Single Token Dispatch
 -- =====================================================================
@@ -1056,7 +1161,14 @@ let lex_one : Pair Nat Nat → LexPos → Pair Token LexPos
                                                                                                   | MkPair end_pos tpair →
                                                                                                       match tpair {
                                                                                                         | MkPair tlen tnat →
-                                                                                                            MkPair (TkText tnat) end_pos
+                                                                                                            match (has_interp src (lexpos_offset pos1) (lexpos_offset end_pos)) {
+                                                                                                              | 0 → MkPair (TkText (MkPair tlen tnat)) end_pos
+                                                                                                              | k →
+                                                                                                                  match (lex_scan_interp_go src pos1 0 0 Nil) {
+                                                                                                                    | MkPair frag_list end_pos2 →
+                                                                                                                        MkPair (TkInterp frag_list) end_pos2
+                                                                                                                  }
+                                                                                                            }
                                                                                                       }
                                                                                                 }
                                                                                           }
@@ -1250,6 +1362,15 @@ let tok_eat_text_token : List Token → Pair (Option Nat) (List Token)
         | _ → MkPair None toks
       }
 
+-- tok_eat_interp_token: if head is TkInterp return MkPair (Some frags) rest; else MkPair None toks
+-- Single App arm — avoids the multi-App-arm pred_env bug in the bootstrap codegen.
+let tok_eat_interp_token : List Token → Pair (Option Nat) (List Token)
+  = λ toks →
+      match (tok_peek toks) {
+        | TkInterp frags → MkPair (Some frags) (tok_tail toks)
+        | _ → MkPair None toks
+      }
+
 -- =====================================================================
 -- Section 20: Qualified Name Building
 -- =====================================================================
@@ -1310,13 +1431,14 @@ let parse_qual_name : List Token → Pair Nat (List Token)
 -- =====================================================================
 
 -- is_atom_start: 1 if current token can begin an atom expression
--- Handles TkNat, TkText, TkIdent (App arms), TkLParen, TkMatch, TkLBracket (nat_eq chain)
+-- Handles TkNat, TkText, TkIdent, TkInterp (App arms), TkLParen, TkMatch, TkLBracket (nat_eq chain)
 let is_atom_start : List Token → Nat
   = λ toks →
       match (tok_peek toks) {
         | TkNat _ → 1
         | TkText _ → 1
         | TkIdent _ → 1
+        | TkInterp _ → 1
         | _ →
             let t = tok_peek toks in
             match (nat_eq t TkLParen) {
@@ -1349,10 +1471,318 @@ let parse_ident_list : List Token → Pair (List Nat) (List Token)
 -- nn_Cons = int.from_bytes(b'Cons', 'little') = 0x736E6F43
 let nn_Nil  : Nat = 0x6C694E
 let nn_Cons : Nat = 0x736E6F43
+let nn_text_concat : Nat = 0x7461636E6F635F74786574
+let nn_show : Nat = 0x776F6873
+
+-- desugar_interp_frag: convert a single interpolation fragment to an Expr.
+-- tag=0 (text): payload = MkPair tlen tnat → EApp (ENat tlen) (ENat tnat)
+-- tag=1 (expr): payload = inner_src → lex, parse with pe, wrap in show(expr)
+let desugar_interp_frag : (List Token → Pair Expr (List Token)) → Pair Nat Nat → Expr
+  = λ pe frag →
+      match frag {
+        | MkPair tag payload →
+            match tag {
+              | 0 →
+                  match payload {
+                    | MkPair tlen tnat → EApp (ENat tlen) (ENat tnat)
+                  }
+              | k →
+                  -- expr fragment: lex the inner source, parse with pe
+                  let inner_toks = lex payload 0 1 1 in
+                  match (pe inner_toks) {
+                    | MkPair expr _ → EApp (EVar nn_show) expr
+                  }
+            }
+      }
+
+-- desugar_interp_chain: build right-associative text_concat chain from fragment list.
+-- [f1, f2, f3] → text_concat(f1, text_concat(f2, f3))
+let desugar_interp_chain : (List Token → Pair Expr (List Token)) → List (Pair Nat Nat) → Expr
+  = λ pe frags →
+      match frags {
+        | Nil → EApp (ENat 0) (ENat 0)
+        | Cons f rest →
+            match rest {
+              | Nil → desugar_interp_frag pe f
+              | Cons _ _ →
+                  EApp (EApp (EVar nn_text_concat) (desugar_interp_frag pe f))
+                       (desugar_interp_chain pe rest)
+            }
+      }
+
+-- =====================================================================
+-- Section 20.5: Record table helpers and desugaring
+-- =====================================================================
+-- Record table (rt): List (Pair Nat (List Nat))
+-- Maps record type name → list of field names in declaration order.
+-- Built by collect_record_types (Section 23) from pre-scanning tokens.
+-- Used during expression/pattern parsing to desugar record syntax.
+
+-- rt_has_field: 1 if field_name is in the list
+let rt_has_field : Nat → List Nat → Nat
+  = λ fname fields →
+      match fields {
+        | Nil → 0
+        | Cons f rest →
+            match (nat_eq fname f) {
+              | 0 → rt_has_field fname rest
+              | k → 1
+            }
+      }
+
+-- rt_all_in: 1 if all items in first list are in second list
+let rt_all_in : List Nat → List Nat → Nat
+  = λ needles haystack →
+      match needles {
+        | Nil → 1
+        | Cons n rest →
+            match (rt_has_field n haystack) {
+              | 0 → 0
+              | k → rt_all_in rest haystack
+            }
+      }
+
+-- rt_sets_equal: 1 if two lists contain the same elements (order-independent)
+let rt_sets_equal : List Nat → List Nat → Nat
+  = λ a b →
+      match (rt_all_in a b) {
+        | 0 → 0
+        | k → rt_all_in b a
+      }
+
+-- rt_lookup: find record type by exact field set (order-independent)
+-- Returns MkPair type_name decl_fields, or MkPair 0 Nil if not found.
+let rt_lookup : List (Pair Nat (List Nat)) → List Nat → Pair Nat (List Nat)
+  = λ rt fields →
+      match rt {
+        | Nil → MkPair 0 Nil
+        | Cons entry rest →
+            match entry {
+              | MkPair name decl_fields →
+                  match (rt_sets_equal fields decl_fields) {
+                    | 0 → rt_lookup rest fields
+                    | k → MkPair name decl_fields
+                  }
+            }
+      }
+
+-- rt_lookup_subset: find record type where given fields are a subset
+let rt_lookup_subset : List (Pair Nat (List Nat)) → List Nat → Pair Nat (List Nat)
+  = λ rt fields →
+      match rt {
+        | Nil → MkPair 0 Nil
+        | Cons entry rest →
+            match entry {
+              | MkPair name decl_fields →
+                  match (rt_all_in fields decl_fields) {
+                    | 0 → rt_lookup_subset rest fields
+                    | k → MkPair name decl_fields
+                  }
+            }
+      }
+
+-- rt_find_field_expr: find expr for field name in parsed (name, expr) pairs
+let rt_find_field_expr : Nat → List (Pair Nat Expr) → Expr
+  = λ fname pairs →
+      match pairs {
+        | Nil → EVar 0
+        | Cons p rest →
+            match p {
+              | MkPair n e →
+                  match (nat_eq n fname) {
+                    | 0 → rt_find_field_expr fname rest
+                    | k → e
+                  }
+            }
+      }
+
+-- rt_reorder_exprs: reorder parsed field-expr pairs to declaration order
+let rt_reorder_exprs : List Nat → List (Pair Nat Expr) → List Expr
+  = λ decl_fields pairs →
+      match decl_fields {
+        | Nil → Nil
+        | Cons fname rest →
+            Cons (rt_find_field_expr fname pairs) (rt_reorder_exprs rest pairs)
+      }
+
+-- build_con_app: fold expr list into nested EApp starting from acc
+let build_con_app : Expr → List Expr → Expr
+  = λ acc exprs →
+      match exprs {
+        | Nil → acc
+        | Cons e rest → build_con_app (EApp acc e) rest
+      }
+
+-- rt_find_update_expr: find expr for field in updates; if not found, use EVar(field)
+let rt_find_update_expr : Nat → List (Pair Nat Expr) → Expr
+  = λ fname updates →
+      match updates {
+        | Nil → EVar fname
+        | Cons p rest →
+            match p {
+              | MkPair n e →
+                  match (nat_eq n fname) {
+                    | 0 → rt_find_update_expr fname rest
+                    | k → e
+                  }
+            }
+      }
+
+-- build_update_body_exprs: given decl_fields and updates, build body expr list
+-- For each field: use update expr if present, else EVar(field_name)
+let build_update_body_exprs : List Nat → List (Pair Nat Expr) → List Expr
+  = λ decl_fields updates →
+      match decl_fields {
+        | Nil → Nil
+        | Cons fname rest →
+            Cons (rt_find_update_expr fname updates)
+                 (build_update_body_exprs rest updates)
+      }
+
+-- collect_field_names: extract field names from (name, expr) pairs
+let collect_field_names : List (Pair Nat Expr) → List Nat
+  = λ pairs →
+      match pairs {
+        | Nil → Nil
+        | Cons p rest →
+            match p {
+              | MkPair n _ → Cons n (collect_field_names rest)
+            }
+      }
+
+-- parse_record_expr_fields_pe: parse field = expr, ... inside { }
+-- Handles punning: { x } → { x = x }
+let parse_record_expr_fields_pe
+      : (List Token → Pair Expr (List Token)) → List Token
+        → Pair (List (Pair Nat Expr)) (List Token)
+  = λ pe toks →
+      match (tok_is toks TkRBrace) {
+        | 0 →
+            match (tok_eat_ident toks) {
+              | MkPair 0 _ → MkPair Nil toks
+              | MkPair fname rest →
+                  match (tok_is rest TkEqual) {
+                    | 0 →
+                        -- Punning: { x } → { x = x }
+                        let rest2 = match (tok_is rest TkComma) {
+                                      | 0 → rest
+                                      | k → tok_tail rest
+                                    } in
+                        match (parse_record_expr_fields_pe pe rest2) {
+                          | MkPair fields rest3 →
+                              MkPair (Cons (MkPair fname (EVar fname)) fields)
+                                     rest3
+                        }
+                    | k →
+                        match (pe (tok_tail rest)) {
+                          | MkPair val_expr rest2 →
+                              let rest3 = match (tok_is rest2 TkComma) {
+                                            | 0 → rest2
+                                            | k → tok_tail rest2
+                                          } in
+                              match (parse_record_expr_fields_pe pe rest3) {
+                                | MkPair fields rest4 →
+                                    MkPair (Cons (MkPair fname val_expr) fields)
+                                           rest4
+                              }
+                        }
+                  }
+            }
+        | k → MkPair Nil (tok_tail toks)
+      }
+
+-- parse_record_pat_fields: parse field = var pairs in pattern { ... }
+-- Handles punning: { x } → { x = x }
+-- Handles wildcard: { x = _ } → { x = 0 }
+let parse_record_pat_fields : List Token → Pair (List (Pair Nat Nat)) (List Token)
+  = λ toks →
+      match (tok_is toks TkRBrace) {
+        | 0 →
+            match (tok_eat_ident toks) {
+              | MkPair 0 _ → MkPair Nil toks
+              | MkPair fname rest →
+                  match (tok_is rest TkEqual) {
+                    | 0 →
+                        -- Punning: { x } → { x = x }
+                        let rest2 = match (tok_is rest TkComma) {
+                                      | 0 → rest
+                                      | k → tok_tail rest
+                                    } in
+                        match (parse_record_pat_fields rest2) {
+                          | MkPair fields rest3 →
+                              MkPair (Cons (MkPair fname fname) fields) rest3
+                        }
+                    | k →
+                        match (tok_is (tok_tail rest) TkUnderscore) {
+                          | 0 →
+                              match (tok_eat_ident (tok_tail rest)) {
+                                | MkPair 0 _ → MkPair Nil (tok_tail rest)
+                                | MkPair var_name rest2 →
+                                    let rest3 = match (tok_is rest2 TkComma) {
+                                                  | 0 → rest2
+                                                  | k → tok_tail rest2
+                                                } in
+                                    match (parse_record_pat_fields rest3) {
+                                      | MkPair fields rest4 →
+                                          MkPair (Cons (MkPair fname var_name) fields) rest4
+                                    }
+                              }
+                          | k →
+                              let rest2 = tok_tail (tok_tail rest) in
+                              let rest3 = match (tok_is rest2 TkComma) {
+                                            | 0 → rest2
+                                            | k → tok_tail rest2
+                                          } in
+                              match (parse_record_pat_fields rest3) {
+                                | MkPair fields rest4 →
+                                    MkPair (Cons (MkPair fname 0) fields) rest4
+                              }
+                        }
+                  }
+            }
+        | k → MkPair Nil (tok_tail toks)
+      }
+
+-- rt_find_pat_var: find var name for field in parsed (fname, var) pairs
+let rt_find_pat_var : Nat → List (Pair Nat Nat) → Nat
+  = λ fname pairs →
+      match pairs {
+        | Nil → 0
+        | Cons p rest →
+            match p {
+              | MkPair n v →
+                  match (nat_eq n fname) {
+                    | 0 → rt_find_pat_var fname rest
+                    | k → v
+                  }
+            }
+      }
+
+-- rt_reorder_pat_vars: reorder parsed pat vars to declaration field order
+let rt_reorder_pat_vars : List Nat → List (Pair Nat Nat) → List Nat
+  = λ decl_fields pairs →
+      match decl_fields {
+        | Nil → Nil
+        | Cons fname rest →
+            Cons (rt_find_pat_var fname pairs)
+                 (rt_reorder_pat_vars rest pairs)
+      }
+
+-- collect_pat_field_names: extract field names from (name, var) pairs
+let collect_pat_field_names : List (Pair Nat Nat) → List Nat
+  = λ pairs →
+      match pairs {
+        | Nil → Nil
+        | Cons p rest →
+            match p {
+              | MkPair n _ → Cons n (collect_pat_field_names rest)
+            }
+      }
 
 -- =====================================================================
 -- Section 21: Expression Parser (pe = parse_expr passed as parameter)
 -- All helpers take pe : (List Token → Pair Expr (List Token)) as first arg.
+-- rt (record table) is threaded through functions that handle record syntax.
 -- This breaks the forward-reference cycle: helpers are defined before
 -- parse_expr, which ties the knot by passing itself (N(0) self-ref) to
 -- parse_expr_dispatch, which threads pe through all recursive calls.
@@ -1445,8 +1875,8 @@ let arm_con_lower_pe : (List Token → Pair Expr (List Token)) → Nat → List 
 -- Returns Pair (List MatchArm) (List Token) — multiple arms for or-patterns.
 -- Uses tok_eat_nat_token first (1 App arm) so the inner match on TkIdent
 -- has only 1 App arm — avoids the multi-App-arm pred_env bug in bootstrap.
-let parse_match_arm_pe : (List Token → Pair Expr (List Token)) → List Token → Pair (List MatchArm) (List Token)
-  = λ pe toks →
+let parse_match_arm_pe : List (Pair Nat (List Nat)) → (List Token → Pair Expr (List Token)) → List Token → Pair (List MatchArm) (List Token)
+  = λ rt pe toks →
       match (tok_eat_nat_token (tok_tail toks)) {
         | MkPair n_opt rest →
             match n_opt {
@@ -1468,7 +1898,26 @@ let parse_match_arm_pe : (List Token → Pair Expr (List Token)) → List Token 
                         match (tok_is (tok_tail toks) TkLBracket) {
                           | 0 →
                               match (tok_is (tok_tail toks) TkUnderscore) {
-                                | 0 → MkPair (Cons (ArmVar 0 (EVar 0)) Nil) (tok_tail toks)
+                                | 0 →
+                                    -- Check for record pattern: | { field = var, ... } → body
+                                    match (tok_is (tok_tail toks) TkLBrace) {
+                                      | 0 → MkPair (Cons (ArmVar 0 (EVar 0)) Nil) (tok_tail toks)
+                                      | k →
+                                          -- skip | and {
+                                          match (parse_record_pat_fields (tok_tail (tok_tail toks))) {
+                                            | MkPair pat_pairs rest_rp →
+                                                let pat_fnames = collect_pat_field_names pat_pairs in
+                                                match (rt_lookup rt pat_fnames) {
+                                                  | MkPair type_name decl_fields →
+                                                      let ordered_vars = rt_reorder_pat_vars decl_fields pat_pairs in
+                                                      -- skip → then parse body
+                                                      match (pe (tok_tail rest_rp)) {
+                                                        | MkPair body rest2 →
+                                                            MkPair (Cons (ArmCon type_name (MkPair ordered_vars body)) Nil) rest2
+                                                      }
+                                                }
+                                          }
+                                    }
                                 | k →
                                     -- | _ → expr  (tok_tail x3: skip |, _, →)
                                     match (pe (tok_tail (tok_tail (tok_tail toks)))) {
@@ -1490,14 +1939,14 @@ let parse_match_arm_pe : (List Token → Pair Expr (List Token)) → List Token 
 
 -- parse_match_arms_pe: parse arms while head is TkBar
 -- parse_match_arm_pe returns List MatchArm (for or-pattern expansion), so we append.
-let parse_match_arms_pe : (List Token → Pair Expr (List Token)) → List Token → Pair (List MatchArm) (List Token)
-  = λ pe toks →
+let parse_match_arms_pe : List (Pair Nat (List Nat)) → (List Token → Pair Expr (List Token)) → List Token → Pair (List MatchArm) (List Token)
+  = λ rt pe toks →
       match (tok_is toks TkBar) {
         | 0 → MkPair Nil toks
         | k →
-            match (parse_match_arm_pe pe toks) {
+            match (parse_match_arm_pe rt pe toks) {
               | MkPair arm_list rest →
-                  match (parse_match_arms_pe pe rest) {
+                  match (parse_match_arms_pe rt pe rest) {
                     | MkPair arms rest2 → MkPair (append arm_list arms) rest2
                   }
             }
@@ -1631,11 +2080,11 @@ let replace_guard_sentinels : List MatchArm → List MatchArm
 -- toks is positioned AFTER the 'match' keyword
 -- If any arm has a guard (EVar 0 fallthrough sentinel), wraps scrutinee in
 -- let __gs = scrut and replaces sentinels with match __gs { remaining_arms }.
-let parse_match_expr_pe : (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
-  = λ pe toks →
+let parse_match_expr_pe : List (Pair Nat (List Nat)) → (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
+  = λ rt pe toks →
       match (pe toks) {
         | MkPair scrut toks2 →
-            match (parse_match_arms_pe pe (tok_tail toks2)) {
+            match (parse_match_arms_pe rt pe (tok_tail toks2)) {
               | MkPair arms toks3 →
                   match (has_guard_sentinel arms) {
                     | 0 → MkPair (EMatch scrut arms) (tok_tail toks3)
@@ -1678,8 +2127,9 @@ let parse_list_expr_pe : (List Token → Pair Expr (List Token)) → List Token 
 -- Uses tok_eat_nat_token and tok_eat_text_token (1 App arm each) to handle
 -- TkNat/TkText before the innermost match, which then has only 1 App arm
 -- (TkIdent via parse_qual_name_pe pe) — avoids the multi-App-arm pred_env bug.
-let parse_atom_expr_pe : (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
-  = λ pe toks →
+-- rt is threaded for record expression desugaring ({ field = expr, ... }).
+let parse_atom_expr_pe : List (Pair Nat (List Nat)) → (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
+  = λ rt pe toks →
       match (tok_eat_nat_token toks) {
         | MkPair n_opt rest →
             match n_opt {
@@ -1688,32 +2138,53 @@ let parse_atom_expr_pe : (List Token → Pair Expr (List Token)) → List Token 
                   match (tok_eat_text_token toks) {
                     | MkPair n_opt2 rest2 →
                         match n_opt2 {
-                          | Some n → MkPair (ENat n) rest2
+                          | Some tpair →
+                              match tpair {
+                                | MkPair tlen tnat → MkPair (EApp (ENat tlen) (ENat tnat)) rest2
+                              }
                           | None →
-                              -- Only TkIdent is an App arm here (1 App arm only).
-                              -- pe appears in TkIdent arm body (parse_qual_name_pe pe toks)
-                              -- so pe is captured in handler_env for the wildcard arm.
-                              match (tok_peek toks) {
-                                | TkIdent _ →
-                                    match (parse_qual_name_pe pe toks) {
-                                      | MkPair n rest3 → MkPair (EVar n) rest3
-                                    }
-                                | _ →
-                                    -- pe and toks both in handler_env
-                                    match (tok_is toks TkLBracket) {
-                                      | 0 →
-                                          match (tok_is toks TkLParen) {
-                                            | 0 →
-                                                match (tok_is toks TkMatch) {
-                                                  | 0 → MkPair (EVar 0) toks
-                                                  | k → parse_match_expr_pe pe (tok_tail toks)
+                              match (tok_eat_interp_token toks) {
+                                | MkPair i_opt rest3 →
+                                    match i_opt {
+                                      | Some frag_list → MkPair (desugar_interp_chain pe frag_list) rest3
+                                      | None →
+                                          -- Only TkIdent is an App arm here (1 App arm only).
+                                          match (tok_peek toks) {
+                                            | TkIdent _ →
+                                                match (parse_qual_name_pe pe toks) {
+                                                  | MkPair n rest4 → MkPair (EVar n) rest4
                                                 }
-                                            | k →
-                                                match (pe (tok_tail toks)) {
-                                                  | MkPair e toks2 → MkPair e (tok_tail toks2)
+                                            | _ →
+                                                match (tok_is toks TkLBracket) {
+                                                  | 0 →
+                                                      match (tok_is toks TkLParen) {
+                                                        | 0 →
+                                                            match (tok_is toks TkMatch) {
+                                                              | 0 →
+                                                                  -- Record expression: { field = expr, ... }
+                                                                  match (tok_is toks TkLBrace) {
+                                                                    | 0 → MkPair (EVar 0) toks
+                                                                    | k →
+                                                                        match (parse_record_expr_fields_pe pe (tok_tail toks)) {
+                                                                          | MkPair field_pairs rest_re →
+                                                                              let fnames = collect_field_names field_pairs in
+                                                                              match (rt_lookup rt fnames) {
+                                                                                | MkPair type_name decl_fields →
+                                                                                    let ordered = rt_reorder_exprs decl_fields field_pairs in
+                                                                                    MkPair (build_con_app (EVar type_name) ordered) rest_re
+                                                                              }
+                                                                        }
+                                                                  }
+                                                              | k → parse_match_expr_pe rt pe (tok_tail toks)
+                                                            }
+                                                        | k →
+                                                            match (pe (tok_tail toks)) {
+                                                              | MkPair e toks2 → MkPair e (tok_tail toks2)
+                                                            }
+                                                      }
+                                                  | k → parse_list_expr_pe pe (tok_tail toks)
                                                 }
                                           }
-                                      | k → parse_list_expr_pe pe (tok_tail toks)
                                     }
                               }
                         }
@@ -1722,21 +2193,40 @@ let parse_atom_expr_pe : (List Token → Pair Expr (List Token)) → List Token 
       }
 
 -- parse_app_go_pe: fold additional atoms into application spine
-let parse_app_go_pe : (List Token → Pair Expr (List Token)) → Expr → List Token → Pair Expr (List Token)
-  = λ pe acc toks →
+-- When is_atom_start returns 0, checks for { to handle record updates: acc { field = expr }
+let parse_app_go_pe : List (Pair Nat (List Nat)) → (List Token → Pair Expr (List Token)) → Expr → List Token → Pair Expr (List Token)
+  = λ rt pe acc toks →
       match (is_atom_start toks) {
-        | 0 → MkPair acc toks
+        | 0 →
+            -- Record update: acc { field = expr, ... }
+            match (tok_is toks TkLBrace) {
+              | 0 → MkPair acc toks
+              | k →
+                  match (parse_record_expr_fields_pe pe (tok_tail toks)) {
+                    | MkPair upd_pairs rest_ru →
+                        let upd_fnames = collect_field_names upd_pairs in
+                        match (rt_lookup_subset rt upd_fnames) {
+                          | MkPair type_name decl_fields →
+                              -- Desugar: match acc { | Type f1 f2 ... → Type e1' e2' ... }
+                              let body_exprs = build_update_body_exprs decl_fields upd_pairs in
+                              let rebuild = build_con_app (EVar type_name) body_exprs in
+                              let arm = ArmCon type_name (MkPair decl_fields rebuild) in
+                              let result = EMatch acc (Cons arm Nil) in
+                              parse_app_go_pe rt pe result rest_ru
+                        }
+                  }
+            }
         | k →
-            match (parse_atom_expr_pe pe toks) {
-              | MkPair arg rest → parse_app_go_pe pe (EApp acc arg) rest
+            match (parse_atom_expr_pe rt pe toks) {
+              | MkPair arg rest → parse_app_go_pe rt pe (EApp acc arg) rest
             }
       }
 
 -- parse_app_expr_pe: head atom followed by zero or more atom arguments
-let parse_app_expr_pe : (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
-  = λ pe toks →
-      match (parse_atom_expr_pe pe toks) {
-        | MkPair head rest → parse_app_go_pe pe head rest
+let parse_app_expr_pe : List (Pair Nat (List Nat)) → (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
+  = λ rt pe toks →
+      match (parse_atom_expr_pe rt pe toks) {
+        | MkPair head rest → parse_app_go_pe rt pe head rest
       }
 
 -- parse_lam_body_pe: finish parsing lambda after params are collected
@@ -1807,8 +2297,8 @@ let parse_pin_rhs_pe : (List Token → Pair Expr (List Token)) → Nat → List 
 -- ALL of TkLambda, TkIf, TkLet, TkAt are nullary with tags > 1.  Matching them
 -- directly as constructor arms compiles their pe-referencing bodies in pred_env
 -- (bootstrap codegen bug).  Using tok_is (nat match) keeps pe in scope everywhere.
-let parse_expr_dispatch : (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
-  = λ pe toks →
+let parse_expr_dispatch : List (Pair Nat (List Nat)) → (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
+  = λ rt pe toks →
       match (tok_is toks TkLambda) {
         | 0 →
             match (tok_is toks TkIf) {
@@ -1829,7 +2319,7 @@ let parse_expr_dispatch : (List Token → Pair Expr (List Token)) → List Token
                                       match (tok_peek toks) {
                                         | TkIdent bind_name →
                                             match (tok_is (tok_tail toks) TkBackArrow) {
-                                              | 0 → parse_app_expr_pe pe toks
+                                              | 0 → parse_app_expr_pe rt pe toks
                                               | k →
                                                   -- skip ident, skip ←
                                                   let rest_do = tok_tail (tok_tail toks) in
@@ -1843,7 +2333,7 @@ let parse_expr_dispatch : (List Token → Pair Expr (List Token)) → List Token
                                                         }
                                                   }
                                             }
-                                        | _ → parse_app_expr_pe pe toks
+                                        | _ → parse_app_expr_pe rt pe toks
                                       }
                                                   | k →
                                                       -- run expr → EApp (EVar "run") expr
@@ -1861,7 +2351,7 @@ let parse_expr_dispatch : (List Token → Pair Expr (List Token)) → List Token
                                           }
                                       | k →
                                           -- handle comp { ... }
-                                          parse_handle_expr (tok_tail toks)
+                                          parse_handle_expr rt (tok_tail toks)
                                     }
                                 | k →
                                     -- fix λ self params → body
@@ -1898,9 +2388,10 @@ let parse_expr_dispatch : (List Token → Pair Expr (List Token)) → List Token
             }
       }
 
--- parse_expr: entry point — ties the knot by passing self (N(0)) to dispatch
-let parse_expr : List Token → Pair Expr (List Token)
-  = λ toks → parse_expr_dispatch parse_expr toks
+-- parse_expr: entry point — ties the knot by passing self to dispatch
+-- rt (record table) is captured in the closure so pe carries it implicitly.
+let parse_expr : List (Pair Nat (List Nat)) → List Token → Pair Expr (List Token)
+  = λ rt toks → parse_expr_dispatch rt (parse_expr rt) toks
 
 -- =====================================================================
 -- Section 22: Declaration Parser
@@ -2045,9 +2536,9 @@ let parse_ext_items : List Token → Pair (List Nat) (List Token)
 
 -- parse_let_decl: finish parsing a top-level let after name
 -- toks is positioned on ':' or '='
-let parse_let_decl : Nat → List Token → Pair Decl (List Token)
-  = λ name toks →
-      match (parse_expr (skip_ann toks)) {
+let parse_let_decl : List (Pair Nat (List Nat)) → Nat → List Token → Pair Decl (List Token)
+  = λ rt name toks →
+      match (parse_expr rt (skip_ann toks)) {
         | MkPair body rest → MkPair (DLet name body) rest
       }
 
@@ -2060,9 +2551,53 @@ let skip_to_decl_boundary : List Token → List Token
         | k → toks
       }
 
+-- skip_record_field_type: skip tokens until ',' or '}' (type annotation of a record field)
+let skip_record_field_type : List Token → List Token
+  = λ toks →
+      match (tok_is toks TkComma) {
+        | 0 →
+            match (tok_is toks TkRBrace) {
+              | 0 →
+                  match (tok_is toks TkEof) {
+                    | 0 → toks
+                    | k → skip_record_field_type (tok_tail toks)
+                  }
+              | k → toks
+            }
+        | k → toks
+      }
+
+-- parse_record_fields_go: parse field_name : Type , ... inside { }
+-- Returns MkPair (MkPair count field_name_list) rest_toks
+let parse_record_fields_go : List Token → Nat → List Nat → Pair (Pair Nat (List Nat)) (List Token)
+  = λ toks count names →
+      match (tok_is toks TkRBrace) {
+        | 0 →
+            match (tok_is toks TkEof) {
+              | 0 → MkPair (MkPair count (reverse names)) toks
+              | k →
+                  match (tok_eat_ident toks) {
+                    | MkPair 0 _ → MkPair (MkPair count (reverse names)) toks
+                    | MkPair fname rest →
+                        let rest2 = skip_record_field_type
+                                      (match (tok_is rest TkColon) {
+                                         | 0 → rest
+                                         | k → tok_tail rest
+                                       }) in
+                        let rest3 = match (tok_is rest2 TkComma) {
+                                      | 0 → rest2
+                                      | k → tok_tail rest2
+                                    } in
+                        parse_record_fields_go rest3 (Core.PLAN.inc count) (Cons fname names)
+                  }
+            }
+        | k → MkPair (MkPair count (reverse names)) (tok_tail toks)
+      }
+
 -- parse_type_decl: finish parsing type after name
 -- toks is positioned after optional type params, on '=' or ':'
 -- Handles: type Foo = | A | B  (ADT — parsed normally)
+--          type Foo = { x : T } (record — single-con DType, stores field metadata)
 --          type Foo = Bar       (alias — skipped, emits no-op DLet)
 --          type Foo : builtin   (builtin — skipped, emits no-op DLet)
 let parse_type_decl_body : Nat → List Token → Pair Decl (List Token)
@@ -2071,7 +2606,19 @@ let parse_type_decl_body : Nat → List Token → Pair Decl (List Token)
         | 0 →
             let toks2 = tok_tail toks in
             match (tok_is toks2 TkBar) {
-              | 0 → MkPair (DLet 0 (ENat 0)) (skip_to_decl_boundary toks2)
+              | 0 →
+                  match (tok_is toks2 TkLBrace) {
+                    | 0 → MkPair (DLet 0 (ENat 0)) (skip_to_decl_boundary toks2)
+                    | k →
+                        -- Record: parse { field : Type, ... }
+                        match (parse_record_fields_go (tok_tail toks2) 0 Nil) {
+                          | MkPair info rest →
+                              match info {
+                                | MkPair arity field_names →
+                                    MkPair (DType name (Cons (MkConDef name arity) Nil)) rest
+                              }
+                        }
+                  }
               | k →
                   match (parse_con_defs toks2) {
                     | MkPair cdefs rest → MkPair (DType name cdefs) rest
@@ -2169,25 +2716,25 @@ let is_inst_arg_start : List Token → Nat
 -- parse_inst_app_go_pe: application accumulator for instance bodies
 -- Like parse_app_go_pe but stops at "ident =" member separator
 let parse_inst_app_go_pe
-      : (List Token → Pair Expr (List Token)) → Expr → List Token → Pair Expr (List Token)
-  = λ pe acc toks →
+      : List (Pair Nat (List Nat)) → (List Token → Pair Expr (List Token)) → Expr → List Token → Pair Expr (List Token)
+  = λ rt pe acc toks →
       match (is_inst_arg_start toks) {
         | 0 → MkPair acc toks
         | k →
-            match (parse_atom_expr_pe pe toks) {
-              | MkPair arg rest → parse_inst_app_go_pe pe (EApp acc arg) rest
+            match (parse_atom_expr_pe rt pe toks) {
+              | MkPair arg rest → parse_inst_app_go_pe rt pe (EApp acc arg) rest
             }
       }
 
 -- parse_inst_member_body_pe: parse one instance method body
 -- Handles λ-bodies and simple applications; stops before "ident =" or "}"
 let parse_inst_member_body_pe
-      : (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
-  = λ pe toks →
+      : List (Pair Nat (List Nat)) → (List Token → Pair Expr (List Token)) → List Token → Pair Expr (List Token)
+  = λ rt pe toks →
       match (tok_is toks TkLambda) {
         | 0 →
-            match (parse_atom_expr_pe pe toks) {
-              | MkPair head rest → parse_inst_app_go_pe pe head rest
+            match (parse_atom_expr_pe rt pe toks) {
+              | MkPair head rest → parse_inst_app_go_pe rt pe head rest
             }
         | k →
             match (parse_lambda_params (tok_tail toks)) {
@@ -2198,16 +2745,16 @@ let parse_inst_member_body_pe
 -- parse_inst_members: parse { method = body \n ... } block
 -- toks positioned after the opening '{'.
 -- Returns (member_list, tokens_after_closing_}).
-let parse_inst_members : List Token → Pair (List (Pair Nat Expr)) (List Token)
-  = λ toks →
+let parse_inst_members : List (Pair Nat (List Nat)) → List Token → Pair (List (Pair Nat Expr)) (List Token)
+  = λ rt toks →
       match (tok_is toks TkRBrace) {
         | 0 →
             match (tok_eat_ident toks) {
               | MkPair 0 _ → MkPair Nil (tok_tail toks)
               | MkPair method_name rest →
-                  match (parse_inst_member_body_pe parse_expr (tok_tail rest)) {
+                  match (parse_inst_member_body_pe rt (parse_expr rt) (tok_tail rest)) {
                     | MkPair body rest2 →
-                        match (parse_inst_members rest2) {
+                        match (parse_inst_members rt rest2) {
                           | MkPair members rest3 →
                               MkPair (Cons (MkPair method_name body) members) rest3
                         }
@@ -2218,15 +2765,15 @@ let parse_inst_members : List Token → Pair (List (Pair Nat Expr)) (List Token)
 
 -- parse_inst_decl: parse instance body after 'instance' keyword
 -- toks positioned on class name ident
-let parse_inst_decl : List Token → Pair Decl (List Token)
-  = λ toks →
+let parse_inst_decl : List (Pair Nat (List Nat)) → List Token → Pair Decl (List Token)
+  = λ rt toks →
       match (tok_eat_ident toks) {
         | MkPair 0 _ → MkPair (DInst 0 (MkPair 0 Nil)) toks
         | MkPair class_name rest →
             match (tok_eat_ident rest) {
               | MkPair 0 _ → MkPair (DInst class_name (MkPair 0 Nil)) rest
               | MkPair type_name rest2 →
-                  match (parse_inst_members (tok_tail rest2)) {
+                  match (parse_inst_members rt (tok_tail rest2)) {
                     | MkPair members rest3 →
                         MkPair (DInst class_name (MkPair type_name members)) rest3
                   }
@@ -2269,8 +2816,8 @@ let parse_eff_decl : List Token → Pair Decl (List Token)
 
 -- parse_handle_op_arm: parse | op_name arg_name k_name → body
 let parse_handle_op_arm
-      : List Token → Pair (Pair Nat (Pair Nat Expr)) (List Token)
-  = λ toks →
+      : List (Pair Nat (List Nat)) → List Token → Pair (Pair Nat (Pair Nat Expr)) (List Token)
+  = λ rt toks →
       match (tok_eat_ident toks) {
         | MkPair 0 _ → MkPair (MkPair 0 (MkPair 0 (EVar 0))) toks
         | MkPair op_name rest →
@@ -2280,7 +2827,7 @@ let parse_handle_op_arm
                   match (tok_eat_ident rest2) {
                     | MkPair 0 _ → MkPair (MkPair op_name (MkPair arg_name (EVar 0))) rest2
                     | MkPair k_name rest3 →
-                        match (parse_expr (tok_tail rest3)) {
+                        match (parse_expr rt (tok_tail rest3)) {
                           | MkPair body rest4 →
                               MkPair (MkPair op_name (MkPair k_name body)) rest4
                         }
@@ -2290,16 +2837,16 @@ let parse_handle_op_arm
 
 -- parse_handle_arms: parse op arms after return arm, before }
 let parse_handle_arms
-      : List Token → Pair (List (Pair Nat (Pair Nat Expr))) (List Token)
-  = λ toks →
+      : List (Pair Nat (List Nat)) → List Token → Pair (List (Pair Nat (Pair Nat Expr))) (List Token)
+  = λ rt toks →
       match (tok_is toks TkRBrace) {
         | 0 →
             match (tok_is toks TkBar) {
               | 0 → MkPair Nil toks
               | k →
-                  match (parse_handle_op_arm (tok_tail toks)) {
+                  match (parse_handle_op_arm rt (tok_tail toks)) {
                     | MkPair arm rest →
-                        match (parse_handle_arms rest) {
+                        match (parse_handle_arms rt rest) {
                           | MkPair arms rest2 →
                               MkPair (Cons arm arms) rest2
                         }
@@ -2310,9 +2857,9 @@ let parse_handle_arms
 
 -- parse_handle_expr: parse handle comp { | return x → body | op ... }
 -- toks positioned after 'handle' keyword
-let parse_handle_expr : List Token → Pair Expr (List Token)
-  = λ toks →
-      match (parse_expr toks) {
+let parse_handle_expr : List (Pair Nat (List Nat)) → List Token → Pair Expr (List Token)
+  = λ rt toks →
+      match (parse_expr rt toks) {
         | MkPair comp rest →
             -- skip opening {
             let rest2 = tok_tail rest in
@@ -2326,9 +2873,9 @@ let parse_handle_expr : List Token → Pair Expr (List Token)
             match (tok_eat_ident rest4) {
               | MkPair 0 _ → MkPair (EVar 0) toks
               | MkPair ret_var rest5 →
-                  match (parse_expr (tok_tail rest5)) {
+                  match (parse_expr rt (tok_tail rest5)) {
                     | MkPair ret_body rest6 →
-                        match (parse_handle_arms rest6) {
+                        match (parse_handle_arms rt rest6) {
                           | MkPair op_arms rest7 →
                               -- skip closing }
                               MkPair (EHandle comp (MkPair (ELam ret_var ret_body) op_arms))
@@ -2392,8 +2939,8 @@ let parse_use_decl : List Token → Pair Decl (List Token)
 
 -- parse_decl: parse one top-level declaration
 -- Uses tok_is chain (1 named nat arm each) — avoids multi-nullary-arm pred_env bug.
-let parse_decl : List Token → Pair Decl (List Token)
-  = λ toks →
+let parse_decl : List (Pair Nat (List Nat)) → List Token → Pair Decl (List Token)
+  = λ rt toks →
       match (tok_is toks TkLet) {
         | 0 →
             match (tok_is toks TkType) {
@@ -2412,7 +2959,7 @@ let parse_decl : List Token → Pair Decl (List Token)
                                           }
                                       | k → parse_eff_decl (tok_tail toks)
                                     }
-                                | k → parse_inst_decl (tok_tail toks)
+                                | k → parse_inst_decl rt (tok_tail toks)
                               }
                           | k → parse_class_decl (tok_tail toks)
                         }
@@ -2431,7 +2978,7 @@ let parse_decl : List Token → Pair Decl (List Token)
         | k →
             match (tok_eat_ident (tok_tail toks)) {
               | MkPair 0 _ → MkPair (DLet 0 (EVar 0)) toks
-              | MkPair name toks2 → parse_let_decl name toks2
+              | MkPair name toks2 → parse_let_decl rt name toks2
             }
       }
 
@@ -2439,13 +2986,54 @@ let parse_decl : List Token → Pair Decl (List Token)
 -- Section 23: parse_program
 -- =====================================================================
 
-let parse_program : List Token → List Decl
-  = λ toks →
+-- collect_record_types: pre-scan token stream for record type declarations.
+-- Finds `TkType TkIdent(name) ... TkEqual TkLBrace` sequences,
+-- parses field names, builds association list: List (Pair name_nat (List field_name_nat)).
+-- This record table (rt) is used during expression/pattern parsing to
+-- desugar record expressions/updates/patterns to constructor forms.
+let collect_record_types_go : List Token → List (Pair Nat (List Nat)) → List (Pair Nat (List Nat))
+  = λ toks acc →
+      match (tok_peek toks) {
+        | TkEof → acc
+        | _ →
+            match (tok_is toks TkType) {
+              | 0 → collect_record_types_go (tok_tail toks) acc
+              | k →
+                  match (tok_eat_ident (tok_tail toks)) {
+                    | MkPair 0 _ → collect_record_types_go (tok_tail toks) acc
+                    | MkPair name rest →
+                        let rest2 = skip_type_params rest in
+                        match (tok_is rest2 TkEqual) {
+                          | 0 → collect_record_types_go rest2 acc
+                          | k →
+                              let rest3 = tok_tail rest2 in
+                              match (tok_is rest3 TkLBrace) {
+                                | 0 → collect_record_types_go rest3 acc
+                                | k →
+                                    match (parse_record_fields_go (tok_tail rest3) 0 Nil) {
+                                      | MkPair info rest4 →
+                                          match info {
+                                            | MkPair _ field_names →
+                                                collect_record_types_go rest4
+                                                  (Cons (MkPair name field_names) acc)
+                                          }
+                                    }
+                              }
+                        }
+                  }
+            }
+      }
+
+let collect_record_types : List Token → List (Pair Nat (List Nat))
+  = λ toks → collect_record_types_go toks Nil
+
+let parse_program : List (Pair Nat (List Nat)) → List Token → List Decl
+  = λ rt toks →
       match (tok_peek toks) {
         | TkEof → Nil
         | _ →
-            match (parse_decl toks) {
-              | MkPair decl rest → Cons decl (parse_program rest)
+            match (parse_decl rt toks) {
+              | MkPair decl rest → Cons decl (parse_program rt rest)
             }
       }
 
@@ -5772,7 +6360,8 @@ let nn_Compiler : Nat = 8243113893085146947
 let main : Bytes → Bytes
   = λ src →
       let tokens  = lex src 0 1 1 in
-      let decls   = parse_program tokens in
+      let rt      = collect_record_types tokens in
+      let decls   = parse_program rt tokens in
       let decls2  = resolve_program decls nn_Compiler in
       let compiled = compile_program decls2 nn_Compiler in
       emit_program compiled

@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
-**Last updated:** 2026-04-06
-**Current status:** Alpha — M8 complete (Path B). M9.1–9.4 complete. M10.1–10.7 complete. M11.1–11.5 complete. M12 + M12.1 complete. M12.2 (GLS DEff/EHandle/EDo), M12.3 (superclass constraints), M12.4 (GLS DeclUse), M12.5 (Data.Csv E2E) complete. 890 tests passing.
+**Last updated:** 2026-04-07
+**Current status:** Alpha — M8–M15 complete. M14.6 (cross-module prelude) complete. M15.7f (GLS records) complete. 1053 tests passing, 145 skipped.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -351,10 +351,12 @@ polymorphic instances.
 Spec mandates Show/Debug distinction. Minimal implementation: same output as Show
 initially but distinct class identity and instances.
 
-### M14.6 — Cross-module prelude refactor
+### ✅ M14.6 — Cross-module prelude refactor
 
-Prelude modules use `use` imports (M12) instead of inlining dependencies. Proper
-dependency chain: Combinators → Nat → Bool → Option → List → Text.
+All 8 prelude modules use `use` imports and compile together via `build_modules`.
+Dependency chain: Combinators → Nat → Bool → Text → Pair → Option → List → Result.
+Full-prelude integration test (`test_full_prelude.py`) validates cross-module
+compilation and evaluates functions spanning all modules. 14 tests.
 
 **Deferred past 1.0:** `Serialize`, `Functor`/`Monad`/`Applicative` (higher-kinded),
 `Int`/`Rational`/`Fixed`, `Bytes`, IO/State/Exn effect modules, `Core.Inspect`,
@@ -417,7 +419,7 @@ fragment lists for interpolated text; parser sub-parses interpolation expression
 and builds the `text_concat`/`show` chain. Requires `Show` and `text_concat` in
 scope at the use site. 3 new tests in `tests/bootstrap/test_programs.py`.
 
-### ✅ M15.7 — GLS compiler parity (partial: 7a–7d complete, 7e–7f deferred)
+### ✅ M15.7 — GLS compiler parity (complete: 7a–7f)
 
 GLS self-hosting compiler updated to handle surface syntax features:
 - **M15.7a** Type aliases: `parse_type_decl_body` detects non-ADT type decls (`type Foo = Bar`,
@@ -432,8 +434,17 @@ GLS self-hosting compiler updated to handle surface syntax features:
   Guard body encoded as `EIf guard body (EVar 0)` sentinel. `parse_match_expr_pe`
   post-processes: `replace_guard_sentinels` replaces `EVar 0` with
   `match __gs { remaining_arms }`, wraps scrutinee in `let __gs = scrut`.
-- **M15.7e** String interpolation: deferred (byte-level lexer modification).
-- **M15.7f** Records: deferred (requires field-name-to-type lookup table threading).
+- **M15.7e** String interpolation: `TkInterp` token added to Token type. `lex_scan_interp_go`
+  scans text with `#{...}` detection, `find_close_brace` tracks brace depth,
+  `has_interp` fast-checks for interpolation before re-scanning.
+  `desugar_interp_frag`/`desugar_interp_chain` build `text_concat`/`show` expression chains.
+  Text encoding fixed: `TkText` now carries `MkPair tlen tnat` (byte length preserved),
+  parser produces `EApp (ENat tlen) (ENat tnat)` for proper PLAN text values.
+- **M15.7f** Records: record table (`rt`) pre-scanned from token stream via `collect_record_types`,
+  threaded through ~18 parser functions. Record expressions (`{ x = 1, y = 2 }`) desugar via
+  `rt_lookup` + `rt_reorder_exprs` to constructor application. Record updates (`base { x = 3 }`)
+  desugar via `rt_lookup_subset` to match+rebuild. Record patterns (`| { x = px }`) desugar via
+  `rt_reorder_pat_vars` to `ArmCon`. ~17 new helper functions, 9 new tests.
 
 17 tests in `tests/compiler/test_m15.py`.
 
