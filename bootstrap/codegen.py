@@ -216,6 +216,8 @@ class Compiler:
         self._class_defaults: dict[str, dict[str, Any]] = {}
         # Constrained lets: fq → [(class_fq, [method_fq, ...])] per constraint
         self._constrained_lets: dict[str, list] = {}
+        # SCC groups: list of lists of FQ names (multi-member SCCs only)
+        self.scc_groups: list[list[str]] = []
         # Register builtin constructors from scope resolver.
         # Bool: False = tag 0, True = tag 1 (conventional ordering)
         # These match the scope resolver's pre-declared 'True'/'False' bindings.
@@ -3068,6 +3070,9 @@ class Compiler:
         n = len(scc_names)
         assert n >= 2
         assert scc_names == sorted(scc_names), "must be in canonical order"
+
+        # Record this SCC group for Glass IR rendering
+        self.scc_groups.append(list(scc_names))
 
         scc_indices = {name: i for i, name in enumerate(scc_names)}
 

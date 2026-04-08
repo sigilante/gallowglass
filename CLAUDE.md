@@ -112,7 +112,7 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
 
 ## Current Phase
 
-**Alpha.** All Milestone 8 phases complete. M9–M16 complete. 111 prelude definitions across 8 modules. Eq/Ord/Show/Debug typeclasses with constrained instances. 1082 tests passing.
+**Alpha.** All Milestone 8 phases complete. M9–M17 complete. 111 prelude definitions across 8 modules. Eq/Ord/Show/Debug typeclasses with constrained instances. 1120 tests passing.
 
 - Phase 0 (spec): complete.
 - Phase 1 (Python bootstrap compiler): complete. Milestones 1–7.5 done. Core prelude: 111 definitions, planvm-valid.
@@ -145,6 +145,7 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
 - M15.7: GLS compiler parity — complete (7a–7f: type aliases, list/cons syntax, or-patterns, guards, string interpolation, records).
 - M14.6: Cross-module prelude refactor — complete (all 8 modules use `use` imports, full-prelude integration test).
 - M16: Pin-based module loading — complete (PinId via BLAKE3-256, pin-wrapped compilation, prelude as 110-pin DAG, pin store, full-cycle integration tests).
+- M17: Glass IR emission — complete (AST-based renderer, FQ names, pin hashes, SCC groups, dependency rendering, round-trip verification, prelude Glass IR emission).
 
 The bootstrap compiler compiles the **restricted dialect** of Gallowglass only.
 See `bootstrap/BOOTSTRAP.md` for what the restricted dialect permits.
@@ -179,7 +180,7 @@ python3 -m pytest tests/            # all tests
 
 ### Test skip categories
 
-1082 passing, 145 skipped. The skips are all expected:
+1120 passing, 145 skipped. The skips are all expected:
 
 - **planvm-gated (75):** Seed loading and VM execution tests that require the
   `planvm` binary. These run in the `plan-vm` CI job (builds planvm via Nix).

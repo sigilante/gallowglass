@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
 **Last updated:** 2026-04-07
-**Current status:** Alpha — M8–M16 complete. M16 (pin-based module loading) complete. 1082 tests passing, 145 skipped.
+**Current status:** Alpha — M8–M17 complete. M17 (Glass IR emission) complete. 1120 tests passing, 145 skipped.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -494,6 +494,43 @@ All manifest PinIds are valid. 3 tests (in `test_pin_prelude.py`).
 
 ---
 
+## ✅ M17 — Glass IR emission
+
+Goal: emit Glass IR fragments from the bootstrap compiler per spec/01-glass-ir.md.
+Covers the subset achievable without type inference or debugger: FQ names, pin hashes,
+explicit dictionary args, fragment structure, SCC groups, round-trip verification.
+
+### ✅ M17.1 — Glass IR renderer
+
+AST-based renderer in `bootstrap/glass_ir.py`: `render_fragment()`, `render_expr()`,
+`render_pattern()`, `render_decl()`, `render_module()`. Outputs Glass IR with
+Snapshot/Source/Budget header, FQ names, `[pin#hash]` annotations. 20 tests.
+
+### ✅ M17.2 — Pin declarations and dependency rendering
+
+`collect_decl_deps()` walks resolved AST to find cross-module references.
+`collect_pin_deps()` maps them to PinIds from manifests. Fragments include
+`@![pin#hash] Module.Name` pin declarations. 5 tests.
+
+### ✅ M17.3 — SCC group rendering
+
+`render_scc_group()` emits `@![pin#hash] { ... }` grouped blocks for mutual
+recursion. `Compiler.scc_groups` metadata added to codegen. 2 tests.
+
+### ✅ M17.4 — Round-trip verification
+
+`verify_roundtrip()` recompiles resolved AST and compares PLAN output against
+original compilation. Bootstrap-level round-trip (AST → compile → compare).
+Full Glass IR text round-trip deferred to self-hosting compiler. 4 tests.
+
+### ✅ M17.5 — Prelude Glass IR emission + CI
+
+`bootstrap/build_prelude.py --glass-ir` emits per-definition Glass IR fragments
+to `prelude/glass_ir/`. 64 fragments across 8 modules. Round-trip verified for
+Core.Combinators and Core.Nat. 7 tests.
+
+---
+
 ## 1.0
 
 All of the above complete. Acceptance criteria:
@@ -503,6 +540,7 @@ All of the above complete. Acceptance criteria:
 - Effect handlers, typeclasses, and mutual recursion all working and self-hosted
 - The `Data.Csv` example from `spec/06-surface-syntax.md §15` compiles and runs
 - Prelude published as pinned DAG; user programs reference pins, not inlined defs (M16)
+- Glass IR emission for prelude with round-trip verification (M17)
 - CI passes: Python harness + planvm seed loading + M8.8 Path A equivalent for 1.0 compiler
 
 ---

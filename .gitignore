@@ -8,3 +8,5 @@ dist/
 build/
 .eggs/
 vendor/
+prelude/glass_ir/
+prelude/pins/

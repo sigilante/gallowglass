@@ -26,12 +26,14 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from bootstrap.build import build_modules
+from bootstrap.glass_ir import render_fragment, render_decl, collect_pin_deps
 from bootstrap.pin import build_manifest, save_manifest
 from bootstrap.emit import emit_pinned
 
 CORE_DIR = os.path.join(os.path.dirname(__file__), '..', 'prelude', 'src', 'Core')
 MANIFEST_DIR = os.path.join(os.path.dirname(__file__), '..', 'prelude', 'manifest')
 PINS_DIR = os.path.join(os.path.dirname(__file__), '..', 'prelude', 'pins')
+GLASS_IR_DIR = os.path.join(os.path.dirname(__file__), '..', 'prelude', 'glass_ir')
 
 MODULES = [
     'Core.Combinators',
@@ -45,7 +47,7 @@ MODULES = [
 ]
 
 
-def build_prelude(emit_seeds: bool = False) -> dict:
+def build_prelude(emit_seeds: bool = False, emit_glass_ir: bool = False) -> dict:
     """Build the full prelude as a pinned DAG.
 
     Returns:
@@ -81,17 +83,55 @@ def build_prelude(emit_seeds: bool = False) -> dict:
         for mod in MODULES:
             emit_pinned(compiled, mod, PINS_DIR)
 
+    # Optional: emit Glass IR fragments
+    if emit_glass_ir:
+        _emit_glass_ir(sources, combined)
+
     return combined
+
+
+def _emit_glass_ir(sources, manifest):
+    """Emit Glass IR fragments for all prelude definitions."""
+    from bootstrap.lexer import lex
+    from bootstrap.parser import parse
+    from bootstrap.scope import resolve
+    from bootstrap.ast import DeclLet
+
+    os.makedirs(GLASS_IR_DIR, exist_ok=True)
+
+    pin_ids = manifest.get('pins', {})
+    module_envs = {}
+
+    for mod, source_text in sources:
+        filename = f'<{mod}>'
+        prog = parse(lex(source_text, filename), filename)
+        resolved, env = resolve(prog, mod, module_envs, filename)
+        module_envs[mod] = env
+
+        for decl in resolved.decls:
+            if isinstance(decl, DeclLet):
+                fq = f'{mod}.{decl.name}'
+                pin_id = pin_ids.get(fq)
+                deps = collect_pin_deps(fq, decl, mod, manifest)
+                frag = render_fragment(fq, decl, pin_id=pin_id,
+                                       module=mod, deps=deps)
+                safe_name = fq.replace('.', '_')
+                path = os.path.join(GLASS_IR_DIR, f'{safe_name}.gls')
+                with open(path, 'w') as f:
+                    f.write(frag)
 
 
 def main():
     emit_seeds = '--seeds' in sys.argv
-    manifest = build_prelude(emit_seeds=emit_seeds)
+    emit_glass = '--glass-ir' in sys.argv
+    manifest = build_prelude(emit_seeds=emit_seeds, emit_glass_ir=emit_glass)
     n = len(manifest['pins'])
     print(f"Built prelude manifest: {n} pins across {len(MODULES)} modules")
     print(f"Manifests written to {MANIFEST_DIR}/")
     if emit_seeds:
         print(f"Seed files written to {PINS_DIR}/")
+    if emit_glass:
+        print(f"Glass IR fragments written to {GLASS_IR_DIR}/")
 
 
 if __name__ == '__main__':
