@@ -1122,6 +1122,97 @@ let bb = deep_unwrap None
         assert eval_val(src, 'bb') == 0
 
 
+# ===========================================================================
+# F1.1: Wildcard succ-arm capture lifting
+# ===========================================================================
+#
+# Regression for the field-feedback bug:
+#   match b { | 0 → 0 | _ → mod_go a b }
+# previously inlined the wildcard body via `const2(wild_val)`, which did not
+# lambda-lift outer-local captures (`a`, `b`, `mod_go`).  The construction
+# was structurally distinct from `| _x → mod_go a b`, which routes through
+# `_make_pred_succ_law` and lifts captures correctly.  Symptom: silent
+# infinite loop at evaluation time.
+#
+# Both forms must now produce identical output and evaluate without looping.
+
+class TestWildcardCaptureLifting:
+    """PatWild and PatVar wildcard succ arms must both lambda-lift captures."""
+
+    def test_wildcard_captures_outer_locals(self):
+        """`match b { | 0 → 0 | _ → other a b }` must capture `a`, `b`, `other`."""
+        src = '''
+let other : Nat → Nat → Nat
+  = λ xx yy → xx
+
+let mod_nat : Nat → Nat → Nat
+  = λ aa bb → match bb {
+      | 0 → 0
+      | _ → other aa bb
+    }
+
+let r0 = mod_nat 5 0
+let r1 = mod_nat 5 3
+'''
+        assert eval_val(src, 'r0') == 0
+        assert eval_val(src, 'r1') == 5
+
+    def test_wildcard_captures_self_ref(self):
+        """`match b { | 0 → a | _ → self ... }` must capture self_ref_name.
+        Recursion bounded by passing 0 to self, hitting the 0-arm next call."""
+        src = '''
+let ff : Nat → Nat → Nat
+  = λ aa bb → match bb {
+      | 0 → aa
+      | _ → ff aa 0
+    }
+
+let r0 = ff 7 0
+let r3 = ff 7 3
+'''
+        assert eval_val(src, 'r0') == 7
+        assert eval_val(src, 'r3') == 7
+
+    def test_wildcard_captures_self_ref_with_inc(self):
+        """Recursive self-call through wildcard arm with capture and inc."""
+        src = '''
+external mod Core.PLAN { inc : Nat → Nat }
+
+let bump_once : Nat → Nat → Nat
+  = λ aa bb → match bb {
+      | 0 → aa
+      | _ → bump_once (Core.PLAN.inc aa) 0
+    }
+
+let r0 = bump_once 5 0
+let r5 = bump_once 5 7
+'''
+        assert eval_val(src, 'r0') == 5
+        assert eval_val(src, 'r5') == 6
+
+    def test_named_and_wild_produce_same_result(self):
+        """`| _ → body` and `| _x → body` (where _x is unused) must agree."""
+        src_wild = '''
+let ff : Nat → Nat → Nat
+  = λ aa bb → match bb {
+      | 0 → aa
+      | _ → ff aa 0
+    }
+
+let result = ff 7 3
+'''
+        src_named = '''
+let ff : Nat → Nat → Nat
+  = λ aa bb → match bb {
+      | 0 → aa
+      | _kk → ff aa 0
+    }
+
+let result = ff 7 3
+'''
+        assert eval_val(src_wild, 'result') == eval_val(src_named, 'result') == 7
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
