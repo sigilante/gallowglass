@@ -1312,6 +1312,81 @@ class TestCodegenErrorLocation:
             assert str(e) == 'some internal invariant failed'
 
 
+# ===========================================================================
+# F1.3: if-then-else recursion does not eagerly evaluate both branches
+# ===========================================================================
+#
+# Issue #1b from feedback: `if c then RECURSE else BASE` compiled but looped
+# at evaluation time.  The branches were compiled into the law body as raw
+# `bapp(const2_pin, body)` chains; `kal` walks the (0 f x) `bapp` shape
+# eagerly, so the recursive call inside `then_body` was forced before the
+# dispatch could select a branch — even when the runtime dispatch should
+# have taken the else branch.  Same logic written as `match` worked because
+# the succ branch was wrapped in a Pin'd law, which `kal` does not recurse
+# into.
+
+class TestIfThenElseLazyBranches:
+    """if-then-else must defer branch evaluation just like match does."""
+
+    def test_recursive_call_in_then_branch_terminates(self):
+        """`if cond then self_call else base` must not loop when cond is False."""
+        src = '''
+let always_false : Nat → Bool
+  = λ aa → False
+
+let test_if : Nat → Nat → Nat
+  = λ aa bb → if (always_false bb) then test_if aa 0 else aa
+
+let r0 = test_if 7 0
+let r3 = test_if 7 3
+'''
+        # Both calls hit always_false → False → returns aa.  Without the fix,
+        # `test_if aa 0` is forced eagerly during law-body kal walk → infinite
+        # recursion before op3 dispatches.
+        assert eval_val(src, 'r0') == 7
+        assert eval_val(src, 'r3') == 7
+
+    def test_recursive_call_in_else_branch_terminates(self):
+        """Symmetric: recursive call in else branch with cond=True base case."""
+        src = '''
+let always_true : Nat → Bool
+  = λ aa → True
+
+let test_if : Nat → Nat → Nat
+  = λ aa bb → if (always_true bb) then aa else test_if aa 0
+
+let r0 = test_if 5 0
+let r3 = test_if 5 3
+'''
+        assert eval_val(src, 'r0') == 5
+        assert eval_val(src, 'r3') == 5
+
+    def test_if_and_match_produce_same_result(self):
+        """if-then-else should agree with the equivalent match-on-Bool."""
+        src_if = '''
+let always_false : Nat → Bool
+  = λ aa → False
+
+let ff : Nat → Nat
+  = λ nn → if (always_false nn) then ff 0 else nn
+
+let result = ff 42
+'''
+        src_match = '''
+let always_false : Nat → Bool
+  = λ aa → False
+
+let ff : Nat → Nat
+  = λ nn → match (always_false nn) {
+      | False → nn
+      | True  → ff 0
+    }
+
+let result = ff 42
+'''
+        assert eval_val(src_if, 'result') == eval_val(src_match, 'result') == 42
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------

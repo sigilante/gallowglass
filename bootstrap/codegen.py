@@ -1504,42 +1504,45 @@ class Compiler:
 
     def _compile_if(self, expr: ExprIf, env: Env, name_hint: str) -> Any:
         """
-        Compile if/then/else using Bool's nat encoding (False=0, True=1).
+        Compile if/then/else as a Bool dispatch (False=0, True=1).
 
-        Uses opcode 3 (P(N(3))), which is the Case_ dispatch opcode.
-        Op 3 takes 6 separate arguments: (p, l, a, z, m, o)
-        where p,l,a handle pin/law/app cases (unused for Bool/Nat),
-        z is the zero (False) branch, m is the succ function (receives pred),
-        and o is the scrutinee.
+        Both branches are lambda-lifted into Pin'd 1-arg thunk laws so
+        neither is forced by the surrounding `kal` walk.  Op2 selects which
+        Pin to apply based on the condition; the dummy argument enters the
+        chosen law's body, evaluating only the selected branch.
 
-        In law body context, de Bruijn refs inside plain App nodes are NOT
-        resolved by kal.  We use bapp chains to force resolution:
-          bapp(f, x) = A(A(N(0), f), x)
-          kal evaluates this as apply(kal(f), kal(x))
+        Without this lifting (the previous encoding inlined both branches
+        as `bapp(const2_pin, body)` chains), `kal`'s recursion through the
+        `(0 f x)` shape would force a recursive call in either branch
+        before op2 could dispatch — a silent infinite loop at evaluation
+        time, even when the branch should not have been taken (issue #1b).
         """
         cond_body = self._compile_expr(expr.cond, env)
-        then_body = self._compile_expr(expr.then_, env, name_hint + '_then')
-        else_body = self._compile_expr(expr.else_, env, name_hint + '_else')
 
-        id_pin = P(self._ID_LAW)
+        # Lift each branch into a 1-arg thunk law (Pin'd, so kal won't recurse).
+        # The 1-arg parameter is unused inside the body — it exists only to
+        # keep the law a Pin until selected and applied.
+        then_thunk = self._make_pred_succ_law(expr.then_, '__if_thunk__', env,
+                                              name_hint + '_then')
+        else_thunk = self._make_pred_succ_law(expr.else_, '__if_thunk__', env,
+                                              name_hint + '_else')
+
         const2_pin = P(self._CONST2_LAW)
-
+        # Op2(zero_val=else_thunk, succ=const2(then_thunk), cond) selects a
+        # thunk Pin: returns else_thunk for cond=0, returns then_thunk for
+        # cond=succ (because const2 ignores the predecessor).  Applying the
+        # selected Pin to a dummy argument enters its body and evaluates the
+        # corresponding branch.
         if env.arity == 0:
-            # Top-level: apply P(N(3)) to 6 separate args directly.
-            const_then = A(const2_pin, then_body)
-            return A(A(A(A(A(A(P(N(3)), id_pin), id_pin), id_pin),
-                        else_body), const_then), cond_body)
+            selected = A(A(A(A(A(A(P(N(3)), P(self._ID_LAW)),
+                                P(self._ID_LAW)), P(self._ID_LAW)),
+                            else_thunk), A(const2_pin, then_thunk)), cond_body)
+            return A(selected, N(0))
         else:
-            # Law body: use bapp chains so de Bruijn refs are resolved by kal.
-            const_then_body = bapp(const2_pin, then_body)
-            step = P(N(3))
-            step = bapp(step, id_pin)           # p
-            step = bapp(step, id_pin)           # l
-            step = bapp(step, id_pin)           # a
-            step = bapp(step, else_body)        # z (False branch)
-            step = bapp(step, const_then_body)  # m (True branch fn)
-            step = bapp(step, cond_body)        # o (scrutinee)
-            return step
+            selected = self._make_op2_dispatch(else_thunk,
+                                               bapp(const2_pin, then_thunk),
+                                               cond_body, env)
+            return bapp(selected, N(0))
 
     # -----------------------------------------------------------------------
     # Pattern matching
