@@ -1705,9 +1705,12 @@ class Compiler:
                 # More named arms: succ law dispatches on predecessor
                 succ = make_succ_law(idx + 1)
             elif wild_body is not None:
-                if wild_var is not None and cur_env is env:
-                    # PatVar wildcard at outer level: use proper predecessor binding
-                    succ = self._make_pred_succ_law(wild_body, wild_var, cur_env, f'{name_hint}_wild')
+                if cur_env is env and cur_env.arity > 0:
+                    # In-law wildcard: lambda-lift outer-local captures and self-ref
+                    # via _make_pred_succ_law. PatWild gets a synthetic var name —
+                    # it occupies the predecessor slot but is never referenced.
+                    pred_name = wild_var if wild_var is not None else '__pat_wild__'
+                    succ = self._make_pred_succ_law(wild_body, pred_name, cur_env, f'{name_hint}_wild')
                 else:
                     wild_val = self._compile_expr(wild_body, cur_env, f'{name_hint}_wild')
                     # const2(wild_val): ignores predecessor, returns wild_val
@@ -1737,11 +1740,14 @@ class Compiler:
         if len(arms_sorted) == 1:
             # Single named arm + optional wildcard
             if wild_body is not None:
-                if wild_var is not None:
-                    succ = self._make_pred_succ_law(wild_body, wild_var, env, f'{name_hint}_wild')
+                if env.arity > 0:
+                    # In-law: lambda-lift outer-local captures and self-ref. PatWild
+                    # gets a synthetic var name in the predecessor slot.
+                    pred_name = wild_var if wild_var is not None else '__pat_wild__'
+                    succ = self._make_pred_succ_law(wild_body, pred_name, env, f'{name_hint}_wild')
                 else:
                     wild_val = self._compile_expr(wild_body, env, f'{name_hint}_wild')
-                    succ = bapp(const2_pin, wild_val) if env.arity > 0 else A(const2_pin, wild_val)
+                    succ = A(const2_pin, wild_val)
             else:
                 fallback = A(N(0), N(0)) if env.arity > 0 else N(0)
                 succ = bapp(const2_pin, fallback) if env.arity > 0 else A(const2_pin, N(0))
