@@ -1,13 +1,13 @@
 {
   "module": "Core.Bool",
   "pins": {
-    "Core.Bool.and": "efd008e3e9c52bd640895d2511eb30561a7261445c6b445a5aea242a40def2f7",
-    "Core.Bool.bool_eq": "5923db83cd0c6760e28c94c6f8be4cef40c503323eb9f642b5e2af214bda9c5b",
-    "Core.Bool.bool_select": "4580daa40684adcfcd04831a34a42b11b63301333277c31688dee4898cd361e2",
-    "Core.Bool.inst_Eq_Bool_eq": "5923db83cd0c6760e28c94c6f8be4cef40c503323eb9f642b5e2af214bda9c5b",
-    "Core.Bool.inst_Eq_Bool_neq": "ab3a2a9f28d67027e5a8f72ab6eeb92188d495bef6106463df694bb159a3b258",
-    "Core.Bool.not": "f2b76ec31ea07de55f836cae631c4958585c7ab2f62ea3e866a8da7405d49896",
-    "Core.Bool.or": "68c69c9003fe9daff26bdd33a390e00799343a4c03bc95196ae807675a03d58b",
-    "Core.Bool.xor": "999c6a23dd600171f1c69a2728145e1511ddb09bef2df7cbfcf92af166ce2b9c"
+    "Core.Bool.and": "81fbe4e03b29786321833f3c850e5d9cbe10e4d8353e896b6eab92e4bc403ce9",
+    "Core.Bool.bool_eq": "52c03d7eececcebbfeee92deb4c70bfc0e5b9799245815681f4744a34fccd4a0",
+    "Core.Bool.bool_select": "8b502365896eddedcdc42ccaf0db28ad6a1cd3af1ae7012d259076908b2eb174",
+    "Core.Bool.inst_Eq_Bool_eq": "52c03d7eececcebbfeee92deb4c70bfc0e5b9799245815681f4744a34fccd4a0",
+    "Core.Bool.inst_Eq_Bool_neq": "17edb4825303ce5b0e249c1e305627375ae4a4ef4c2b85680f4801e63db69d65",
+    "Core.Bool.not": "c421d770a897ab4053e8225c672fa1aef5d5283faf43dfe77b0323dac4e863ff",
+    "Core.Bool.or": "7511ee8e69ff696d8eb514503316f8b8387c84fa469b95262ff80ec47839da25",
+    "Core.Bool.xor": "7da472b8f98c9e7b8dbee6ab9954215fc643445a8ac36c7b90763b3ed5a0213c"
   }
 }
