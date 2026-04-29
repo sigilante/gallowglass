@@ -973,6 +973,79 @@ let result = handle comp {
         result = eval_handler(src, 'result')
         assert result == 77
 
+    # ----------------------------------------------------------------------
+    # F6: handler arms resuming with constructor-App values
+    # ----------------------------------------------------------------------
+    # Issue #7 from feedback: every existing handler test resumes with a
+    # bare Nat (`kk : Nat → ...`).  No test exercises a handler arm where
+    # the continuation receives a constructor-App value (e.g. `MkPair 1 2`,
+    # a `Some x`, an `Ok v`).  The user reported this works in practice
+    # but wanted explicit test coverage to settle the precedent.
+
+    def test_handler_resume_with_pair_constructor(self):
+        """`kk (MkPair 1 2)` — resume with a binary constructor App.
+
+        The do-binder receives the constructor value through the continuation,
+        and the return arm pattern-matches it to extract a field.  This exercises
+        the path where the resumed continuation receives a non-Nat App tree.
+        """
+        src = '''
+type MyPair = | MkPair Nat Nat
+
+eff Provider {
+  fetch_pair : () → MyPair
+}
+
+let comp = pp ← fetch_pair () in pure pp
+
+let pair_snd = handle comp {
+  | return rr → match rr { | MkPair _ yy → yy }
+  | fetch_pair _ kk → kk (MkPair 1 2)
+}
+'''
+        result = eval_handler(src, 'pair_snd')
+        assert result == 2, f'expected 2, got {result}'
+
+    def test_handler_resume_with_option_some(self):
+        """`kk (Some 99)` — resume with a unary constructor App."""
+        src = '''
+type MyOpt = | MyNone | MySome Nat
+
+eff Lookup {
+  lookup : () → MyOpt
+}
+
+let comp = oo ← lookup () in pure oo
+
+let extracted = handle comp {
+  | return rr → match rr { | MyNone → 0 | MySome xx → xx }
+  | lookup _ kk → kk (MySome 99)
+}
+'''
+        result = eval_handler(src, 'extracted')
+        assert result == 99
+
+    def test_handler_resume_with_constructor_threaded_through_do_chain(self):
+        """Multi-step: handler resumes with constructor, do-bind threads it,
+        return arm extracts the field."""
+        src = '''
+type MyResult = | MyOk Nat | MyErr Nat
+
+eff Worker {
+  do_work : Nat → MyResult
+}
+
+let comp = aa ← do_work 5 in bb ← do_work 7 in pure bb
+
+let extracted = handle comp {
+  | return rr → match rr { | MyOk vv → vv | MyErr _ → 0 }
+  | do_work nn kk → kk (MyOk nn)
+}
+'''
+        # Two do-binds; second value is what's returned and matched
+        result = eval_handler(src, 'extracted')
+        assert result == 7
+
 
 class TestTypeclassEdgeCases:
     """Additional typeclass edge cases."""
