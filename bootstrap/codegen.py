@@ -30,7 +30,12 @@ from dev.harness.plan import P, L, A, N, is_nat, is_pin, is_law, is_app
 
 
 class CodegenError(Exception):
-    pass
+    def __init__(self, msg: str, loc=None):
+        if loc is not None:
+            super().__init__(f"{loc.file}:{loc.line}:{loc.col}: error: {msg}")
+        else:
+            super().__init__(msg)
+        self.loc = loc
 
 
 @dataclass
@@ -1051,7 +1056,8 @@ class Compiler:
                     return bapp(bapp(N(s_idx), j_val), N(s_idx))
                 else:
                     raise CodegenError(
-                        f'codegen: mutual SCC reference {fq!r} used outside a law body'
+                        f'codegen: mutual SCC reference {fq!r} used outside a law body',
+                        getattr(expr, 'loc', None),
                     )
             if env.arity == 0:
                 # At top level: return the value directly
@@ -1080,7 +1086,8 @@ class Compiler:
                     return bapp(bapp(N(s_idx), j_val), N(s_idx))
                 else:
                     raise CodegenError(
-                        f'codegen: mutual SCC reference {short!r} used outside a law body'
+                        f'codegen: mutual SCC reference {short!r} used outside a law body',
+                        getattr(expr, 'loc', None),
                     )
             if env.arity == 0:
                 return val
@@ -1090,7 +1097,10 @@ class Compiler:
                 return val
             return P(val)
 
-        raise CodegenError(f'codegen: unbound variable {fq!r}')
+        raise CodegenError(
+            f'codegen: unbound variable {fq!r}',
+            getattr(expr, 'loc', None),
+        )
 
     def _compile_app(self, expr: ExprApp, env: Env, name_hint: str) -> Any:
         """Compile function application.
@@ -1679,22 +1689,68 @@ class Compiler:
           where succ_law_1 = L(1, 0, op2(arm1_val, succ_law_2, N(1)))
           and N(1) inside each succ law is the predecessor (de Bruijn index 1).
 
-        If wild_var is not None (PatVar wildcard), the wildcard arm gets the
-        predecessor bound to wild_var via _make_pred_succ_law.
-
-        This ensures each level dispatches on the PREDECESSOR passed by op2,
-        not on the original scrutinee.  The arm bodies compiled in outer env
-        (may reference outer lambda params); the succ laws are compiled in a
-        fresh arity-1 env (bootstrap limitation: arm bodies must not reference
-        outer lambda params — they are recompiled inside the succ law).
+        Each succ_law is lambda-lifted from its enclosing env: it captures
+        self_ref_name and free outer locals as leading parameters, then takes
+        the predecessor as its final parameter.  The outer call site partial-
+        applies the lifted law with the captured values.  This is what allows
+        arm[1+] bodies in a recursive function to reference self and outer
+        lambda params (issue #1a).
         """
         const2_pin = P(self._CONST2_LAW)
 
-        def make_succ_law(idx: int) -> Any:
-            """L(1, 0, dispatch(idx, pred=N(1))) — takes predecessor, dispatches."""
-            pred_env = Env(globals=env.globals, arity=1)
-            body = dispatch(idx, N(1), pred_env)
-            return P(L(1, 0, body))
+        def remaining_bodies(start_idx: int) -> list:
+            bs = [arms_sorted[i][1] for i in range(start_idx, len(arms_sorted))]
+            if wild_body is not None:
+                bs.append(wild_body)
+            return bs
+
+        def make_succ_law(idx: int, outer_env: Env) -> Any:
+            """Build a succ law for arm[idx..], lambda-lifting from outer_env."""
+            if outer_env.arity == 0:
+                # Top-level dispatch: no outer locals to lift.  self_ref_name
+                # resolves via globals at this level, so propagation suffices.
+                pred_env = Env(globals=outer_env.globals, arity=1,
+                               self_ref_name=outer_env.self_ref_name)
+                body = dispatch(idx, N(1), pred_env)
+                return P(L(1, 0, body))
+
+            # In-law: collect captures across all bodies in this dispatch chain.
+            bound_set: set = {wild_var} if wild_var is not None else set()
+            free_set: set = set()
+            for b in remaining_bodies(idx):
+                self._collect_free(b, bound_set, outer_env, free_set)
+            free_locals = [k for k in outer_env.locals if k in free_set]
+
+            uses_self = bool(outer_env.self_ref_name) and any(
+                self._body_uses_self_ref(b, outer_env) for b in remaining_bodies(idx)
+            )
+
+            # Build lifted_env layout: [self?][captures...][predecessor]
+            lifted_env = Env(globals=outer_env.globals, arity=0)
+            lifted_env.self_ref_name = ''
+            if uses_self:
+                lifted_env.arity += 1
+                si = lifted_env.arity
+                lifted_env.locals[outer_env.self_ref_name] = si
+                short = outer_env.self_ref_name.split('.')[-1]
+                lifted_env.locals[short] = si
+            for fv in free_locals:
+                lifted_env.arity += 1
+                lifted_env.locals[fv] = lifted_env.arity
+            lifted_env.arity += 1
+            pred_idx = lifted_env.arity
+
+            body = dispatch(idx, N(pred_idx), lifted_env)
+            name_nat = encode_name(f'{name_hint}_succ_{idx}')
+            lifted_law = P(L(lifted_env.arity, name_nat, body))
+
+            # Partial-apply at outer_env's perspective.
+            result = lifted_law
+            if uses_self:
+                result = bapp(result, N(0))
+            for fv in free_locals:
+                result = bapp(result, N(outer_env.locals[fv]))
+            return result
 
         def dispatch(idx: int, scr: Any, cur_env: Env) -> Any:
             """Build op2 dispatch for arm[idx], scrutinee=scr, in cur_env."""
@@ -1703,9 +1759,9 @@ class Compiler:
 
             if idx + 1 < len(arms_sorted):
                 # More named arms: succ law dispatches on predecessor
-                succ = make_succ_law(idx + 1)
+                succ = make_succ_law(idx + 1, cur_env)
             elif wild_body is not None:
-                if cur_env is env and cur_env.arity > 0:
+                if cur_env.arity > 0:
                     # In-law wildcard: lambda-lift outer-local captures and self-ref
                     # via _make_pred_succ_law. PatWild gets a synthetic var name —
                     # it occupies the predecessor slot but is never referenced.
@@ -1713,11 +1769,7 @@ class Compiler:
                     succ = self._make_pred_succ_law(wild_body, pred_name, cur_env, f'{name_hint}_wild')
                 else:
                     wild_val = self._compile_expr(wild_body, cur_env, f'{name_hint}_wild')
-                    # const2(wild_val): ignores predecessor, returns wild_val
-                    if cur_env.arity > 0:
-                        succ = bapp(const2_pin, wild_val)
-                    else:
-                        succ = A(const2_pin, wild_val)
+                    succ = A(const2_pin, wild_val)
             else:
                 # No wildcard: unreachable; return 0
                 fallback = A(N(0), N(0)) if cur_env.arity > 0 else N(0)
@@ -1754,7 +1806,7 @@ class Compiler:
             return self._make_op2_dispatch(zero_val0, succ, scrutinee, env)
         else:
             # Multiple arms: arm[1:] become succ laws that use the predecessor
-            succ = make_succ_law(1)
+            succ = make_succ_law(1, env)
             return self._make_op2_dispatch(zero_val0, succ, scrutinee, env)
 
     def _nat_match_top(self, nat_arms, wild_body, wild_var, scrutinee, op2, env, name_hint):
