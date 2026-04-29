@@ -105,6 +105,86 @@ The bootstrap type checker ignores effect rows. Functions may include effect
 annotations (the parser accepts them), but the type checker treats all types as if
 the annotation were absent. This is sound for Phase 1.
 
+### 2.4 Restricted-dialect idioms
+
+The bootstrap compiler accepts a strict subset of Gallowglass; the rules below
+cover the patterns that work today and the workarounds for forms the bootstrap
+codegen does not yet handle.
+
+#### 2.4.1 Variant types: single-constructor record + Nat tag
+
+The mixed-arity constructor footgun (M9.3 skipped tests) means a sum type with
+constructors of different arities — say:
+
+```gallowglass
+type Effect =
+  | Point Ship Region    -- arity 2
+  | Dns   Host           -- arity 1
+  | Insc  Id             -- arity 1
+  | Xfer  Ship           -- arity 1
+```
+
+cannot be matched with a multi-arm constructor `match` in the bootstrap
+codegen. The pattern that *does* compile is to model variants as a
+single-constructor record with a Nat tag and a payload nested in `Pair`s:
+
+```gallowglass
+type Effect = | MkEffect Nat (Pair Nat (Pair Nat Nat))
+--                       tag    a       (b   c)
+
+let mk_point : Ship → Region → Effect
+  = λ ss rr → MkEffect 0 (MkPair ss (MkPair rr 0))
+
+let mk_dns : Host → Effect
+  = λ hh → MkEffect 1 (MkPair hh (MkPair 0 0))
+```
+
+Dispatch with an `if (nat_eq tag K)` chain:
+
+```gallowglass
+let interpret : Effect → Bytes
+  = λ ee → match ee {
+      | MkEffect tag pp →
+          if nat_eq tag 0 then handle_point pp
+          else if nat_eq tag 1 then handle_dns (pair_fst pp)
+          else if nat_eq tag 2 then handle_insc (pair_fst pp)
+          else handle_xfer (pair_fst pp)
+    }
+```
+
+`Compiler.gls` is the canonical reference for this idiom — every AST node type
+in the self-hosting compiler is encoded this way.
+
+#### 2.4.2 Recursive Bool dispatch
+
+For recursion controlled by a `Bool`, both `if-then-else` and `match` dispatch
+work correctly: the bootstrap codegen wraps non-base branches in Pin'd thunk
+laws so neither branch is forced before the condition is evaluated. Use whichever
+reads more naturally:
+
+```gallowglass
+-- Either form is fine:
+let mod_go : Nat → Nat → Nat
+  = λ aa bb → if (lte bb aa) then mod_go (sub aa bb) bb else aa
+
+let mod_go : Nat → Nat → Nat
+  = λ aa bb → match (lte bb aa) {
+      | False → aa
+      | True  → mod_go (sub aa bb) bb
+    }
+```
+
+(Earlier bootstrap revisions evaluated both `if-then-else` branches eagerly.
+That is fixed; current revisions defer both branches.)
+
+#### 2.4.3 Wildcard succ-arm captures
+
+`match nn { | 0 → base | _ → body_using_outer_locals }` lambda-lifts outer
+captures and the enclosing function's self-reference into the wildcard arm.
+PatVar (`| _kk → ...`) and PatWild (`| _ → ...`) succ arms are equivalent for
+the purpose of capture lifting; PatVar additionally binds the predecessor to
+the named variable.
+
 ---
 
 ## 3. Pipeline
