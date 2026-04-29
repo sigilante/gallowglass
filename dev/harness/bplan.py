@@ -550,7 +550,105 @@ _PRELUDE_JETS = {
     'Core.Text.Prim.mk_text':  (2, _mk_text),
     'Core.Text.Prim.text_len': (1, _text_len),
     'Core.Text.Prim.text_nat': (1, _text_nat),
+
+    # Core.List ops — jetted to convert demo evaluation cost from
+    # O(allocation depth) to O(algorithmic depth).  The Python harness
+    # recursion limit is the practical bottleneck for any demo touching
+    # lists of more than ~100 cells without these jets.
+    'Core.List.map':    (2, lambda fn, xs: _list_map_jet(fn, xs)),
+    'Core.List.foldl':  (3, lambda fn, init, xs: _list_foldl_jet(fn, init, xs)),
+    'Core.List.foldr':  (3, lambda fn, init, xs: _list_foldr_jet(fn, init, xs)),
+    'Core.List.filter': (2, lambda fn, xs: _list_filter_jet(fn, xs)),
 }
+
+
+# ---------------------------------------------------------------------------
+# List jets — Core.List operations.
+# List a encoding:  Nil = N(0); Cons = A(A(N(1), head), tail)
+# ---------------------------------------------------------------------------
+
+def _list_is_nil(v):
+    return is_nat(v) and v == 0
+
+def _list_is_cons(v):
+    return (is_app(v) and is_app(v.fun)
+            and is_nat(v.fun.fun) and v.fun.fun == 1)
+
+
+def _list_to_pylist(v):
+    """Decode a Gallowglass List a into a Python list of element values.
+
+    Walks the spine, calling bevaluate on each tail before inspecting it so
+    that lazy `Cons head tail` chains are forced one cell at a time.
+    """
+    out = []
+    node = bevaluate(v)
+    while not _list_is_nil(node):
+        if not _list_is_cons(node):
+            # Not a recognized List node — bail out.  Fall back to user
+            # interpretation (jet returns whatever it has so far).
+            raise ValueError(f'List jet: not a List spine node {node!r}')
+        head = node.fun.arg
+        tail = node.arg
+        out.append(head)
+        node = bevaluate(tail)
+    return out
+
+
+def _pylist_to_list(items):
+    """Encode a Python list of PLAN values back to Gallowglass List."""
+    result = N(0)  # Nil
+    for item in reversed(items):
+        result = A(A(N(1), item), result)
+    return result
+
+
+def _rewrap_opcode(fn):
+    """Re-wrap a bare nat opcode (0..4) as a Pin.
+
+    Jet args go through `_unwrap`, which strips `P(N(k))` opcode pins to
+    bare `N(k)`.  Bare nats have arity 0 — `_bapply` won't execute them.
+    Higher-order list jets need the opcode pin form to apply the function
+    to elements, so we re-wrap any bare nat in the opcode range.
+    """
+    if is_nat(fn) and 0 <= fn <= 4:
+        return P(fn)
+    return fn
+
+
+def _list_map_jet(fn, xs):
+    fn = _rewrap_opcode(fn)
+    return _pylist_to_list([
+        bevaluate(_bapply(fn, x)) for x in _list_to_pylist(xs)
+    ])
+
+
+def _list_foldl_jet(fn, init, xs):
+    fn = _rewrap_opcode(fn)
+    acc = init
+    for x in _list_to_pylist(xs):
+        acc = bevaluate(_bapply(_bapply(fn, acc), x))
+    return acc
+
+
+def _list_foldr_jet(fn, init, xs):
+    fn = _rewrap_opcode(fn)
+    items = _list_to_pylist(xs)
+    acc = init
+    for x in reversed(items):
+        acc = bevaluate(_bapply(_bapply(fn, x), acc))
+    return acc
+
+
+def _list_filter_jet(fn, xs):
+    fn = _rewrap_opcode(fn)
+    out = []
+    for x in _list_to_pylist(xs):
+        keep = bevaluate(_bapply(fn, x))
+        # filter predicate returns Bool: True=1, False=0
+        if is_nat(keep) and keep != 0:
+            out.append(x)
+    return _pylist_to_list(out)
 
 
 def register_prelude_jets(compiled_dict: dict) -> None:
