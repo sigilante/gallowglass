@@ -1213,6 +1213,105 @@ let result = ff 7 3
         assert eval_val(src_wild, 'result') == eval_val(src_named, 'result') == 7
 
 
+# ===========================================================================
+# F1.2: Self-ref propagation through succ-law sub-laws
+# ===========================================================================
+#
+# Regression for issue #1a from the field feedback:
+#   match (lte b a) { | False → a | True → mod_go (sub a b) b }
+# previously failed with "codegen: unbound variable 'Module.mod_go'" because
+# `_build_nat_dispatch.make_succ_law` constructed a fresh arity-1 sub-law
+# environment that did not carry forward `self_ref_name` or outer-local
+# captures.  arm[1+]'s body therefore could not resolve self-references.
+
+class TestSelfRefInSuccLaw:
+    """Multi-arm match in recursive function with self-ref in succ arms."""
+
+    def test_bool_match_recursive_with_self_in_true_arm(self):
+        """`match (cond) { | False → base | True → self ... }` must compile."""
+        src = '''
+let always_false : Nat → Bool
+  = λ aa → False
+
+let mod_go : Nat → Nat → Nat
+  = λ aa bb → match (always_false bb) {
+      | False → aa
+      | True  → mod_go aa 0
+    }
+
+let r0 = mod_go 7 0
+let r3 = mod_go 7 3
+'''
+        # Both calls hit always_false → False arm → returns aa
+        assert eval_val(src, 'r0') == 7
+        assert eval_val(src, 'r3') == 7
+
+    def test_three_arm_nat_match_self_in_later_arms(self):
+        """Three-arm nat dispatch with self-call in arm[2] (succ-of-succ)."""
+        src = '''
+let count : Nat → Nat → Nat
+  = λ acc nn → match nn {
+      | 0 → acc
+      | 1 → acc
+      | 2 → count acc 0
+    }
+
+let r0 = count 5 0
+let r1 = count 5 1
+let r2 = count 5 2
+'''
+        assert eval_val(src, 'r0') == 5
+        assert eval_val(src, 'r1') == 5
+        assert eval_val(src, 'r2') == 5
+
+    def test_outer_capture_through_succ_law(self):
+        """Outer locals must reach arm[1+] bodies through the lifted succ law."""
+        src = '''
+let captures : Nat → Nat → Nat
+  = λ aa bb → match bb {
+      | 0 → 0
+      | 1 → aa
+      | 2 → aa
+    }
+
+let r0 = captures 99 0
+let r1 = captures 99 1
+let r2 = captures 99 2
+'''
+        assert eval_val(src, 'r0') == 0
+        assert eval_val(src, 'r1') == 99
+        assert eval_val(src, 'r2') == 99
+
+
+# ===========================================================================
+# F2: Source-location attribution on CodegenError
+# ===========================================================================
+#
+# Issue #5 from feedback: codegen errors point at the law, not the source.
+# CodegenError now carries an optional `loc` and formats `file:line:col` like
+# ParseError and ScopeError do.
+
+class TestCodegenErrorLocation:
+    """CodegenError should carry source locations matching ParseError/ScopeError."""
+
+    def test_codegen_error_formats_loc_when_provided(self):
+        """`CodegenError(msg, loc)` formats as '<file>:<line>:<col>: error: <msg>'."""
+        from bootstrap.lexer import Loc
+        loc = Loc('demo.gls', 17, 5)
+        try:
+            raise CodegenError('codegen: unbound variable Foo.bar', loc)
+        except CodegenError as e:
+            msg = str(e)
+            assert 'demo.gls:17:5: error: codegen: unbound variable Foo.bar' == msg
+
+    def test_codegen_error_falls_back_when_no_loc(self):
+        """Without a loc, the error string is the bare message (backwards compat)."""
+        try:
+            raise CodegenError('some internal invariant failed')
+        except CodegenError as e:
+            assert str(e) == 'some internal invariant failed'
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
