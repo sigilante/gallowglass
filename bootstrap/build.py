@@ -189,18 +189,22 @@ def build_modules(
         # Collect class defaults and constraints from prior compilations.
         pre_class_defaults: dict = {}
         pre_class_constraints: dict = {}
+        pre_con_info: dict = {}
         for prev_compiler in module_compilers.values():
             pre_class_defaults.update(prev_compiler._class_defaults)
             pre_class_constraints.update(prev_compiler._class_constraints)
+            pre_con_info.update(prev_compiler.con_info)
 
         # Compile — cross-module globals from all_compiled; class metadata from
-        # pre_class_methods enables cross-module instance and constraint resolution.
+        # pre_class_methods enables cross-module instance and constraint resolution;
+        # pre_con_info enables cross-module pattern matches on imported ADTs.
         from bootstrap.codegen import Compiler
         compiler = Compiler(module=module_name,
                             pre_compiled=all_compiled,
                             pre_class_methods=pre_class_methods,
                             pre_class_defaults=pre_class_defaults,
-                            pre_class_constraints=pre_class_constraints)
+                            pre_class_constraints=pre_class_constraints,
+                            pre_con_info=pre_con_info)
         compiled = compiler.compile(resolved)
         module_compilers[module_name] = compiler
 
@@ -212,3 +216,53 @@ def build_modules(
         all_compiled.update(compiled)
 
     return all_compiled
+
+
+# ---------------------------------------------------------------------------
+# Demo helper: compile a single source file with the full Core prelude available
+# ---------------------------------------------------------------------------
+
+# Order matches bootstrap.build_prelude.MODULES.  Lexicographic-by-name ordering
+# would also work since use-deps drive the topo sort, but we keep this explicit
+# to avoid having to re-derive it elsewhere.
+PRELUDE_MODULES = [
+    'Core.Combinators',
+    'Core.Nat',
+    'Core.Bool',
+    'Core.Text',
+    'Core.Pair',
+    'Core.Option',
+    'Core.List',
+    'Core.Result',
+]
+
+
+def build_with_prelude(
+    demo_name: str,
+    demo_source: str,
+    prelude_dir: str | None = None,
+) -> dict[str, Any]:
+    """
+    Compile `demo_source` (named `demo_name`, e.g. 'UrbWatcher') with the full
+    Core prelude available for `use` declarations.
+
+    Reads each module under `prelude_dir/Core/<Name>.gls`, prepends them to the
+    build, and returns the merged compiled dict.  The demo can `use Core.List`
+    etc. just like any other module.
+
+    `prelude_dir` defaults to the repo's `prelude/src/` directory.
+    """
+    import os
+    if prelude_dir is None:
+        prelude_dir = os.path.join(
+            os.path.dirname(__file__), '..', 'prelude', 'src'
+        )
+
+    sources: list[tuple[str, str]] = []
+    for mod in PRELUDE_MODULES:
+        short = mod.split('.')[-1]
+        path = os.path.join(prelude_dir, 'Core', f'{short}.gls')
+        with open(path) as f:
+            sources.append((mod, f.read()))
+    sources.append((demo_name, demo_source))
+    return build_modules(sources)

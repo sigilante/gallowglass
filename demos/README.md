@@ -44,7 +44,7 @@ dialect specification is in `bootstrap/BOOTSTRAP.md` §2.
 | Tuples `(a, b)` | ✅ | Binary only |
 | Mutual recursion | ✅ | Lexicographic SCC ordering |
 | Single-letter snake_case identifiers | ❌ | Treated as type variables; use 2+ chars (`aa`, `ff`) |
-| `use Mod` from a demo | ❌ | M12 supports it, but the demo harness compiles each demo with `module_env={}` (planned: F4) |
+| `use Mod` from a demo | ✅ | Compile via `bootstrap.build.build_with_prelude(name, src)` — see `tests/demos/test_prelude_use.py` |
 
 ## Recursion-limit guidance
 
@@ -62,13 +62,38 @@ worry about it.
 
 ## What demos cannot yet do
 
-- **Use the prelude.** Every demo today re-defines `length`, `map`, `foldl`,
-  `foldr`, `append`, etc. inline. M12's module system supports cross-module
-  imports, but the demo harness has not been wired through `build_modules`
-  (planned: F4).
 - **String I/O.** Text/Bytes are constructible but no I/O effect is exposed
   to user code in the harness yet.
 - **Read from stdin.** Demos take their inputs from hardcoded `let` bindings.
+
+## Using the prelude in a new demo
+
+The bootstrap module system can compile a demo alongside the full Core
+prelude, so you can drop the inlined `length` / `map` / `foldl` boilerplate
+that older demos carry.
+
+```python
+# tests/demos/test_my_demo.py
+from bootstrap.build import build_with_prelude
+from dev.harness.plan import evaluate
+
+src = open('demos/my_demo.gls').read()
+compiled = build_with_prelude('MyDemo', src)
+result = evaluate(compiled['MyDemo.result'])
+```
+
+In the demo source:
+
+```gallowglass
+use Core.List unqualified { List, Nil, Cons, foldl, map }
+use Core.Nat  unqualified { add }
+
+let total : Nat
+  = foldl add 0 (Cons 10 (Cons 20 (Cons 30 Nil)))
+```
+
+Constructors must be explicitly named in the `unqualified { ... }` list —
+they are not pulled in automatically with the type.
 
 ## Reading existing demos
 

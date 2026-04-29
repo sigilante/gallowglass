@@ -201,7 +201,8 @@ class Compiler:
     def __init__(self, module: str = 'Main', pre_compiled: dict | None = None,
                  pre_class_methods: dict | None = None,
                  pre_class_defaults: dict | None = None,
-                 pre_class_constraints: dict | None = None):
+                 pre_class_constraints: dict | None = None,
+                 pre_con_info: dict | None = None):
         self.module = module
         # map fq_name → PLAN value (not pinned yet)
         self.compiled: dict[str, Any] = {}
@@ -249,6 +250,13 @@ class Compiler:
             for class_fq, constraints in pre_class_constraints.items():
                 if class_fq not in self._class_constraints:
                     self._class_constraints[class_fq] = constraints
+        # Pre-populate constructor info from upstream modules so cross-module
+        # `match` patterns on imported ADTs (e.g. `Cons`, `Nil` from Core.List)
+        # can be looked up by their FQ name during pattern compilation.
+        if pre_con_info:
+            for con_fq, info in pre_con_info.items():
+                if con_fq not in self.con_info:
+                    self.con_info[con_fq] = info
 
     # -----------------------------------------------------------------------
     # Builtins
