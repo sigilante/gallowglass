@@ -123,24 +123,21 @@ wrapper seed to write the result to stdout. Current tests use small Nats.
 ## Running Tests
 
 ```bash
-# Layer 1: Python harness (always available, no planvm)
+# Python harness (always available)
 make test                    # harness + bootstrap + demos
-python3 -m pytest tests/ -q  # all tests (planvm-gated skip automatically)
-
-# Layer 2+3: planvm validation (CI or native x86_64 only)
-# On CI (GitHub Actions ubuntu x86_64):
-PLANVM=planvm python3 -m pytest tests/ -v --tb=short
-
-# Note: planvm cannot run on Apple Silicon via Docker (x86_64 assembly
-# requires native hardware, not QEMU/Rosetta emulation).
+python3 -m pytest tests/ -q  # all tests (planvm-gated tests skip permanently)
 
 # Individual targets:
-make test-planvm-docker      # seed format validation
-make test-eval-docker        # evaluation correctness
-make test-prelude-docker     # prelude seed validation
-make test-selfhost-docker    # self-hosting + Path A
-make test-compiler-docker    # all compiler tests
+make test-selfhost-docker    # self-hosting tests in Docker
 ```
+
+> **Note (2026-04-30):** `tests/planvm/` is archived; xocore-tech/PLAN's xplan
+> VM is no longer a Gallowglass deployment target after the migration to the
+> canonical 3-opcode + BPLAN-named ABI. Every test under `tests/planvm/`
+> skips unconditionally via the `requires_planvm` decorator, which now wraps
+> `unittest.skip(...)` rather than `unittest.skipUnless(...)`. The runtime
+> validation gate is being rebuilt against Reaver in `tests/reaver/`
+> (Phase F). See `DECISIONS.md §"Why XPLAN compatibility is being abandoned"`.
 
 ---
 
@@ -168,10 +165,10 @@ tests/
     test_modules.py            ← M12 multi-module build (18 tests)
     test_data_csv.py           ← M12.5 Data.Csv E2E effects (9 tests)
     test_exhaustiveness.py     ← M19 pattern match exhaustiveness (41 tests)
-  planvm/
+  planvm/                      ← ARCHIVED 2026-04-30 (xocore xplan no longer a target)
     __init__.py
-    test_seed_planvm.py        ← Layer 2: seed loading (7 tests; skips locally)
-    test_eval_planvm.py        ← Layer 3: evaluation correctness (21 tests; skips locally)
+    test_seed_planvm.py        ← skip-stub providing requires_planvm + seed_loads
+    test_eval_planvm.py        ← skip-stub for legacy planvm evaluation tests
   prelude/
     __init__.py
     test_core_combinators.py   ← 5 definitions
@@ -195,18 +192,6 @@ tests/
     test_calculator.py         ← Calculator demo: compile + arithmetic eval (9 tests)
     test_csv_table.py          ← CSV table demo: E2E data pipeline eval (10 tests)
 ```
-
----
-
-## Known Issue: planvm SIGILL on CI (2026-04-07)
-
-The planvm binary built via `nix develop --command make all` crashes with `Illegal
-instruction (core dumped)` on GitHub Actions runners. All ~89 planvm-gated tests
-skip silently. The CI now has a "Verify planvm runs" step that fails the job early
-if the binary crashes, rather than reporting a misleading green result.
-
-See `DECISIONS.md` § "planvm SIGILL on GitHub Actions runners" for details and
-upstream fix plan (xocore-tech/PLAN issue).
 
 ---
 

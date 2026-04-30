@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-planvm seed validation tests.
+planvm seed validation tests — ARCHIVED (2026-04-30).
 
-Verifies that seeds produced by the Python bootstrap compiler are accepted
-by the xocore-tech/PLAN VM (`x/plan` / `planvm`).
+These tests target xocore-tech/PLAN's xplan VM, which Gallowglass is no
+longer compatible with after the migration to the canonical 3-opcode
+ABI plus BPLAN-named primitives. See `DECISIONS.md §"Why XPLAN
+compatibility is being abandoned"` for the strategic rationale.
 
-These tests require planvm to be installed and on PATH.  They are skipped
-automatically when planvm is not available — use `make test-planvm` or the
-Docker environment (`make test-planvm-docker`) to run them.
-
-Run:
-    planvm=/path/to/x/plan python3 tests/planvm/test_seed_planvm.py
-  or:
-    make test-planvm
+The infrastructure is preserved (the `requires_planvm` decorator,
+`seed_loads`, `eval_seed` helpers, and the test classes) so that
+historical imports across the test suite still resolve. Every test
+in this file is unconditionally skipped via `requires_planvm`. The
+target runtime is now Reaver (`vendor/reaver/`); see `tests/reaver/`
+once Phase F lands.
 """
 
 import os
@@ -139,12 +139,17 @@ def eval_seed(seed_bytes: bytes, timeout: int = 10) -> int | None:
 
 
 # ---------------------------------------------------------------------------
-# Skip decorator
+# Skip decorator — unconditional skip after Reaver migration (Phase E).
+#
+# Previously this gated on planvm_available(); the function is preserved
+# above for historical reference but no longer drives test selection.
+# xocore-tech/PLAN is no longer a Gallowglass deployment target.
 # ---------------------------------------------------------------------------
 
-requires_planvm = unittest.skipUnless(
-    planvm_available(),
-    f'planvm not found (set PLANVM=/path/to/x/plan or add to PATH)'
+requires_planvm = unittest.skip(
+    'xocore-tech/PLAN xplan VM no longer a Gallowglass target — see '
+    'DECISIONS.md §"Why XPLAN compatibility is being abandoned" (2026-04-30). '
+    'For runtime validation, see tests/reaver/ (Phase F).'
 )
 
 
