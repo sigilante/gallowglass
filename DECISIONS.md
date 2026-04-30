@@ -109,6 +109,30 @@ Claims in our specs about upstream behavior must cite a specific line range in
 When `vendor.lock` is bumped, re-run the round-trip tests in `tests/reaver/`; if any
 pass, our derived docs are still accurate.
 
+### Why Phase G (RPLAN self-host) is a separate arc from the migration (2026-04-30)
+
+The Reaver migration arc (Phases 0/A/B+C/D/E/F, PRs #47–#53) made Reaver a viable
+runtime for gallowglass-emitted programs by retargeting the codegen and emitter
+to the canonical 3-opcode + BPLAN-named ABI. **It did not retarget
+`Compiler.main`'s I/O shape.** That's a separate concern with its own scope:
+
+- The migration is about *what shape gallowglass output takes* on the wire.
+- Phase G is about *how `Compiler.main` interacts with the host process*: stdin
+  reading, stdout writing, exit handling. RPLAN's `Input` / `Output` / etc.
+  named ops (`op 82` in `vendor/reaver/src/hs/Plan.hs`) are the substrate.
+
+Splitting the arcs has two payoffs:
+1. The migration's review surface stayed narrow — every PR was a focused codegen
+   or harness change. Mixing in an I/O re-shape would have doubled the diff and
+   the bisect surface.
+2. Phase G's risk profile is meaningfully larger (performance under pure-PLAN
+   evaluation; sensitivity to RPLAN ABI churn). Containing it lets the migration
+   ship as 0.99999-beta independently.
+
+The full Phase G scope and acceptance criteria live in `ROADMAP.md §"Phase G —
+RPLAN self-host validation on Reaver"`. Future sessions picking up the work
+should start there.
+
 ### Why XPLAN compatibility is being abandoned (2026-04-30)
 
 xocore-tech/PLAN's xplan runtime supports an older 5-opcode ISA (Pin/MkLaw/Inc/Case_/Force

@@ -182,6 +182,8 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
 - M18: Type-annotated Glass IR — complete (standalone type serializer pp_type/pp_scheme, constraint preservation in Scheme, TypeEnv wired into Glass IR renderer, cross-module typechecking via prior_type_env, all 8 prelude modules typecheck).
 - M19: Pattern match exhaustiveness checking — complete (Maranget usefulness algorithm, constructor registry, nested/tuple/literal pattern support, redundancy warnings, integrated at typecheck time).
 - M20: 0.999 syntax — complete (where clauses as parser desugaring, operator sections with backtracking detection, export list enforcement in scope resolver).
+- **Reaver migration arc — complete (v0.99999-beta).** Phases 0/A/B+C/D/E/F (PRs #47–#53) retargeted gallowglass to the canonical 3-opcode + BPLAN-named ABI. End-to-end pipeline: gallowglass source → `bootstrap.emit_pla` → Reaver runtime, gated in CI.
+- **Phase G — RPLAN self-host validation on Reaver: scoped, not started.** Successor to the original M8.8 Path A gate. Re-shape `Compiler.main` to RPLAN's `runReplFn` ABI (`Input`/`Output`/etc. named ops at `vendor/reaver/src/hs/Plan.hs op 82`); compile gallowglass with itself under Reaver and assert byte-identical output vs the BPLAN harness. Full scope in `ROADMAP.md §"Phase G"`; rationale in `DECISIONS.md §"Why Phase G is a separate arc"`.
 
 The bootstrap compiler compiles the **restricted dialect** of Gallowglass only.
 See `bootstrap/BOOTSTRAP.md` for what the restricted dialect permits.
