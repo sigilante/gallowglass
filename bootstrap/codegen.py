@@ -429,23 +429,26 @@ class Compiler:
     # External declarations → opaque nat/pin stubs
     # -----------------------------------------------------------------------
 
-    # Mapping from Core.PLAN FQ names to their actual PLAN opcode numbers.
-    # Opcodes as implemented by the harness and xocore-tech/PLAN VM:
-    #   P(0)=Pin(1 arg), P(1)=MkLaw(3 args), P(2)=Inc(1 arg),
-    #   P(3)=Case_(6 args), P(4)=Force(1 arg)
-    _CORE_PLAN_OPCODES: dict[str, int] = {
-        'Core.PLAN.pin':     0,
-        'Core.PLAN.mk_law':  1,
-        'Core.PLAN.inc':     2,
-        'Core.PLAN.reflect': 3,
-        'Core.PLAN.force':   4,
+    # Core.PLAN primitives: each Core.PLAN.<name> external item maps to a
+    # BPLAN named primitive — a Pin'd Law that delegates to the (P("B")) ABI
+    # at runtime. Per `vendor/reaver/src/hs/Plan.hs` op 66 cases.
+    #
+    # Migration note (2026-04-30): the canonical 3-opcode ABI keeps `Pin`,
+    # `Law`, and `Elim` as opcodes (0/1/2), but Reaver's runtime today
+    # dispatches them only via the BPLAN op-66 path, mirroring how
+    # `vendor/reaver/src/plan/boot.plan` builds them. We follow Reaver:
+    # all five Core.PLAN primitives become BPLAN-named Pin'd Laws.
+    _CORE_PLAN_BPLAN_PRIMS: dict[str, tuple[str, int]] = {
+        'Core.PLAN.pin':     ('Pin',   1),
+        'Core.PLAN.mk_law':  ('Law',   3),
+        'Core.PLAN.inc':     ('Inc',   1),
+        'Core.PLAN.reflect': ('Elim',  6),
+        'Core.PLAN.force':   ('Force', 1),
     }
 
-    # Core.PLAN named jets: planvm jet-dispatches these by law name (findop.table).
-    # Maps FQ name → (arity, law_name_string).
-    # The law body N(1) is a placeholder; planvm never interprets it.
+    # Core.PLAN named jets: dispatched by law name+arity in the harness.
     _CORE_PLAN_NAMED_JETS: dict[str, tuple] = {
-        'Core.PLAN.unpin': (1, 'Unpin'),  # opunpin: extract inner value from Pin
+        'Core.PLAN.unpin': (1, 'Unpin'),  # extract inner value from Pin
     }
 
     # Core.IO.Prim: I/O primitives mapped to planvm jet.primtab entries.
@@ -453,6 +456,40 @@ class Compiler:
     _CORE_IO_PRIMITIVES: dict[str, Any] = {
         'Core.IO.Prim.write_op': P(N(9)),
     }
+
+    # The "B" opcode pin — gateway to BPLAN named-op dispatch (see
+    # vendor/reaver/src/hs/Plan.hs op 66). Saturating ((<B>) ("Name" args))
+    # triggers dispatch.
+    _BPLAN_PIN: Any = P(N(int.from_bytes(b'B', 'little')))
+
+    @classmethod
+    def _make_bplan_prim(cls, name: str, prim_arity: int) -> Any:
+        """Build the Pin'd Law for a BPLAN named primitive.
+
+        Mirrors `vendor/reaver/src/plan/boot.plan`'s `bplan` macro
+        expansion: produces
+
+            (#pin (#law "Name" (Name a1 ... aN) ((#pin "B") ("Name" a1 ... aN))))
+
+        In our PLAN representation:
+            P(L(arity, strNat(name),
+                  bapp(P_B, bapp(quoted_name, slot_1, ..., slot_arity))))
+
+        where every literal nat in body context is quote-wrapped (per the
+        always-quote-wrap discipline from PR #48).
+        """
+        name_nat = encode_name(name)
+        # Quote-wrapped name nat (constant in body context).
+        quoted_name = A(N(0), N(name_nat))
+        # Inner App: ("Name" arg1 arg2 ... argN). Built via bapp so kal
+        # substitutes slot refs at evaluation time; the result after kal
+        # is a flat App spine that the BPLAN dispatcher can unapp.
+        slots = [N(k) for k in range(1, prim_arity + 1)]
+        inner = bapp(quoted_name, *slots)
+        # Outer apply: ((<B>) inner) — saturating <B> with one arg fires
+        # op(strNat("B"), [inner]) → BPLAN dispatch.
+        body = bapp(cls._BPLAN_PIN, inner)
+        return P(L(prim_arity, name_nat, body))
 
     @staticmethod
     def _make_core_text_primitives() -> dict:
@@ -486,7 +523,7 @@ class Compiler:
 
         def make_text_field_law(field_selector) -> Any:
             """Build a 1-arg law that extracts a field from a Text App value."""
-            body = bapp(P(N(3)), const0_1, const0_3, field_selector, zero_lit, const0_1, N(1))
+            body = bapp(P(N(2)), const0_1, const0_3, field_selector, zero_lit, const0_1, N(1))
             return P(L(1, encode_name('text_field'), body))
 
         # mk_text: arity-2, body = bapp(N(1), N(2)) = (0 1 2) in law body
@@ -515,13 +552,15 @@ class Compiler:
             if item.is_type:
                 continue
             fq = f'{mod_path}.{item.name}'
-            # Core.PLAN operations map directly to PLAN opcode pins.
-            if fq in self._CORE_PLAN_OPCODES:
-                stub = P(N(self._CORE_PLAN_OPCODES[fq]))
+            # Core.PLAN.* operations are BPLAN named primitives —
+            # Pin'd Laws that delegate to the (P("B")) ABI at runtime.
+            if fq in self._CORE_PLAN_BPLAN_PRIMS:
+                bplan_name, bplan_arity = self._CORE_PLAN_BPLAN_PRIMS[fq]
+                stub = self._make_bplan_prim(bplan_name, bplan_arity)
             elif fq in self._CORE_PLAN_NAMED_JETS:
                 arity, law_name = self._CORE_PLAN_NAMED_JETS[fq]
-                # Named law: planvm jet-dispatches by name; body N(1) is a placeholder.
-                stub = P(L(arity, encode_name(law_name), N(1)))
+                # Named jet: BPLAN-named Pin'd Law of the given arity.
+                stub = self._make_bplan_prim(law_name, arity)
             elif fq in self._CORE_IO_PRIMITIVES:
                 stub = self._CORE_IO_PRIMITIVES[fq]
             elif fq in self._get_core_text_primitives():
@@ -1551,7 +1590,7 @@ class Compiler:
         # selected Pin to a dummy argument enters its body and evaluates the
         # corresponding branch.
         if env.arity == 0:
-            selected = A(A(A(A(A(A(P(N(3)), P(self._ID_LAW)),
+            selected = A(A(A(A(A(A(P(N(2)), P(self._ID_LAW)),
                                 P(self._ID_LAW)), P(self._ID_LAW)),
                             else_thunk), A(const2_pin, then_thunk)), cond_body)
             return A(selected, N(0))
@@ -1627,7 +1666,11 @@ class Compiler:
         wild_body = wild_arm[1] if wild_arm else None
         wild_var = wild_arm[0].name if (wild_arm and isinstance(wild_arm[0], PatVar)) else None
 
-        # Build a ladder of opcode 2 calls
+        # `build_ladder` is dead-code below (its result is computed and
+        # discarded; the function delegates to `_nat_match_{top,body}`).
+        # The `op2` reference inside `build_ladder` is preserved against
+        # canonical Elim (opcode 2) so the dead path still constructs valid
+        # PLAN, even though it's never returned.
         op2 = P(N(2))
 
         # Find max tag used
@@ -1681,17 +1724,17 @@ class Compiler:
 
     def _make_op2_dispatch(self, zero_val, succ_body, scrutinee_body, env: Env) -> Any:
         """
-        Build a Case_ dispatch: if scrutinee==0 return zero_val, else apply succ_body to pred.
+        Build an Elim dispatch: if scrutinee==0 return zero_val, else apply succ_body to pred.
 
-        Uses opcode 3 (P(N(3)) = Case_) with 6 separate args: (p, l, a, z, m, o).
-        p/l/a handlers are identity (unused for Nat scrutinee).
+        Uses canonical opcode 2 (Elim, formerly Case_) with 6 separate args:
+        (p, l, a, z, m, o). p/l/a handlers are identity (unused for Nat scrutinee).
         """
         id_pin = P(self._ID_LAW)
         if env.arity == 0:
-            return A(A(A(A(A(A(P(N(3)), id_pin), id_pin), id_pin),
+            return A(A(A(A(A(A(P(N(2)), id_pin), id_pin), id_pin),
                         zero_val), succ_body), scrutinee_body)
         else:
-            step = P(N(3))
+            step = P(N(2))
             step = bapp(step, id_pin)
             step = bapp(step, id_pin)
             step = bapp(step, id_pin)
@@ -2280,10 +2323,10 @@ class Compiler:
         """
         id_pin = P(self._ID_LAW)
         if env.arity == 0:
-            return A(A(A(A(A(A(P(N(3)), id_pin), id_pin), app_handler),
+            return A(A(A(A(A(A(P(N(2)), id_pin), id_pin), app_handler),
                         z_body), m_body), scrutinee)
         else:
-            step = P(N(3))
+            step = P(N(2))
             step = bapp(step, id_pin)
             step = bapp(step, id_pin)
             step = bapp(step, app_handler)
@@ -2398,10 +2441,10 @@ class Compiler:
         const2_pin = P(self._CONST2_LAW)
         m_body = bapp(const2_pin, P(N(0))) if env.arity > 0 else A(const2_pin, N(0))
         if env.arity == 0:
-            return A(A(A(A(A(A(P(N(3)), id_pin), id_pin), app_handler),
+            return A(A(A(A(A(A(P(N(2)), id_pin), id_pin), app_handler),
                         zero_val), m_body), scrutinee)
         else:
-            step = P(N(3))
+            step = P(N(2))
             step = bapp(step, id_pin)
             step = bapp(step, id_pin)
             step = bapp(step, app_handler)

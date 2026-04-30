@@ -193,16 +193,27 @@ def _bmatch(p, l, a, z, m, o):
 def _bop(opcode, e):
     opcode = opcode if is_nat(opcode) else 0
     if opcode == 0:
+        # Pin (canonical opcode 0)
         return P(e[0])
     if opcode == 1:
+        # Law (canonical opcode 1)
         n, a, b = e[0], e[1], e[2]
         return L(a if is_nat(a) else 0, n, b)
     if opcode == 2:
-        return (e[0] if is_nat(e[0]) else 0) + 1
-    if opcode == 3:
+        # Elim (canonical opcode 2 — formerly Case_/op 3 in xocore)
         return _bmatch(e[0], e[1], e[2], e[3], e[4], e[5])
-    if opcode == 4:
-        return P(e[0])
+    # Reuse plan.py's BPLAN/RPLAN dispatch tables.  bevaluate ensures args
+    # land here already forced; for the BPLAN path, evaluate the inner
+    # App once more via the BPLAN evaluator to thread jets through any
+    # nested PLAN-recursive computations the BPLAN op might inspect.
+    from dev.harness.plan import _BPLAN_OPCODE, _RPLAN_OPCODE, _bplan_op, _rplan_stub, _unapp
+    if opcode == _BPLAN_OPCODE:
+        # The single arg is the App ("Name" arg1 ... argN).  bevaluate
+        # forces it; unapp flattens to [name, args...] for dispatch.
+        inner = bevaluate(e[0])
+        return _bplan_op(_unapp(inner))
+    if opcode == _RPLAN_OPCODE:
+        return _rplan_stub(_unapp(e[0]))
     raise ValueError(f'_bop: unknown opcode {opcode}')
 
 

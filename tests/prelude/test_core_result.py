@@ -17,7 +17,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from dev.harness.plan import A, N, L, P
+from dev.harness.plan import A, N, L, P, make_bplan_law
 from dev.harness.plan import evaluate as plan_evaluate, apply as plan_apply
 from dev.harness.bplan import bevaluate, _bapply
 
@@ -129,7 +129,7 @@ class TestCoreResultHarness(unittest.TestCase):
 
     def test_map_ok_on_ok(self):
         """map_ok inc (Ok 10) = Ok 11"""
-        inc_fn = L(1, 0, A(A(0, A(0, P(2))), 1))  # λx → x+1
+        inc_fn = make_bplan_law("Inc", 1)
         result = evaluate(apply(apply(self.fn('map_ok'), inc_fn), mk_ok(N(10))))
         # Result should be Ok 11 = A(0, 11)
         self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
@@ -138,7 +138,7 @@ class TestCoreResultHarness(unittest.TestCase):
 
     def test_map_ok_on_err(self):
         """map_ok inc (Err 99) = Err 99"""
-        inc_fn = L(1, 0, A(A(0, A(0, P(2))), 1))
+        inc_fn = make_bplan_law("Inc", 1)
         result = evaluate(apply(apply(self.fn('map_ok'), inc_fn), mk_err(N(99))))
         self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
         self.assertEqual(result.fun, 1)  # tag Err
@@ -148,7 +148,7 @@ class TestCoreResultHarness(unittest.TestCase):
 
     def test_map_err_on_err(self):
         """map_err inc (Err 10) = Err 11"""
-        inc_fn = L(1, 0, A(A(0, A(0, P(2))), 1))
+        inc_fn = make_bplan_law("Inc", 1)
         result = evaluate(apply(apply(self.fn('map_err'), inc_fn), mk_err(N(10))))
         self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
         self.assertEqual(result.fun, 1)  # tag Err
@@ -156,7 +156,7 @@ class TestCoreResultHarness(unittest.TestCase):
 
     def test_map_err_on_ok(self):
         """map_err inc (Ok 42) = Ok 42"""
-        inc_fn = L(1, 0, A(A(0, A(0, P(2))), 1))
+        inc_fn = make_bplan_law("Inc", 1)
         result = evaluate(apply(apply(self.fn('map_err'), inc_fn), mk_ok(N(42))))
         self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
         self.assertEqual(result.fun, 0)  # tag Ok
@@ -166,7 +166,11 @@ class TestCoreResultHarness(unittest.TestCase):
 
     def test_bind_result_ok(self):
         """bind_result (Ok 10) (λx → Ok (x+1)) = Ok 11"""
-        ok_inc = L(1, 0, A(A(0, A(0, 0)), A(A(0, A(0, P(2))), 1)))
+        # Body: Ok (Inc x) — wrap the BPLAN Inc dispatch in the Ok ctor (tag 0).
+        # Inner: ((P("B")) ("Inc" slot_1)).
+        from dev.harness.plan import B_PIN as _B, str_nat as _strnat
+        inc_call = A(A(0, _B), A(A(0, A(0, _strnat('Inc'))), 1))
+        ok_inc = L(1, 0, A(A(0, A(0, 0)), inc_call))
         result = evaluate(apply(apply(self.fn('bind_result'), mk_ok(N(10))), ok_inc))
         self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
         self.assertEqual(result.fun, 0)  # tag Ok
@@ -174,7 +178,11 @@ class TestCoreResultHarness(unittest.TestCase):
 
     def test_bind_result_err(self):
         """bind_result (Err 99) f = Err 99 (f not called)"""
-        ok_inc = L(1, 0, A(A(0, A(0, 0)), A(A(0, A(0, P(2))), 1)))
+        # Body: Ok (Inc x) — wrap the BPLAN Inc dispatch in the Ok ctor (tag 0).
+        # Inner: ((P("B")) ("Inc" slot_1)).
+        from dev.harness.plan import B_PIN as _B, str_nat as _strnat
+        inc_call = A(A(0, _B), A(A(0, A(0, _strnat('Inc'))), 1))
+        ok_inc = L(1, 0, A(A(0, A(0, 0)), inc_call))
         result = evaluate(apply(apply(self.fn('bind_result'), mk_err(N(99))), ok_inc))
         self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
         self.assertEqual(result.fun, 1)  # tag Err
