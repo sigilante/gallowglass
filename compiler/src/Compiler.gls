@@ -3211,7 +3211,7 @@ let cg_ensure_pin : PlanVal → PlanVal
 -- arity=0 → top-level (direct Apps); arity>0 → law body (bapp)
 let cg_build_op2 : PlanVal → PlanVal → PlanVal → Nat → PlanVal
   = λ z m scr arity →
-      let op3 = PPin (PNat 3) in
+      let op3 = PPin (PNat 2) in
       let id_pin = PPin id_law in
       match (nat_eq arity 0) {
         | 0 →
@@ -3223,7 +3223,7 @@ let cg_build_op2 : PlanVal → PlanVal → PlanVal → Nat → PlanVal
 -- cg_build_reflect_dispatch: Case_(id, id, app_fn, z, m, scr)
 let cg_build_reflect_dispatch : PlanVal → PlanVal → PlanVal → PlanVal → Nat → PlanVal
   = λ app_fn z m scr arity →
-      let op3 = PPin (PNat 3) in
+      let op3 = PPin (PNat 2) in
       let id_pin = PPin id_law in
       match (nat_eq arity 0) {
         | 0 →
@@ -4992,7 +4992,7 @@ let cg_build_handle_dispatch
                         let body_val = subst_virtual_resume raw_body virtual_resume_idx resume_expr in
                         let tag_val = cg_quote_nat tag (cenv_arity dispatch_env) in
                         let rest_body = cg_build_handle_dispatch rest dispatch_env k_idx op_arg_idx op_tag_idx forward_body resume_expr ce ctab hint (add tag 1) in
-                        let eq_test = cg_bapp (cg_bapp (PPin (PNat 3)) (PNat op_tag_idx)) tag_val in
+                        let eq_test = cg_bapp (cg_bapp (PPin (PNat 2)) (PNat op_tag_idx)) tag_val in
                         let const_body = PLaw 0 (MkPair 1 body_val) in
                         let const_pin = PPin const_body in
                         cg_build_op2 rest_body const_pin eq_test (cenv_arity dispatch_env)
@@ -5296,7 +5296,7 @@ let name_concat_under : Nat → Nat → Nat
       let b_shifted = shift_left b_name (mul 8 (add blen 1)) in
       bit_or (bit_or a_name under) b_shifted
 
--- Precomputed name nats for Core.PLAN opcodes
+-- Precomputed name nats for Core.PLAN externals (used by name lookup)
 -- These are int.from_bytes(s.encode('utf-8'), 'little') values
 let nn_Core_PLAN : Nat = 1443551261620241067843
 let nn_pin   : Nat = 7235952
@@ -5305,13 +5305,25 @@ let nn_inc   : Nat = 6516329
 let nn_reflect : Nat = 32760384559932786
 let nn_force  : Nat = 435460140902
 
--- cg_core_plan_opcodes: list of (fq_name_nat, opcode) for Core.PLAN externals
-let cg_core_plan_opcodes : List (Pair Nat Nat)
-  = Cons (MkPair (name_concat_dot nn_Core_PLAN nn_pin) 0)
-    (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_mk_law) 1)
-    (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_inc) 2)
-    (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_reflect) 3)
-    (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_force) 4)
+-- BPLAN named-primitive name nats (the "Name" string in (P("B")) ("Name" args)).
+-- Per vendor/reaver/src/hs/Plan.hs op 66 cases.
+-- Computed via int.from_bytes(s.encode('utf-8'), 'little') in Python.
+let nn_bplan_B    : Nat = 66
+let nn_bplan_Pin  : Nat = 7235920
+let nn_bplan_Law  : Nat = 7823692
+let nn_bplan_Inc  : Nat = 6516297
+let nn_bplan_Elim : Nat = 1835625541
+let nn_bplan_Force : Nat = 435460140870
+
+-- cg_core_plan_bplan_prims: list of (fq_name_nat, (bplan_name_nat, arity))
+-- for the five Core.PLAN externals. Replaces the prior opcode-pin map.
+-- See vendor/reaver/src/plan/boot.plan for the (#bplan ...) macro shape.
+let cg_core_plan_bplan_prims : List (Pair Nat (Pair Nat Nat))
+  = Cons (MkPair (name_concat_dot nn_Core_PLAN nn_pin)     (MkPair nn_bplan_Pin   1))
+    (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_mk_law) (MkPair nn_bplan_Law   3))
+    (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_inc)    (MkPair nn_bplan_Inc   1))
+    (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_reflect)(MkPair nn_bplan_Elim  6))
+    (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_force)  (MkPair nn_bplan_Force 1))
     Nil))))
 
 -- Builtin name nats
@@ -5407,19 +5419,42 @@ let cg_pass1 : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat Nat)) →
             }
       }
 
--- cg_register_ext_item: register one external item
-let cg_register_ext_item : Nat → Nat → CEnv → List (Pair Nat PlanVal) → Pair CEnv (List (Pair Nat PlanVal))
-  = λ fq_name opcode_or_sentinel env compiled →
-      let val = PPin (PNat opcode_or_sentinel) in
-      MkPair (cenv_bind_global env fq_name val) (Cons (MkPair fq_name val) compiled)
-
--- cg_lookup_opcode: look up fq_name in core plan opcodes, returns opcode or encode of name
-let cg_lookup_opcode : Nat → Nat
-  = λ fq_name →
-      match (assoc_lookup fq_name cg_core_plan_opcodes) {
-        | Some op → op
-        | None → fq_name  -- opaque sentinel: pin the name nat itself
+-- cg_bapp_slots_go: chain bapp(...bapp(acc, slot_cur), slot_cur+1, ..., slot_max)
+-- Used by cg_make_bplan_prim to build the inner App spine.
+let cg_bapp_slots_go : PlanVal → Nat → Nat → PlanVal
+  = λ acc cur max →
+      match (lte cur max) {
+        | 0 → acc
+        | _ → cg_bapp_slots_go (cg_bapp acc (PNat cur)) (Core.PLAN.inc cur) max
       }
+
+-- cg_make_bplan_prim: build the Pin'd Law for a BPLAN named primitive.
+-- Mirrors `vendor/reaver/src/plan/boot.plan`'s `bplan` macro expansion:
+--     (#pin (#law "Name" (Name a1 ... aN) ((#pin "B") ("Name" a1 ... aN))))
+-- In our PlanVal:
+--     PPin (PLaw bplan_name (MkPair arity body))
+-- where body = bapp(B_pin, bapp(quoted_name, slot_1, ..., slot_arity)).
+let cg_make_bplan_prim : Nat → Nat → PlanVal
+  = λ bplan_name prim_arity →
+      let b_pin = PPin (PNat nn_bplan_B) in
+      let quoted_name = PApp (PNat 0) (PNat bplan_name) in
+      let inner = cg_bapp_slots_go quoted_name 1 prim_arity in
+      let body = cg_bapp b_pin inner in
+      PPin (PLaw bplan_name (MkPair prim_arity body))
+
+-- cg_register_ext_item: register one external item.
+-- For known Core.PLAN.* primitives, build a BPLAN-shaped Pin'd Law.
+-- For other externals, fall back to an opaque sentinel pin of the name nat.
+let cg_register_ext_item : Nat → CEnv → List (Pair Nat PlanVal) → Pair CEnv (List (Pair Nat PlanVal))
+  = λ fq_name env compiled →
+      let val = match (assoc_lookup fq_name cg_core_plan_bplan_prims) {
+                  | Some pair → match pair {
+                      | MkPair bplan_name prim_arity →
+                          cg_make_bplan_prim bplan_name prim_arity
+                    }
+                  | None → PPin (PNat fq_name)
+                } in
+      MkPair (cenv_bind_global env fq_name val) (Cons (MkPair fq_name val) compiled)
 
 -- cg_register_ext_items: register all items for one ext module
 let cg_register_ext_items : List Nat → Nat → CEnv → List (Pair Nat PlanVal) → Pair CEnv (List (Pair Nat PlanVal))
@@ -5428,8 +5463,7 @@ let cg_register_ext_items : List Nat → Nat → CEnv → List (Pair Nat PlanVal
         | Nil → MkPair env compiled
         | Cons item_name rest →
             let fq_name = name_concat_dot mod_name item_name in
-            let op = cg_lookup_opcode fq_name in
-            match (cg_register_ext_item fq_name op env compiled) {
+            match (cg_register_ext_item fq_name env compiled) {
               | MkPair new_env new_compiled →
                   cg_register_ext_items rest mod_name new_env new_compiled
             }
