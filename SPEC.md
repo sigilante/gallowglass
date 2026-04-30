@@ -15,7 +15,7 @@ Gallowglass is a statically typed functional programming language designed with 
 1. **LLMs can write it correctly.** Generation is constrained: high local constraint at every token, effects visible in every signature, canonical naming enforced by the compiler, no implicit state.
 2. **LLMs can reason about it accurately.** Analysis is tractable: pure by default, explicit effects, contracts stated from mathematical specifications, Glass IR makes compiler decisions visible.
 
-It targets the PLAN virtual machine — a minimal graph-reduction system with four constructors (Pin, Law, App, Nat) and five opcodes. All Gallowglass types are erased at compile time. The PLAN output is untyped. Type errors are purely a compile-time concern.
+It targets the PLAN virtual machine — a minimal graph-reduction system with four constructors (Pin, Law, App, Nat) and three opcodes (Pin/Law/Elim). All Gallowglass types are erased at compile time. The PLAN output is untyped. Type errors are purely a compile-time concern.
 
 The current implementation status:
 
@@ -66,20 +66,36 @@ Pins are content-addressed with BLAKE3-256. Two pins with identical content have
 
 **Pin evaluation:** A pin's content is reduced to WHNF (weak head normal form) plus the spine of any Law body — not to full normal form. Ephemeral pins used as intermediate results remain in WHNF. Mutually recursive functions can be encoded directly via pins (though they cannot be persisted, as persisted pins require acyclic content).
 
-Five core opcodes (as nat values 0–4, accessed as `P(N(k))` — a Pin wrapping the opcode nat):
+**Three core opcodes** (canonical PLAN ABI, per `vendor/reaver/src/hs/Plan.hs`).
+Each is accessed as `P(N(k))` — a Pin wrapping the opcode nat:
 
 | Opcode | Name    | Arity | Semantics |
 |--------|---------|-------|-----------|
 | `0`    | Pin     | 1     | `P(x)` — content-address and pin a value |
-| `1`    | MkLaw   | 3     | `L(arity, name, body)` — construct a named law |
-| `2`    | Inc     | 1     | `n + 1` — increment a nat |
-| `3`    | Case_   | 6     | `(p l a z m o)` — dispatch on constructor tag: pin→p, law→l, app→a, nat-zero→z, nat-succ→m(pred), with scrutinee o |
-| `4`    | Force   | 1     | evaluate to weak head normal form |
+| `1`    | Law     | 3     | `L(arity, name, body)` — construct a named law |
+| `2`    | Elim    | 6     | `(p l a z m o)` — dispatch on constructor of `o`: pin→`p i`, law→`l a m b`, app→`a f x`, nat-zero→`z`, nat-succ→`m (o-1)` |
 
-The actual planvm (`vendor/PLAN/planvm-amd64/plan.s`) defines additional opcodes
-(5–30+) for extended operations (seq, apply-n, is-pin/law/app/nat, unpin, name,
-arity, body, nat-ops, etc.). These are BPLAN primitives exposed via
-`external mod Core.*` declarations. See `spec/00-primitives.md`.
+`Elim` (canonical opcode 2) was historically called `Case_` and lived at opcode 3
+in xocore-tech/PLAN's older 5-opcode ABI (Pin/MkLaw/Inc/Case_/Force at 0–4). The
+canonical Reaver ABI drops Inc and Force as opcodes — they become BPLAN named
+primitives — and renumbers Case_ to opcode 2 under the name Elim. See
+`DECISIONS.md §"Why Reaver's Haskell sources are the canonical base truth"`.
+
+**BPLAN named primitives.** Beyond the three core opcodes, the runtime
+recognises certain Pin'd Laws by name and arity and dispatches them to native
+implementations. Reaver's `op 66` cases (in `vendor/reaver/src/hs/Plan.hs`)
+enumerate the set: Inc, Force, Add, Sub, Mul, Div, Mod, Eq/Lt/Gt/etc.,
+introspection (`Type`, `IsPin`, `IsLaw`, `IsApp`, `IsNat`, `Hd`, `Sz`, `Unpin`,
+`Arity`, `Name`, `Body`), bit/bytes ops, `Trace`, and the `Case<N>` /
+`Elim` dispatch helpers. Gallowglass's BPLAN dependencies are listed in
+`bootstrap/bplan_deps.py` and verified against `Plan.hs` by
+`tests/sanity/test_bplan_deps.py`.
+
+> **Migration note (2026-04-30):** the bootstrap codegen and Python harness
+> currently emit/dispatch the legacy xocore 5-opcode ABI. Phase B/C of the
+> Reaver migration switches both to the canonical 3-opcode ABI with
+> BPLAN-named primitives. This document describes the target ABI; the
+> implementation lags during the migration window.
 
 All other computation is expressed as laws applied to arguments. Jets accelerate
 specific pinned laws by matching their BLAKE3 hash against a registry of native
@@ -87,7 +103,7 @@ implementations.
 
 ### 2.2 Execution Semantics
 
-PLAN uses **lazy evaluation** (normal-order reduction). Opcode 4 (Force) evaluates a value to WHNF. Opcode 0 (Pin) content-addresses a value after reducing it to WHNF plus the spine of any Law body. Full normalization is not guaranteed and not required for correctness.
+PLAN uses **lazy evaluation** (normal-order reduction). The BPLAN named primitive `Force` (arity 1) evaluates a value to WHNF. Opcode 0 (Pin) content-addresses a value after reducing it to WHNF plus the spine of any Law body. Full normalization is not guaranteed and not required for correctness.
 
 Because persistent pins are content-addressed and acyclic, values that are stored persistently are structurally sound. Ephemeral pins — common as intermediate results in practice — may contain unevaluated subterms in WHNF.
 

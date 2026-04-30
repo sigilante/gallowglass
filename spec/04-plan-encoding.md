@@ -28,12 +28,26 @@ Throughout this document, PLAN values are written using the notation from SPEC.m
 
 Law bodies use de Bruijn-style argument indices: index 0 is the law itself (self-reference), indices 1..a are the arguments left to right.
 
-Five opcodes (nat values 0-4), matching `vendor/PLAN/planvm-amd64/plan.s` prim.tab:
-- `0` — pin a value (normalize and content-address): `(0 value)` yields `<value>`
-- `1` — create a law: `(1 name arity body)` yields `{name arity body}`
-- `2` — increment a nat: `(2 n)` yields `n + 1`
-- `3` — Case_ (dispatch on constructor): `(3 pin_case law_case app_case zero_case succ_case scrutinee)` — 6-arity dispatch on the four PLAN constructors, with nat split into zero and successor
-- `4` — force (evaluate to weak head normal form): `(4 value)`
+**Three core opcodes** (nat values 0–2), per the canonical PLAN ABI in
+`vendor/reaver/src/hs/Plan.hs` (line 333+):
+
+- `0` — **Pin** (arity 1): pin a value. `(<0> v)` evaluates `v` to WHNF, then yields `<v>` (a content-addressed Pin).
+- `1` — **Law** (arity 3): create a named law. `(<1> name arity body)` yields `{name (arity+1) body}` (note: Reaver's `Law` op stores `arity+1` to reserve slot 0 for self-reference; the surface arity is what `Arity` returns).
+- `2` — **Elim** (arity 6): dispatch on the constructor of the scrutinee. `(<2> pin_case law_case app_case zero_case succ_case scrutinee)` — formerly called `Case_`. Cases:
+  - pin `<i>`              → `pin_case i`
+  - law `{a m b}`          → `law_case a m b`
+  - app `(f x)`            → `app_case f x`
+  - nat 0                  → `zero_case`
+  - nat n>0                → `succ_case (n-1)`
+
+**BPLAN named primitives.** Inc, Force, arithmetic (`Add`, `Sub`, `Mul`, …), introspection (`Type`, `IsPin`, `IsLaw`, `IsApp`, `IsNat`, `Hd`, `Sz`, `Unpin`, `Arity`, `Name`, `Body`), bytes/bits ops, comparison, and `Trace` are recognised as Pin'd Laws by name+arity and dispatched by the runtime's `op 66` cases in `Plan.hs`. They are not opcode pins. See `bootstrap/bplan_deps.py` for gallowglass's complete list.
+
+**Migration note (2026-04-30):** the bootstrap codegen and the Python harness still emit/dispatch the legacy xocore-tech/PLAN 5-opcode ABI (Pin/MkLaw/Inc/Case_/Force at 0–4). Phase B/C of the Reaver migration replaces:
+- `<2>` (xocore Inc) → reference to BPLAN `Inc` Pin'd Law (arity 1)
+- `<3>` (xocore Case_) → `<2>` (canonical Elim)
+- `<4>` (xocore Force) → reference to BPLAN `Force` Pin'd Law (arity 1)
+
+Examples in this document still use the xocore numbering until the migration lands; they will be revised in lockstep with Phase B/C.
 
 ---
 

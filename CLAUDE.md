@@ -127,7 +127,19 @@ ASCII alternatives are normalized to Unicode at the lexer — never appear post-
 
 ## VM Target
 
-PLAN (xocore-tech/PLAN). Four constructors: Pin `<i>`, Law `{n a b}`, App `(f g)`, Nat `@`. Five opcodes (0–4). Hash algorithm: BLAKE3-256. Serialization: Seed format.
+PLAN — canonical ABI per `vendor/reaver/src/hs/Plan.hs`. Four constructors:
+Pin `<i>`, Law `{n a b}`, App `(f g)`, Nat `@`. **Three opcodes**: Pin (0,
+arity 1), Law (1, arity 3), Elim (2, arity 6 — formerly `Case_`). Inc, Force,
+arithmetic, and introspection are **BPLAN named primitives** dispatched by
+name+arity in `Plan.hs:op 66`; see `bootstrap/bplan_deps.py`. Output format:
+Plan Assembler text (`vendor/reaver/src/hs/PlanAssembler.hs`). Hash algorithm:
+BLAKE3-256.
+
+The bootstrap codegen and Python harness are mid-migration to this ABI as of
+the Reaver migration arc; legacy xocore-tech/PLAN 5-opcode output (Pin/MkLaw/
+Inc/Case_/Force at 0–4) is the current interim. See `DECISIONS.md §"Why
+Reaver's Haskell sources are the canonical base truth"` and the migration
+status under `## Current Phase` below.
 
 All Gallowglass types are erased at compile time. The PLAN output is untyped. Type errors are purely a Gallowglass-layer concern.
 
