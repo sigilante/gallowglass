@@ -740,20 +740,33 @@ treats that name as the entry point and applies it to the rest of the args:
 
 ### Risk surface
 
+- **RPLAN is tentative, not frozen** (Sol, 2026-04-30). RPLAN sits a tier
+  *above* BPLAN's "drift expected" risk — Sol explicitly flagged it as
+  "tentative maturity." Names, arities, and the calling shape may all
+  change. Phase G should plan for this:
+  - Add `tests/sanity/test_rplan_deps.py` mirroring `test_bplan_deps.py`,
+    asserting every RPLAN op gallowglass uses still exists at the right
+    arity in `Plan.hs`. CI fires on the next vendor.lock bump that drifts.
+  - Keep the `Compiler.main` I/O layer thin (a small wrapper around the
+    pure pipeline) so an upstream RPLAN re-shape is bounded to ~50 LoC.
+  - Pin `vendor.lock` deliberately when starting Phase G; don't auto-bump
+    during the implementation window.
 - **Performance.** The compiled compiler running under pure-PLAN evaluation
   may be slow even with BPLAN jets active. May need additional jet
   registrations or alternate paths.
-- **RPLAN ABI stability.** Per `DECISIONS.md §"Upstream PLAN authority"`,
-  RPLAN is in the "drift expected" tier (vs PLAN proper / Plan Asm which are
-  frozen). A `vendor.lock` bump that reshapes `Input`/`Output` would break
-  Phase G's compilation. The same canary discipline as
-  `bootstrap/bplan_deps.py` applies — the Phase G PR should add an analogous
-  `tests/sanity/test_rplan_deps.py`.
 - **Trace output vs `Output` bytes.** Reaver's `Trace` writes to stderr and
   prints via `showVal`, which mangles byte-range nats. The self-host test
   must check `Output`'s stdout bytes literally, not Trace output. (Phase F's
   `tests/reaver/test_smoke.py` ran into this; see PR #53 for the mitigation
   of using values >255 in test fixtures.)
+- **Canonical Elim wire form is upstream-pending.** The canonical CC (per
+  Sol) is `(<0> (2 p l a z m o))` — all pinned nats arity 1, dispatch on
+  inner App head. Reaver's runtime doesn't yet implement this; we currently
+  emit a bare `Elim` symbol that resolves via `boot.plan`'s BPLAN binding.
+  See `DECISIONS.md §"The canonical 3-opcode ABI"` for the full picture.
+  When Reaver lands the canonical CC upstream, `bootstrap/emit_pla.py`'s
+  Elim translation needs to update accordingly. This isn't a Phase G
+  blocker but is on the same flight path.
 
 ### Estimated effort
 
