@@ -21,6 +21,21 @@ python3 -m pytest tests/demos/test_csv_table.py -v
 make test-demos
 ```
 
+## Inspecting Glass IR for a demo
+
+```bash
+make demo-glass-ir ARGS=demos/csv_table.gls
+```
+
+Renders the demo's top-level declarations as Glass IR text on stdout, with
+the full Core prelude type environment available so type annotations resolve.
+Pass an explicit module name as the second positional arg if the file's
+basename doesn't camel-case cleanly:
+
+```bash
+make demo-glass-ir ARGS="demos/foo.gls SomeModule"
+```
+
 ## What works in the bootstrap dialect
 
 The bootstrap compiler accepts a strict subset of Gallowglass. Below is the

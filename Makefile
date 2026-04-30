@@ -8,7 +8,7 @@ DOCKER_IMAGE := gallowglass-dev
         test-planvm test-planvm-docker test-prelude test-prelude-docker \
         test-compiler test-selfhost test-selfhost-docker \
         test-eval test-eval-docker \
-        test-demos \
+        test-demos demo-glass-ir \
         docker-build _docker-ensure clean help
 
 ## Run all local tests (Python harness only — no planvm required)
@@ -53,6 +53,16 @@ test-bootstrap:
 ## Run demo tests (no planvm required)
 test-demos:
 	$(PYTHON) -m pytest tests/demos/ -v
+
+## Render a demo as Glass IR on stdout.
+## Usage: make demo-glass-ir ARGS=demos/csv_table.gls
+##        make demo-glass-ir ARGS="demos/calculator.gls Calculator"
+demo-glass-ir:
+	@if [ -z "$(ARGS)" ]; then \
+	    echo "Usage: make demo-glass-ir ARGS=demos/<name>.gls [Module.Name]" >&2; \
+	    exit 1; \
+	fi
+	@$(PYTHON) -m bootstrap.render_demo $(ARGS)
 
 ## Validate compiled seeds against x/plan (requires planvm on PATH or PLANVM=...)
 ## On macOS, use `make test-planvm-docker` instead.
