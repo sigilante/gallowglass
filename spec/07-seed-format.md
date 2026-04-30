@@ -4,6 +4,21 @@
 **Depends on:** SPEC.md, spec/04-plan-encoding.md
 **Reference implementation:** xocore-tech/PLAN (`sire/boot.sire` lines 1931–2227, `doc/planvm-amd64.tex` lines 5272–5773)
 
+> **Authority note (2026-04-30):** Sections §1–§12 (binary seed format) are
+> historical — the binary seed path is deprecated upstream in favour of Plan
+> Assembler text. **§13 (Plan Assembler Format) is the live target** and is
+> a derived guide to `vendor/reaver/src/hs/PlanAssembler.hs`, which is the
+> canonical specification per Sol. See `DECISIONS.md §"Upstream PLAN
+> authority"`. When §13 disagrees with PlanAssembler.hs at the pinned
+> `vendor.lock` SHA, PlanAssembler.hs wins. Claims should cite specific
+> line ranges.
+>
+> **Known §13 corrections in flight:** the bind-key encoding (§13.4) was
+> documented as a quoted-decimal string but quoted strings parse to
+> `(1 nat)` atoms which fail PlanAssembler.hs's `getNat` check. Names must
+> be emitted as bare symbols (with `.` → `_` sanitisation since `.` is a
+> runic character). Tracked under the Reaver migration.
+
 This document specifies the Seed format: the canonical binary serialization of PLAN values. Every compiled Gallowglass program is emitted as a Seed file. The format matches xocore-tech/PLAN exactly — interoperability with the reference VM is a hard requirement during the bootstrap phase.
 
 ---

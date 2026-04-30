@@ -9,7 +9,16 @@ DOCKER_IMAGE := gallowglass-dev
         test-compiler test-selfhost test-selfhost-docker \
         test-eval test-eval-docker \
         test-demos demo-glass-ir \
+        vendor vendor-verify \
         docker-build _docker-ensure clean help
+
+## Populate vendor/ at SHAs pinned in vendor.lock (clones if missing).
+vendor:
+	@./tools/vendor.sh
+
+## Verify vendor/ checkouts match vendor.lock; fail on drift.
+vendor-verify:
+	@./tools/vendor.sh verify
 
 ## Run all local tests (Python harness only — no planvm required)
 test: test-harness test-bootstrap test-demos

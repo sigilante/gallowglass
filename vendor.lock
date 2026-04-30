@@ -1,0 +1,9 @@
+# Vendor lock file — pinned upstream SHAs for vendored repositories.
+#
+# vendor/ is gitignored. This file is the source of truth for which upstream
+# revisions Gallowglass builds and tests against. Bump the SHAs deliberately;
+# CI verifies that vendor checkouts match.
+#
+# Format: <name> <sha> <url>
+
+reaver f72fe24da8716200dc89d81f32b65b340e6a9924 https://github.com/sol-plunder/reaver.git

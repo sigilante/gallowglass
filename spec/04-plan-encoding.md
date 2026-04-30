@@ -3,6 +3,18 @@
 **Spec version:** 0.1
 **Depends on:** SPEC.md, spec/02-mutual-recursion.md, spec/06-surface-syntax.md
 
+> **Authority note (2026-04-30):** This document is a guide to reading
+> `vendor/reaver/src/hs/Plan.hs`, which is the canonical specification of PLAN
+> runtime semantics per Sol. See `DECISIONS.md §"Upstream PLAN authority"`.
+> When this document disagrees with Plan.hs at the pinned `vendor.lock` SHA,
+> Plan.hs wins. Claims about upstream behaviour should cite specific line
+> ranges in Plan.hs.
+>
+> **The opcode table below currently describes the legacy 5-opcode XPLAN ABI
+> and is being migrated to the canonical 3-opcode ABI** (Pin/Law/Elim at 0/1/2,
+> with Inc/Force as BPLAN named primitives). Tracked under the migration plan;
+> see DECISIONS.md.
+
 This document specifies how every Gallowglass construct compiles to PLAN. It is the authoritative reference for the code generator in both the bootstrap compiler and the self-hosting compiler.
 
 Throughout this document, PLAN values are written using the notation from SPEC.md section 2.1:
