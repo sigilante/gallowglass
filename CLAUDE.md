@@ -59,6 +59,27 @@ gallowglass/
 3. Read the relevant `BOOTSTRAP.md`, `PRELUDE.md`, or `COMPILER.md` for implementation guidance.
 4. Check `DECISIONS.md` if something seems surprising or you want to understand why.
 
+## Upstream authority
+
+Per Sol (PLAN author), the canonical specification of the Plan Assembler text
+format and PLAN runtime semantics is **the Haskell implementation in
+`vendor/reaver/src/hs/`**. PLAN proper (4 ctors, opcodes 0–2 = Pin/Law/Elim)
+and the Plan Asm text format are frozen; the BPLAN named-op set may drift.
+
+- `vendor/reaver/src/hs/PlanAssembler.hs` — Plan Asm text format authority.
+- `vendor/reaver/src/hs/Plan.hs` — PLAN runtime + BPLAN/RPLAN dispatch authority.
+- Other `vendor/reaver/doc/*` and `vendor/reaver/note/*` materials are
+  explanatory/aspirational, not normative.
+- `spec/04-plan-encoding.md` and `spec/07-seed-format.md §13` are *derived*
+  documents — guides to reading the `.hs`. When derived docs disagree with
+  `.hs`, `.hs` wins.
+
+`vendor/` is gitignored. Pin discipline lives in `vendor.lock`. To populate
+`vendor/`, run `tools/vendor.sh`. CI runs `tools/vendor.sh verify` to detect
+pin drift. `tests/sanity/test_bplan_deps.py` greps `Plan.hs` to confirm every
+BPLAN op in `bootstrap/bplan_deps.py` still exists at the right arity — this
+is the canary for `vendor.lock` bumps.
+
 ## Language Quick Reference
 
 ### Naming Conventions (compiler-enforced)

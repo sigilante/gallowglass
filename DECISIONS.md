@@ -48,6 +48,79 @@ The hash input canonicalization — how a PLAN value is serialized to bytes befo
 
 ---
 
+## Upstream PLAN authority
+
+### Why Reaver's Haskell sources are the canonical base truth (2026-04-30)
+
+Per Sol (PLAN author): **the canonical specification of the Plan Assembler text format
+and the PLAN runtime semantics is the Haskell implementation in `vendor/reaver/`,
+specifically:**
+
+- `vendor/reaver/src/hs/PlanAssembler.hs` — Plan Assembler text format (parser,
+  `expand1`, `lawExp`, `compileExpr`, `loadAssembly`, `processForm`).
+- `vendor/reaver/src/hs/Plan.hs` — PLAN runtime semantics (eval, exec, opcode
+  dispatch, BPLAN/RPLAN named-op dispatch).
+
+Other documents in `vendor/reaver/` — `doc/plan-spec.txt`, `doc/reaver.md`,
+`note/arch/*.md` — are **explanatory or aspirational**. They were committed at various
+points and may be LLM-generated from notes; they do not bind the implementation.
+When derived documentation disagrees with the `.hs` files, the `.hs` files win.
+
+**Stability tiers (per Sol):**
+
+| Layer | Stability | Implication |
+|---|---|---|
+| **PLAN proper** (4 ctors, opcodes 0–2 = Pin/Law/Elim) | Frozen | Build against this freely. |
+| **Plan Asm text format** | Frozen | `spec/07-seed-format.md §13` is durable once derived correctly. |
+| **BPLAN** (`op 66` named ops in `Plan.hs`) | Drift expected | Audit on each `vendor.lock` bump. |
+| **RPLAN** (`op 82` named ops) | Drift expected | Same as BPLAN. |
+
+Gallowglass's `bootstrap/bplan_deps.py` enumerates the BPLAN names+arities we depend on
+and is sanity-tested against `vendor/reaver/src/hs/Plan.hs`. This is the canary for vendor bumps.
+
+### Why a `vendor.lock` rather than a submodule? (2026-04-30)
+
+`vendor/` was historically gitignored and is populated via `tools/vendor.sh` from
+`vendor.lock` at the repo root. The lock file records each upstream's pinned SHA and
+clone URL.
+
+This was chosen over git submodules because:
+- `vendor/` was already gitignored when the dependency was introduced; submodules would
+  have required reorganizing established workflow.
+- Bumping a single SHA in `vendor.lock` is a smaller, more readable diff than a
+  submodule pointer move.
+- `tools/vendor.sh verify` runs in CI and locally to catch pin drift; this is
+  effectively what submodule consistency checks would buy us, with less ceremony.
+
+If the vendor count grows or the tool starts to need richer semantics, revisit and
+move to submodules.
+
+### Why our `spec/04`, `spec/07` are derived docs, not authoritative
+
+Earlier sessions of this project authored `spec/04-plan-encoding.md` and
+`spec/07-seed-format.md §13` as if they were independent specifications. They are not —
+they are guides to reading the `.hs` files. Sol has confirmed the spec/07 §13 text
+format description was likely LLM-extracted from PlanAssembler.hs at an earlier point.
+
+Claims in our specs about upstream behavior must cite a specific line range in
+`vendor/reaver/src/hs/<file>.hs` so future readers can verify mechanically.
+When `vendor.lock` is bumped, re-run the round-trip tests in `tests/reaver/`; if any
+pass, our derived docs are still accurate.
+
+### Why XPLAN compatibility is being abandoned (2026-04-30)
+
+xocore-tech/PLAN's xplan runtime supports an older 5-opcode ISA (Pin/MkLaw/Inc/Case_/Force
+at opcodes 0–4). The canonical PLAN ABI per Sol has only 3 opcodes (Pin/Law/Elim at 0–2),
+with Inc, Force, and the BPLAN intrinsics dispatched by name+arity through `(#pin "B")`.
+Sol confirms XPLAN keeps the legacy 5-opcode dispatch for compatibility with the existing
+Sire-based toolchain and is not the forward-going target.
+
+Gallowglass is migrating to the canonical 3-opcode ABI with BPLAN-named primitives. The
+old `tests/planvm/` suite (xocore seed-loading gate) is being archived rather than
+maintained; xocore is no longer a Gallowglass deployment target.
+
+---
+
 ## Type System
 
 ### Why algebraic effects with row typing rather than monads or Haskell-style typeclasses?
