@@ -151,16 +151,28 @@ def _parse_traced_int(reaver_output: str) -> int:
     return int(m.group(1))
 
 
+_SHIFT = 32  # bits to left-shift main by before tracing
+_SHIFT_MASK = 1 << _SHIFT
+
+
 def _reaver_eval_main(compiled: dict, module: str, value_name: str) -> int:
-    """Emit the program with a Trace driver, run under Reaver, parse the int."""
+    """Emit the program with a Trace driver, run under Reaver, parse the int.
+
+    Reaver's `showVal` pretty-prints nats as quoted strings when their bytes
+    happen to fall in printable ASCII (e.g. 12345 = 0x3039 → \"90\"). To
+    force decimal output regardless of value, we trace `(Lsh main 32)` —
+    guaranteeing the low 4 bytes are zero, which can't be a printable
+    string. We then right-shift the parsed integer by 32 to recover the
+    original value."""
     sym = f'{module}_{value_name}'.replace('.', '_')
-    trailer = f'(Trace {sym} 0)\n'
+    trailer = f'(Trace (Lsh {sym} {_SHIFT}) 0)\n'
     plan_text = emit_program(compiled, trailer=trailer)
     out = _run_reaver(plan_text)
     try:
-        return _parse_traced_int(out)
+        shifted = _parse_traced_int(out)
     except AssertionError as e:
         raise AssertionError(f'{e}\n--- emitted plan text (head) ---\n{plan_text[:600]}') from None
+    return shifted >> _SHIFT
 
 
 # ---------------------------------------------------------------------------
@@ -180,13 +192,6 @@ class TestHarnessReaverEquivalence(unittest.TestCase):
         reaver = _reaver_eval_main(compiled, module, value)
         self.assertEqual(harness, reaver,
             f'harness/Reaver divergence on {fq}: harness={harness} reaver={reaver}')
-        # Also assert > 255 so we know Reaver actually decimal-printed it
-        # (a Trace fallthrough on a byte-range nat would render as a quoted
-        # string and our parser would have raised, but the explicit guard
-        # protects against future fixture authors picking small values).
-        self.assertGreater(harness, 255,
-            f'fixture {fq} returned {harness}; choose a value > 255 so Reaver '
-            f'showVal prints decimal not byte/string form')
 
     # --- arithmetic --------------------------------------------------------
 
@@ -339,6 +344,233 @@ let main : Nat
   = let a = Nat.add 500 100 in
     let b = Nat.add a a in       -- 1200
     b
+'''
+        self._assert_equiv(src, with_prelude=True)
+
+    # --- nested patterns + or-patterns + guards ---------------------------
+
+    def test_nested_constructor_pattern(self):
+        """Sequential Cons matches via separate function calls — exercises
+        the Elim dispatch on nested constructor results without requiring
+        nested binding-patterns (which the bootstrap codegen does not yet
+        support; see DECISIONS.md §"Bootstrap Compiler"). Matches the
+        result of one match in the next."""
+        src = '''
+use Core.Nat
+use Core.List unqualified { List, Nil, Cons }
+
+let head_or : Nat -> List Nat -> Nat
+  = λ d xs → match xs {
+      | Nil       → d
+      | Cons h _  → h
+    }
+
+let tail_or_empty : List Nat -> List Nat
+  = λ xs → match xs {
+      | Nil       → Nil
+      | Cons _ ts → ts
+    }
+
+let main : Nat
+  = Nat.add 600 (head_or 0 (tail_or_empty (Cons 100 (Cons 700 (Cons 999 Nil)))))   -- 1300
+'''
+        self._assert_equiv(src, with_prelude=True)
+
+    def test_or_pattern(self):
+        """Or-patterns: `| 1 | 2 → ...` collapses multiple constructor
+        match arms into one. Compiled via M15.4 scope-level arm duplication."""
+        src = '''
+use Core.Nat
+
+let classify : Nat -> Nat
+  = λ n → match n {
+      | 0 | 1 | 2 → 100
+      | 3 | 4     → 200
+      | _         → 700
+    }
+
+let main : Nat
+  = Nat.add 600 (classify 4)   -- 600 + 200 = 800
+'''
+        self._assert_equiv(src, with_prelude=True)
+
+    def test_guarded_match(self):
+        """Pattern guards: `| pat if guard → ...`. Compiled via M15.5
+        desugaring to if-else + re-match."""
+        src = '''
+use Core.Nat unqualified { nat_gte }
+
+let bucket : Nat -> Nat
+  = λ n → match n {
+      | k if nat_gte k 100 → 9000
+      | k if nat_gte k 50  → 4000
+      | _                  → 999
+    }
+
+let main : Nat = bucket 60
+'''
+        self._assert_equiv(src, with_prelude=True)
+
+    # --- tuples / Pair ---------------------------------------------------
+
+    def test_pair_destructuring(self):
+        """Tuple pattern matching — exercises the tag=0 binary constructor
+        encoding from M9.2."""
+        src = '''
+use Core.Nat
+
+let combine : (Nat, Nat) -> Nat
+  = λ p → match p { | (a, b) → Nat.add a b }
+
+let main : Nat
+  = combine (700, 600)   -- 1300
+'''
+        self._assert_equiv(src, with_prelude=True)
+
+    # --- typeclasses ------------------------------------------------------
+
+    def test_typeclass_eq_nat(self):
+        """`nat_eq` resolves via the Core.Nat top-level. Exercises Bool
+        dispatch via if-then-else."""
+        src = '''
+use Core.Nat unqualified { nat_eq }
+use Core.Bool
+
+let pick : Bool -> Nat
+  = λ b → if b then 7777 else 333
+
+let main : Nat
+  = pick (nat_eq 42 42)
+'''
+        self._assert_equiv(src, with_prelude=True)
+
+    def test_typeclass_ord_nat(self):
+        """Nat ordering via Core.Nat.{nat_lte}. Exercises Bool dispatch."""
+        src = '''
+use Core.Nat unqualified { nat_lte }
+use Core.Bool
+
+let smaller : Nat -> Nat -> Nat
+  = λ a b → if nat_lte a b then a else b
+
+let larger : Nat -> Nat -> Nat
+  = λ a b → if nat_lte a b then b else a
+
+let main : Nat
+  = Nat.add (smaller 9999 5000) (larger 7 1300)   -- 5000 + 1300 = 6300
+'''
+        self._assert_equiv(src, with_prelude=True)
+
+    # --- larger numerics --------------------------------------------------
+
+    def test_chained_arithmetic(self):
+        """Multi-step chain of Nat operations.
+
+        Reaver has no Nat-level jets, so `Nat.mul` (recursive PLAN-level
+        repeated addition) is slow at scale. We keep the multiplication
+        operand small (× 5) and chain several adds, so total Reaver work
+        stays modest while the result still exceeds the byte range."""
+        src = '''
+use Core.Nat
+
+let main : Nat
+  = Nat.add (Nat.mul 5 1000)
+            (Nat.add 12345 (Nat.add 6789 234))   -- 5000 + 19368 = 24368
+'''
+        self._assert_equiv(src, with_prelude=True)
+
+    def test_division_modulo(self):
+        """Core.Nat.div_nat and Core.Nat.mod_nat — exercises the prelude
+        jets for division/modulo."""
+        src = '''
+use Core.Nat
+
+let main : Nat
+  = Nat.add (Nat.mul (Nat.div_nat 12345 7) 7) (Nat.mod_nat 12345 7)   -- = 12345
+'''
+        self._assert_equiv(src, with_prelude=True)
+
+    # --- if-then-else dispatch (Bool pattern) ----------------------------
+
+    def test_if_then_else_dispatch(self):
+        """`if cond then t else e` with Bool conditions — exercises the
+        deferred-thunk encoding for non-strict branches (M9 if-then-else)."""
+        src = '''
+use Core.Nat unqualified { nat_lte }
+
+let main : Nat
+  = if nat_lte 5 10
+      then (if nat_lte 100 50 then 0 else 1500)
+      else 999
+'''
+        self._assert_equiv(src, with_prelude=True)
+
+    # --- list higher-order ------------------------------------------------
+
+    def test_prelude_list_map(self):
+        """`Core.List.map` over a list of Nats — exercises the higher-order
+        prelude jet path."""
+        src = '''
+use Core.Nat
+use Core.List unqualified { List, Nil, Cons, map, foldr }
+
+let double : Nat -> Nat
+  = λ n → Nat.mul n 2
+
+let main : Nat
+  = foldr Nat.add 0 (map double (Cons 100 (Cons 200 (Cons 400 Nil))))   -- 1400
+'''
+        self._assert_equiv(src, with_prelude=True)
+
+    # --- Option type ------------------------------------------------------
+
+    def test_option_pattern(self):
+        """Match on Option a — Some/None constructors. Some has a payload;
+        None is nullary. The constructor tag for Some is a large strNat
+        (regression for PR #48)."""
+        src = '''
+use Core.Nat
+use Core.Option unqualified { Option, Some, None }
+
+let safe_div : Nat -> Nat -> Option Nat
+  = λ a b → match b {
+      | 0 → None
+      | _ → Some (Nat.div_nat a b)
+    }
+
+let with_default : Option Nat -> Nat -> Nat
+  = λ opt d → match opt {
+      | Some v → v
+      | None   → d
+    }
+
+let main : Nat
+  = Nat.add (with_default (safe_div 5000 0) 700)
+            (with_default (safe_div 12000 12) 0)   -- 700 + 1000 = 1700
+'''
+        self._assert_equiv(src, with_prelude=True)
+
+    # --- multi-module composition (build_with_prelude is a 2-module build) ---
+
+    def test_cross_module_pair_and_list(self):
+        """Use Core.Pair and Core.List together — multi-module dependency
+        graph through `use` declarations."""
+        src = '''
+use Core.Nat
+use Core.Pair unqualified { Pair, MkPair, fst, snd }
+use Core.List unqualified { List, Nil, Cons, foldr }
+
+let totals : List (Pair Nat Nat) -> Pair Nat Nat
+  = λ ps →
+      foldr
+        (λ p acc → MkPair (Nat.add (fst p) (fst acc)) (Nat.add (snd p) (snd acc)))
+        (MkPair 0 0)
+        ps
+
+let main : Nat
+  = match (totals (Cons (MkPair 100 200) (Cons (MkPair 300 400) (Cons (MkPair 500 600) Nil)))) {
+      | MkPair s1 s2 → Nat.add s1 s2   -- (100+300+500) + (200+400+600) = 900 + 1200 = 2100
+    }
 '''
         self._assert_equiv(src, with_prelude=True)
 
