@@ -6,6 +6,7 @@ DOCKER_IMAGE := gallowglass-dev
 .PHONY: test test-ci test-harness test-plan test-seed test-bootstrap \
         test-compiler test-selfhost test-selfhost-docker \
         test-demos demo-glass-ir \
+        test-reaver \
         vendor vendor-verify \
         docker-build _docker-ensure clean help
 
@@ -79,6 +80,12 @@ test-compiler:
 ## Run M8.8 self-hosting tests
 test-selfhost:
 	$(PYTHON) -m pytest tests/compiler/test_selfhost.py -v
+
+## Run Reaver runtime smoke tests (requires nix + vendor/reaver checked out).
+## Builds plan-assembler via `nix develop --command cabal build` on first run
+## (~2 min); subsequent runs hit the cabal store cache.
+test-reaver: vendor-verify
+	$(PYTHON) -m pytest tests/reaver/ -v
 
 ## Run all compiler tests inside Docker (macOS-friendly)
 ## Build first: make docker-build
