@@ -2,7 +2,7 @@
 -- Structural manipulation of a hardcoded two-dimensional table.
 -- Input is hardcoded; output is Nat values.
 --
--- Demonstrates: nested algebraic types, structural recursion, Option,
+-- Demonstrates: cross-module prelude use, structural recursion, Option,
 --               index-based access, row/column operations.
 --
 -- The table represents the following data (fields are Nat-encoded):
@@ -13,40 +13,19 @@
 --    30 |    95 |    1
 --    22 |    91 |    2
 --
--- Fields are plain Nat values.  String fields require Text support
--- (available post-M10 with full Core.Bytes primitives).
---
 -- Expected outputs:
 --   CsvTable.row_count_result   = 3
 --   CsvTable.col_count_result   = 3
 --   CsvTable.top_score_result   = 95     -- max score across all rows
 --   CsvTable.get_field_result   = 91     -- row 2, col 1 (score of rank-2 entry)
 
-external mod Core.PLAN {
-  inc : Nat → Nat
-}
+use Core.List   unqualified { List, Nil, Cons, length }
+use Core.Option unqualified { Option, None, Some }
+use Core.Nat    unqualified { nat_lt }
 
 -- ---------------------------------------------------------------------------
--- List and Option types.
+-- Local utilities (not in prelude).
 -- ---------------------------------------------------------------------------
-
-type List a =
-  | Nil
-  | Cons a (List a)
-
-type Option a =
-  | None
-  | Some a
-
--- ---------------------------------------------------------------------------
--- List utilities.
--- ---------------------------------------------------------------------------
-
-let list_length : ∀ a. List a → Nat
-  = λ xs → match xs {
-      | Nil      → 0
-      | Cons _ t → Core.PLAN.inc (list_length t)
-    }
 
 -- list_nth xs i: return Some(xs[i]) or None if out of bounds.
 -- Uses predecessor binding: | k → ... gives k = i - 1.
@@ -59,42 +38,16 @@ let list_nth : ∀ a. List a → Nat → Option a
         }
     }
 
--- ---------------------------------------------------------------------------
--- Nat comparison (for max).
--- ---------------------------------------------------------------------------
-
-let nat_lt : Nat → Nat → Nat
-  = λ m n → match m {
-      | 0 → match n {
-          | 0 → 0
-          | _ → 1
-        }
-      | j → match n {
-          | 0 → 0
-          | k → nat_lt j k
-        }
-    }
-
+-- max_nat: return the larger of two nats.
 let max_nat : Nat → Nat → Nat
-  = λ a b → match (nat_lt b a) {
-      | 0 → b
-      | _ → a
-    }
+  = λ a b → if nat_lt b a then a else b
 
 -- ---------------------------------------------------------------------------
--- Row and table types (aliases via type definitions).
+-- Row and table operations.
 -- ---------------------------------------------------------------------------
 
 -- A Row is a List Nat (one Nat per field).
 -- A Table is a List (List Nat) (one Row per record).
-
--- row_length: number of fields in a row.
-let row_length : List Nat → Nat
-  = λ r → list_length r
-
--- table_row_count: number of rows in a table.
-let table_row_count : List (List Nat) → Nat
-  = λ t → list_length t
 
 -- table_get_field: get the value at (row_index, col_index), or None.
 let table_get_field : List (List Nat) → Nat → Nat → Option Nat
@@ -136,20 +89,20 @@ let table : List (List Nat)
 -- Results.
 -- ---------------------------------------------------------------------------
 
--- Number of rows = 3
-let row_count_result : Nat = table_row_count table
+-- Number of rows = 3 (uses Core.List.length).
+let row_count_result : Nat = length table
 
--- Number of columns in first row = 3
+-- Number of columns in first row = 3.
 let col_count_result : Nat
   = match table {
       | Nil      → 0
-      | Cons r _ → row_length r
+      | Cons r _ → length r
     }
 
--- Maximum score (column 1) across all rows = 95
+-- Maximum score (column 1) across all rows = 95.
 let top_score_result : Nat = col_max table 1
 
--- Field at row 2, column 1 = 91 (score of the rank-2 entry)
+-- Field at row 2, column 1 = 91 (score of the rank-2 entry).
 let get_field_result : Nat
   = match (table_get_field table 2 1) {
       | None   → 0

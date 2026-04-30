@@ -7,7 +7,7 @@ in the Python harness, and asserts expected output.
 | Demo | Lines | Exercises |
 |---|---|---|
 | `calculator.gls` | ~85 | algebraic data types, structural recursion, Option |
-| `csv_table.gls`  | ~157 | nested ADTs, list folds, Option, indexed access |
+| `csv_table.gls`  | ~110 | cross-module prelude `use`, Option, indexed access |
 
 ## Running a single demo
 
