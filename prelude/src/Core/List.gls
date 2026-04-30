@@ -7,6 +7,7 @@
 --   Core.Nat — Eq class
 
 use Core.Nat { Eq }
+use Core.Nat unqualified { add }
 use Core.Text { Show, Debug, text_concat }
 
 type List a =
@@ -74,6 +75,27 @@ let foldr : ∀ a b. (a → b → b) → b → List a → b
   = λ f z xs → match xs {
     | Nil        → z
     | Cons x rest → f x (foldr f z rest)
+  }
+
+-- length: number of elements in the list
+let length : ∀ a. List a → Nat
+  = λ xs → match xs {
+    | Nil        → 0
+    | Cons _ rest → add 1 (length rest)
+  }
+
+-- append: concatenate two lists
+let append : ∀ a. List a → List a → List a
+  = λ xs ys → match xs {
+    | Nil        → ys
+    | Cons x rest → Cons x (append rest ys)
+  }
+
+-- concat_list: flatten a list of lists into a single list
+let concat_list : ∀ a. List (List a) → List a
+  = λ xss → match xss {
+    | Nil        → Nil
+    | Cons x rest → append x (concat_list rest)
   }
 
 -- list_eq_go: structural equality with explicit element comparator

@@ -555,10 +555,13 @@ _PRELUDE_JETS = {
     # O(allocation depth) to O(algorithmic depth).  The Python harness
     # recursion limit is the practical bottleneck for any demo touching
     # lists of more than ~100 cells without these jets.
-    'Core.List.map':    (2, lambda fn, xs: _list_map_jet(fn, xs)),
-    'Core.List.foldl':  (3, lambda fn, init, xs: _list_foldl_jet(fn, init, xs)),
-    'Core.List.foldr':  (3, lambda fn, init, xs: _list_foldr_jet(fn, init, xs)),
-    'Core.List.filter': (2, lambda fn, xs: _list_filter_jet(fn, xs)),
+    'Core.List.map':         (2, lambda fn, xs: _list_map_jet(fn, xs)),
+    'Core.List.foldl':       (3, lambda fn, init, xs: _list_foldl_jet(fn, init, xs)),
+    'Core.List.foldr':       (3, lambda fn, init, xs: _list_foldr_jet(fn, init, xs)),
+    'Core.List.filter':      (2, lambda fn, xs: _list_filter_jet(fn, xs)),
+    'Core.List.length':      (1, lambda xs: _list_length_jet(xs)),
+    'Core.List.append':      (2, lambda xs, ys: _list_append_jet(xs, ys)),
+    'Core.List.concat_list': (1, lambda xs: _list_concat_jet(xs)),
 }
 
 
@@ -649,6 +652,22 @@ def _list_filter_jet(fn, xs):
         if is_nat(keep) and keep != 0:
             out.append(x)
     return _pylist_to_list(out)
+
+
+def _list_length_jet(xs):
+    return len(_list_to_pylist(xs))
+
+
+def _list_append_jet(xs, ys):
+    return _pylist_to_list(_list_to_pylist(xs) + _list_to_pylist(ys))
+
+
+def _list_concat_jet(xss):
+    """concat_list : List (List a) → List a"""
+    items: list = []
+    for sub in _list_to_pylist(xss):
+        items.extend(_list_to_pylist(sub))
+    return _pylist_to_list(items)
 
 
 def register_prelude_jets(compiled_dict: dict) -> None:
