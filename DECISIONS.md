@@ -21,18 +21,20 @@ PLAN was designed as a compile target for functional languages. Its properties a
 
 WASM was considered but rejected: it imposes semantic compromises (stack machine, no native content-addressing, no effect enforcement at the VM level) that would require constant workarounds.
 
-### Why use `Case_` (opcode 3) for pattern matching rather than `Hd`/`Sz`/`CaseN`/`Ix`?
+### Why use `Elim` (opcode 2) for pattern matching rather than `Hd`/`Sz`/`CaseN`/`Ix`?
 
-The current codegen uses the `Case_` opcode (opcode 3) directly for all pattern matching. This is the simplest mapping from Gallowglass match expressions to PLAN, but Sol (PLAN author) confirmed it is "extremely heavy."
+> **Renaming note (2026-04-30):** in xocore-tech/PLAN's older 5-opcode ABI this primitive was called `Case_` and lived at opcode 3. The canonical Reaver ABI renames it to `Elim` and renumbers it to opcode 2 (the only non-{Pin,Law} opcode). The argument shape and semantics are unchanged: 6-arity dispatch on the constructor of the scrutinee. References to `Case_` (opcode 3) elsewhere in this document predate the migration; treat them as referring to the same operation.
+
+The current codegen uses the Elim opcode directly for all pattern matching. This is the simplest mapping from Gallowglass match expressions to PLAN, but Sol (PLAN author) confirmed it is "extremely heavy."
 
 The preferred convention is:
 - `Hd` and `Sz` to identify which constructor branch was taken (lighter inspection)
 - `CaseN` jets to switch on N constructor tags
 - `Ix` to extract individual fields by index
 
-This approach is more efficient because `Case_` constructs a 6-arity dispatch closure per match site, whereas the `Hd`/`Sz`/`CaseN`/`Ix` approach targets existing jets without constructing dispatch closures.
+This approach is more efficient because Elim constructs a 6-arity dispatch closure per match site, whereas the `Hd`/`Sz`/`CaseN`/`Ix` approach targets existing jets without constructing dispatch closures.
 
-**Why not now?** The `Case_` encoding is correct and produces valid PLAN. Migrating to `Hd`/`Sz`/`CaseN`/`Ix` is a correctness-preserving optimization that requires significant changes to both the bootstrap codegen and the GLS self-hosting compiler. It is tracked as a post-1.0 item to be done alongside the jet registry and optimizer work, when the full set of `CaseN` jets is stable.
+**Why not now?** The Elim encoding is correct and produces valid PLAN. Migrating to `Hd`/`Sz`/`CaseN`/`Ix` is a correctness-preserving optimization that requires significant changes to both the bootstrap codegen and the GLS self-hosting compiler. It is tracked as a post-1.0 item to be done alongside the jet registry and optimizer work, when the full set of `CaseN` jets is stable.
 
 ### Why a purpose-built Rust VM in addition to xocore?
 
@@ -118,6 +120,45 @@ Sire-based toolchain and is not the forward-going target.
 Gallowglass is migrating to the canonical 3-opcode ABI with BPLAN-named primitives. The
 old `tests/planvm/` suite (xocore seed-loading gate) is being archived rather than
 maintained; xocore is no longer a Gallowglass deployment target.
+
+### The canonical 3-opcode ABI (target for Phase B/C, 2026-04-30)
+
+**The target ABI**, sourced from `vendor/reaver/src/hs/Plan.hs` at
+`vendor.lock` SHA `f72fe24`:
+
+| Opcode | Name | Arity | Plan.hs anchor |
+|---|---|---|---|
+| 0 | Pin  | 1 | `op 66 ["Pin", i]` (line 333) — also reachable via `<0> v = pin v` |
+| 1 | Law  | 3 | `op 66 ["Law", a, m, b]` (line 334) — note the runtime stores `a+1`, exposing surface arity `a` |
+| 2 | Elim | 6 | `op 66 ["Elim", p, l, a, z, m, o]` (line 335) — formerly `Case_` at xocore opcode 3 |
+
+Inc, Force, arithmetic, and introspection are all BPLAN named primitives —
+Pin'd Laws of the right name and arity that the runtime dispatches in the
+`op 66` cases. They are not opcode pins.
+
+The full target encoding for each xocore opcode:
+
+| Old (xocore) | New (Reaver canonical) |
+|---|---|
+| `<0>` (Pin)    | `<0>` — unchanged opcode pin, OR reference to BPLAN `Pin` Law (arity 1) |
+| `<1>` (MkLaw)  | `<1>` — unchanged opcode pin, OR reference to BPLAN `Law` Law (arity 3) |
+| `<2>` (Inc)    | reference to BPLAN `Inc` Pin'd Law (arity 1) |
+| `<3>` (Case_)  | `<2>` (Elim) — opcode pin renumbered |
+| `<4>` (Force)  | reference to BPLAN `Force` Pin'd Law (arity 1) |
+
+For Pin and Law (opcodes 0 and 1), gallowglass codegen will go via the BPLAN
+named-Law shape rather than the opcode pin shape. Reasoning: Reaver's
+runtime dispatches `op 66` named ops today but does not yet implement
+`exec (P _ _ (N o))` for `o ∈ {0,1,2}` — the canonical opcode-pin path will
+land upstream eventually, but the BPLAN-named path works now and is what
+`vendor/reaver/src/plan/boot.plan` uses for its own bootstrap. See
+`bootstrap/bplan_deps.py` for the registered names+arities.
+
+**Pattern matching uses the renumbered Elim opcode** (canonical 2, formerly
+xocore 3). The semantics are identical — the C-rules in
+`vendor/reaver/doc/plan-spec.txt` match xocore's Case_ exactly: pin → `p i`,
+law → `l a m b`, app → `a f x`, nat 0 → `z`, nat n>0 → `m (n-1)`. The
+6-arity argument shape is unchanged.
 
 ---
 

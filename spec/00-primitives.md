@@ -80,7 +80,7 @@ external mod Core.Nat {
 }
 ```
 
-**PLAN encoding:** `add`, `sub`, `mul`, `div`, `mod` are laws that reduce to combinations of `nat_case` (opcode 2) and `inc` (opcode 3) at the PLAN level. In practice, all of these are jet candidates -- the VM matches their pin hashes against native implementations for performance. `sub` saturates at zero because PLAN has no negative naturals; negative results require `Core.Int`. Division and modulo by zero are prevented by the refined type on `d`; violation is a contract `Abort`.
+**PLAN encoding:** `add`, `sub`, `mul`, `div`, `mod` are laws that reduce to nat-counter loops over `inc` at the PLAN level. In the canonical Reaver ABI, `inc` is a BPLAN named primitive (a Pin'd Law of arity 1, dispatched by `Plan.hs:op 66 ["Inc", x]`) and arithmetic ops are themselves BPLAN named primitives (`Add`, `Sub`, `Mul`, `Div`, `Mod`) — see `bootstrap/bplan_deps.py`. The slow PLAN-recursive forms exist for the formal-tower view; the runtime jet-dispatches by name. `sub` saturates at zero because PLAN has no negative naturals; negative results require `Core.Int`. Division and modulo by zero are prevented by the refined type on `d`; violation is a contract `Abort`.
 
 **Count: 18 operations**
 
@@ -321,7 +321,7 @@ external mod Core.Inspect {
 }
 ```
 
-**PLAN encoding:** `Term` is any PLAN value -- it is the identity type at the PLAN level (every PLAN value is already a term). The classification operations use opcode 1 (`reflect`) to dispatch on the PLAN constructor. The decomposition operations extract components: `pin_val` unpins, `law_name`/`law_arity`/`law_body` extract from `{n a b}`, and `app_parts` splits `(f g)` into the pair `(f, g)`. All decomposition operations return `Result` because the operation is only valid on the matching constructor. The `Term` type is covariant (`[+]`) because a `Term` produced in a more specific context can always be used in a more general one.
+**PLAN encoding:** `Term` is any PLAN value -- it is the identity type at the PLAN level (every PLAN value is already a term). The classification operations dispatch on the PLAN constructor via either the canonical Elim opcode (opcode 2, arity 6 — formerly Case_) or the BPLAN named primitives `Type` / `IsPin` / `IsLaw` / `IsApp` / `IsNat` (`Plan.hs:op 66`). The decomposition operations extract components via BPLAN-named primitives: `Unpin`, `Name`, `Arity`, `Body`, `Hd`/`Init`/`Last` (App). All decomposition operations return `Result` because the operation is only valid on the matching constructor. The `Term` type is covariant (`[+]`) because a `Term` produced in a more specific context can always be used in a more general one.
 
 **Count: 9 operations**
 
