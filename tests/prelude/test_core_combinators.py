@@ -80,7 +80,7 @@ class TestCoreCombinatorsSeeds(unittest.TestCase):
 # Layer 1a: harness correctness
 # ---------------------------------------------------------------------------
 
-from dev.harness.plan import A, N, L, P, evaluate, apply as plan_apply
+from dev.harness.plan import A, N, L, P, evaluate, apply as plan_apply, make_bplan_law
 
 
 class TestCoreCombinatorsHarness(unittest.TestCase):
@@ -94,13 +94,13 @@ class TestCoreCombinatorsHarness(unittest.TestCase):
 
     def test_pipe(self):
         """pipe 10 inc = 11"""
-        inc_fn = L(1, 0, A(A(0, A(0, P(2))), 1))
+        inc_fn = make_bplan_law("Inc", 1)
         result = evaluate(plan_apply(plan_apply(self.fn('pipe'), N(10)), inc_fn))
         self.assertEqual(result, 11)
 
     def test_compose(self):
         """compose inc inc 10 = 12"""
-        inc_fn = L(1, 0, A(A(0, A(0, P(2))), 1))
+        inc_fn = make_bplan_law("Inc", 1)
         result = evaluate(plan_apply(plan_apply(plan_apply(
             self.fn('compose'), inc_fn), inc_fn), N(10)))
         self.assertEqual(result, 12)

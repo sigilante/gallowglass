@@ -2,9 +2,8 @@
 """
 Sanity tests for the PLAN evaluator.
 
-These tests verify the five opcodes, law evaluation, pattern matching,
-and basic PLAN semantics. They run locally (Python harness) and serve
-as the baseline correctness check before CI runs the real VM.
+These tests verify the canonical 3-opcode PLAN ABI (Pin/Law/Elim at 0/1/2)
+plus BPLAN named-op dispatch (Inc, Force, Add, etc. via op 66 = strNat("B")).
 
 Run: python3 -m pytest tests/sanity/test_plan.py -v
   or: python3 tests/sanity/test_plan.py
@@ -16,7 +15,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from dev.harness.plan import (
     P, L, A, N, apply, evaluate, law, pin, app,
-    is_nat, is_pin, is_law, is_app, arity, match
+    is_nat, is_pin, is_law, is_app, arity, match,
+    str_nat, _BPLAN_OPCODE,
 )
 
 
@@ -39,30 +39,69 @@ def test_opcode_0_pin_law():
 
 
 # ============================================================
-# Opcode 2: Increment
+# Opcode 2: Elim (canonical 6-arity dispatch — formerly Case_/op 3)
 # ============================================================
 
-def test_opcode_2_inc_zero():
-    """inc 0 = 1."""
-    assert apply(P(2), 0) == 1
+def test_opcode_2_elim_pin():
+    """Elim on a Pin scrutinee invokes the pin branch with the inner value."""
+    p_fn = L(1, 1, 1)   # identity (returns its arg)
+    l_fn = L(3, 0, 0)
+    a_fn = L(2, 0, 0)
+    z = 0
+    m_fn = L(1, 0, 0)
+    result = apply(app(P(2), p_fn, l_fn, a_fn, z, m_fn), P(42))
+    assert result == 42
 
-def test_opcode_2_inc_large():
-    """inc 999 = 1000."""
-    assert apply(P(2), 999) == 1000
+def test_opcode_2_elim_nat_zero():
+    """Elim on Nat 0 returns the zero branch."""
+    p_fn = L(1, 0, 0)
+    l_fn = L(3, 0, 0)
+    a_fn = L(2, 0, 0)
+    z = 99
+    m_fn = L(1, 0, 0)
+    result = apply(app(P(2), p_fn, l_fn, a_fn, z, m_fn), 0)
+    assert result == 99
 
-def test_opcode_2_inc_non_nat():
-    """inc on non-nat treats it as 0, returns 1."""
-    # nat(x) defaults to 0 for non-nats
-    assert apply(P(2), A(1, 2)) == 1
+def test_opcode_2_elim_nat_succ():
+    """Elim on Nat n>0 invokes the succ branch with predecessor."""
+    p_fn = L(1, 0, 0)
+    l_fn = L(3, 0, 0)
+    a_fn = L(2, 0, 0)
+    z = 0
+    m_fn = L(1, 1, 1)   # identity — returns predecessor
+    result = apply(app(P(2), p_fn, l_fn, a_fn, z, m_fn), 7)
+    assert result == 6
 
 
 # ============================================================
-# Opcode 4: Pin (normalize and content-address)
+# BPLAN named-op dispatch (op 66 = strNat("B"))
 # ============================================================
 
-def test_opcode_4_pin():
-    """Opcode 4 pins a value (same as opcode 0 for our purposes)."""
-    result = apply(P(4), 42)
+def _bplan_call(name, *args):
+    """Build a saturated BPLAN call: ((P("B")) ("Name" arg1 ... argN))."""
+    inner = N(str_nat(name))
+    for a in args:
+        inner = A(inner, a)
+    return apply(P(_BPLAN_OPCODE), inner)
+
+def test_bplan_inc():
+    """Inc is a BPLAN named primitive."""
+    assert _bplan_call('Inc', 0) == 1
+    assert _bplan_call('Inc', 41) == 42
+    assert _bplan_call('Inc', 999) == 1000
+
+def test_bplan_add():
+    """Add is a BPLAN named primitive."""
+    assert _bplan_call('Add', 3, 4) == 7
+    assert _bplan_call('Add', 0, 0) == 0
+
+def test_bplan_force():
+    """Force is a BPLAN named primitive (1-arg, evaluates its arg)."""
+    assert _bplan_call('Force', 42) == 42
+
+def test_bplan_pin():
+    """Pin is a BPLAN named primitive (replaces opcode-pin Pin in user code)."""
+    result = _bplan_call('Pin', 42)
     assert is_pin(result)
     assert result.val == 42
 

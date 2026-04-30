@@ -17,7 +17,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from dev.harness.plan import A, N, L, P, evaluate as raw_evaluate
+from dev.harness.plan import A, N, L, P, evaluate as raw_evaluate, make_bplan_law
 from dev.harness.bplan import bevaluate, _bapply
 
 def apply(f, x):
@@ -106,7 +106,7 @@ class TestCorePairHarness(unittest.TestCase):
 
     def test_map_fst(self):
         """map_fst inc (MkPair 10 20) = MkPair 11 20"""
-        inc_fn = L(1, 0, A(A(0, A(0, P(2))), 1))  # λx → x+1
+        inc_fn = make_bplan_law("Inc", 1)
         result = evaluate(apply(apply(self.fn('map_fst'), inc_fn), mk_pair(N(10), N(20))))
         # Result should be MkPair 11 20 = A(A(0, 11), 20)
         self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
@@ -119,7 +119,7 @@ class TestCorePairHarness(unittest.TestCase):
 
     def test_map_snd(self):
         """map_snd inc (MkPair 10 20) = MkPair 10 21"""
-        inc_fn = L(1, 0, A(A(0, A(0, P(2))), 1))  # λx → x+1
+        inc_fn = make_bplan_law("Inc", 1)
         result = evaluate(apply(apply(self.fn('map_snd'), inc_fn), mk_pair(N(10), N(20))))
         self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
         self.assertTrue(hasattr(result.fun, 'fun'), f'Expected nested App, got {result.fun}')
