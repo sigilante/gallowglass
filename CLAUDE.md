@@ -216,15 +216,17 @@ python3 -m pytest tests/            # all tests
 
 ### Test skip categories
 
-1210 passing, 145 skipped. The skips are all expected:
+1258 passing, 117 skipped (post-Reaver-migration). The skips are all expected:
 
-- **planvm-gated (75):** Seed loading and VM execution tests that require the
-  `planvm` binary. These run in the `plan-vm` CI job (builds planvm via Nix).
-  Covers prelude seeds (56), compiler seeds/eval (12), seed format (7).
+- **planvm archived (~110):** Every test gated on `requires_planvm` is now
+  unconditionally skipped. xocore-tech/PLAN's xplan VM is no longer a
+  Gallowglass deployment target — see `DECISIONS.md §"Why XPLAN compatibility
+  is being abandoned"`. The decorator and infrastructure are preserved so
+  historical imports still resolve. Reaver-runtime tests live under
+  `tests/reaver/` once Phase F lands.
 - **Deep recursion (4):** Stress tests (`TestDeepRecursion` in `test_coverage_gaps.py`)
-  that hit the Python evaluator's recursion limit. These will work on the actual
-  PLAN VM; fixing in the Python harness requires jets (post-1.0).
-- **Driver smoke (1):** `test_main_minimal_snippet` requires planvm.
+  that hit the Python evaluator's recursion limit. These will work on the
+  PLAN VM; fixing in the Python harness requires native jets (post-1.0).
 
 ## Key Invariants to Never Violate
 
