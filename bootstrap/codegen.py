@@ -987,14 +987,23 @@ class Compiler:
         """
         Compile a nat literal.
 
-        In a law body (env.arity > 0), nats 0..arity are de Bruijn indices,
-        so embedding N(k) directly would cause kal to misread it as a parameter
-        reference.  We use the PLAN quote form A(N(0), N(k)) instead:
-          kal evaluates A(N(0), N(k)) via the (0 x) = quote branch → returns N(k)
+        In a law body (env.arity > 0), every literal nat must be wrapped in
+        the PLAN quote form A(N(0), N(value)) — never emitted as a bare N(k).
+
+        Two reasons:
+          1. Slot disambiguation. Bare N(k) in a body is a de Bruijn index
+             when k ≤ arity. Quote-wrapping disambiguates literals from
+             parameter references regardless of value.
+          2. Plan Assembler text emission. The PLAN runtime's `kal` falls
+             through on N(k) for k > arity and treats it as the constant k.
+             But the Plan Assembler emitter sees a bare PNat and renders
+             it as `_k` (a slot reference) — there is no out-of-band signal
+             for "this PNat is a constant, not a slot." Always quote-wrapping
+             eliminates the ambiguity at the source.
 
         Outside a law body, N(value) is safe.
         """
-        if env.arity > 0 and value <= env.arity:
+        if env.arity > 0:
             return A(N(0), N(value))   # quote form: returns literal nat value
         return N(value)
 

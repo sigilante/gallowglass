@@ -1457,3 +1457,147 @@ let result = handle inner_handled {
     # outer_op forwarded from inner handler to outer handler (once).
     # Resumed with 5. Then inner_op fires, handled by inner handler → 10.
     assert result == 10, f"expected 10, got {result}"
+
+
+# ---------------------------------------------------------------------------
+# Body-context literal quoting (Reaver migration prep)
+#
+# A literal nat in a law body must always be wrapped in the PLAN quote form
+# A(N(0), N(value)) — never emitted as a bare N(k). The PLAN runtime's `kal`
+# falls through on N(k) for k > arity and treats it as the constant k, but
+# the Plan Assembler emitter sees a bare PNat and renders it as `_k` (a slot
+# reference). Always quote-wrapping eliminates the ambiguity at the source.
+#
+# See bootstrap/codegen.py::Compiler._compile_nat_literal.
+# ---------------------------------------------------------------------------
+
+def _walk_plan(val, fn):
+    """Walk every node in a PLAN value; call fn on each."""
+    fn(val)
+    if is_pin(val):
+        _walk_plan(val.val, fn)
+    elif is_law(val):
+        _walk_plan(val.body, fn)
+    elif is_app(val):
+        _walk_plan(val.fun, fn)
+        _walk_plan(val.arg, fn)
+
+
+def _law_body_constants(law):
+    """Return the set of bare-N(k) values found inside a Law's body
+    where k is too large to be a de Bruijn slot reference (k > law.arity).
+
+    These are the smoking-gun nats: they decode correctly under the harness
+    runtime via kal's fallthrough but break Plan Assembler text emission.
+    The fix is for codegen to never produce them — every literal in body
+    context must be quote-wrapped in A(N(0), N(value))."""
+    found: list[int] = []
+    arity = law.arity
+    def visit(v):
+        if is_nat(v) and v > arity:
+            # Bare nat in body context with value > arity — only valid if
+            # this is the inner of a quote (A(N(0), N(k))). The quote form
+            # is recognised by walking from the outside; here we record
+            # bare appearances and rely on the assertion that every nat
+            # found in a walk should be a slot reference (≤ arity) since
+            # quote nats are nested inside an A node we also visit.
+            #
+            # Specifically: a properly-quoted constant A(N(0), N(k)) has
+            # an inner N(k) that this walk visits. To distinguish, we look
+            # for pre-quote N(k) by checking the PARENT structure.
+            pass
+    # We don't use visit here; instead do a structural scan that
+    # explicitly looks for N(k) NOT wrapped in A(N(0), _).
+    def scan(v, parent_is_quote_outer):
+        if is_nat(v):
+            # If this nat is the inner-arg of A(N(0), this), it's a quote.
+            if parent_is_quote_outer:
+                return  # quoted constant — fine
+            if v > arity:
+                found.append(int(v))
+            return
+        if is_pin(v):
+            return  # don't recurse into pins (nested laws scanned separately)
+        if is_law(v):
+            return  # nested laws are scanned via _scan_law
+        if is_app(v):
+            # Detect quote shape A(N(0), N(k)) at this node:
+            # v.fun = N(0), v.arg = N(k)  →  quote of literal k
+            is_quote = (is_nat(v.fun) and v.fun == 0)
+            scan(v.fun, parent_is_quote_outer=False)
+            scan(v.arg, parent_is_quote_outer=is_quote)
+    scan(law.body, parent_is_quote_outer=False)
+    return found
+
+
+def _scan_law(val, found_per_law):
+    """Recurse into compiled values, scanning every Law for body literals."""
+    if is_law(val):
+        leaks = _law_body_constants(val)
+        if leaks:
+            found_per_law.append((val.name, val.arity, leaks))
+        _scan_law(val.body, found_per_law)
+    elif is_pin(val):
+        _scan_law(val.val, found_per_law)
+    elif is_app(val):
+        _scan_law(val.fun, found_per_law)
+        _scan_law(val.arg, found_per_law)
+
+
+def test_literal_in_body_is_quote_wrapped():
+    """A literal nat in a law body must compile to A(N(0), N(k)), not bare N(k).
+
+    Regression for the Plan Assembler emission bug: bare N(constructor_tag)
+    in body context renders as `_constructor_tag` (a slot ref) under Plan
+    Assembler emission, which Reaver rejects as unbound."""
+    src = '''
+let constant : Nat → Nat
+  = λ x → 100
+'''
+    val = val_of(src, 'constant')
+    # constant is L(1, name, body).
+    # Old buggy codegen: body = N(100) (raw, since 100 > arity=1)
+    # Fixed codegen:     body = A(N(0), N(100)) (quote form)
+    assert is_law(val), f'expected Law, got {type(val).__name__}'
+    body = val.body
+    assert is_app(body) and is_nat(body.fun) and body.fun == 0, \
+        f'literal 100 in body should be quote-wrapped A(N(0), N(100)); got {body!r}'
+    assert is_nat(body.arg) and body.arg == 100, \
+        f'inner of quote should be N(100); got {body.arg!r}'
+
+
+def test_constructor_tag_in_body_is_quoted_recursively():
+    """No compiled Law in a program with constructors leaves bare nats > arity
+    in body position. Constructor tags (which can be huge strNats) are the
+    canonical case that hit this bug in the Reaver spike."""
+    src = '''
+type Color =
+  | Red
+  | Green
+  | Blue
+
+let pick : Nat → Color
+  = λ n → match n {
+      | 0 → Red
+      | 1 → Green
+      | _ → Blue
+    }
+'''
+    compiled = pipeline(src)
+    leaks: list[tuple[int, int, list[int]]] = []
+    for fq, val in compiled.items():
+        _scan_law(val, leaks)
+    assert not leaks, (
+        f'compiled output contains bare nats in body position with value > arity: '
+        f'{leaks}. Every literal must be quote-wrapped via A(N(0), N(k)).'
+    )
+
+
+def test_top_level_nat_unchanged():
+    """Outside a law body (env.arity == 0), bare N(value) is correct.
+    Top-level let with no parameters compiles its rhs as a value, not a body."""
+    src = 'let big_const : Nat = 12345'
+    val = val_of(src, 'big_const')
+    # No body context, so bare N(12345) is fine (and will round-trip
+    # through emit_pla as a bare numeric literal).
+    assert is_nat(val) and val == 12345, f'top-level nat literal: {val!r}'
