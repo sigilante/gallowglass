@@ -111,49 +111,56 @@ The bootstrap compiler accepts a strict subset of Gallowglass; the rules below
 cover the patterns that work today and the workarounds for forms the bootstrap
 codegen does not yet handle.
 
-#### 2.4.1 Variant types: single-constructor record + Nat tag
+#### 2.4.1 Variant types: mixed-arity sum types are supported
 
-The mixed-arity constructor footgun (M9.3 skipped tests) means a sum type with
-constructors of different arities — say:
+The bootstrap codegen handles ADTs with constructors of mixed arities
+directly. Three different arities in the same match work:
 
 ```gallowglass
-type Effect =
-  | Point Ship Region    -- arity 2
-  | Dns   Host           -- arity 1
-  | Insc  Id             -- arity 1
-  | Xfer  Ship           -- arity 1
+type Tree =
+  | Leaf                   -- arity 0
+  | Node   Nat             -- arity 1
+  | Branch Tree Tree       -- arity 2
+
+let depth : Tree → Nat
+  = λ tt → match tt {
+      | Leaf       → 0
+      | Node nn    → 1
+      | Branch a b → 2
+    }
 ```
 
-cannot be matched with a multi-arm constructor `match` in the bootstrap
-codegen. The pattern that *does* compile is to model variants as a
-single-constructor record with a Nat tag and a payload nested in `Pair`s:
+This was historically a footgun — earlier bootstrap revisions silently
+returned `<0>` (P(0)) for the binary arm under certain tag layouts.
+F11 (post-feedback) fixed the last such case (`first_tag > 0` in the
+inner tag dispatch); see the regression suite at
+`tests/bootstrap/test_codegen.py::test_match_mixed_arity_*` and
+`test_match_nullary_unary_binary_*`. The `demos/calculator.gls`
+`eval` function exercises the same pattern end-to-end.
+
+##### Older idiom: single-constructor record + Nat tag
+
+`Compiler.gls` was written before mixed-arity matches were reliable, so it
+encodes every AST node as a single-constructor record with a Nat tag and a
+payload nested in `Pair`s, then dispatches with an `if (nat_eq tag K)`
+chain:
 
 ```gallowglass
 type Effect = | MkEffect Nat (Pair Nat (Pair Nat Nat))
 --                       tag    a       (b   c)
 
-let mk_point : Ship → Region → Effect
-  = λ ss rr → MkEffect 0 (MkPair ss (MkPair rr 0))
-
-let mk_dns : Host → Effect
-  = λ hh → MkEffect 1 (MkPair hh (MkPair 0 0))
-```
-
-Dispatch with an `if (nat_eq tag K)` chain:
-
-```gallowglass
 let interpret : Effect → Bytes
   = λ ee → match ee {
       | MkEffect tag pp →
           if nat_eq tag 0 then handle_point pp
           else if nat_eq tag 1 then handle_dns (pair_fst pp)
-          else if nat_eq tag 2 then handle_insc (pair_fst pp)
           else handle_xfer (pair_fst pp)
     }
 ```
 
-`Compiler.gls` is the canonical reference for this idiom — every AST node type
-in the self-hosting compiler is encoded this way.
+New code can use the direct sum-type form above. The tagged-record idiom
+remains useful when (a) several variants share the same payload shape, or
+(b) you want the tag to be statically computable and inspectable.
 
 #### 2.4.2 Recursive Bool dispatch
 

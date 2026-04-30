@@ -67,19 +67,13 @@ let eval : Expr → Nat
 
 -- ---------------------------------------------------------------------------
 -- Hardcoded examples.
---
--- The Expr type and eval function above demonstrate algebraic types and
--- structural recursion.  The example values below are computed directly
--- with the arithmetic primitives, avoiding the 4-constructor mixed-arity
--- dispatch that the bootstrap codegen does not yet support at the harness
--- level.  The numeric results are identical to what eval would produce.
 -- ---------------------------------------------------------------------------
 
 -- (3 + 4) * 2 = 14
-let example1 : Nat = mul (add 3 4) 2
+let example1 : Nat = eval (Mul (Add (Lit 3) (Lit 4)) (Lit 2))
 
 -- 10 - (2 * 3) = 4
-let example2 : Nat = sub 10 (mul 2 3)
+let example2 : Nat = eval (Sub (Lit 10) (Mul (Lit 2) (Lit 3)))
 
 -- (1 + 2) * (3 + 4) = 21
-let example3 : Nat = mul (add 1 2) (add 3 4)
+let example3 : Nat = eval (Mul (Add (Lit 1) (Lit 2)) (Add (Lit 3) (Lit 4)))

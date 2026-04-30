@@ -944,6 +944,79 @@ let main = partial (PPin 7)
 
 
 # ---------------------------------------------------------------------------
+# F11 (D from feedback follow-ups): nullary + unary + binary mix
+#
+# `_build_precompiled_nat_dispatch` had a bug in its multi-arm branch where
+# `first_tag > 0` was ignored: the code unconditionally used
+# `tag_val_pairs[0][1]` as the zero_val of an op2 dispatch, regardless of
+# whether tag_val_pairs[0][0] was actually 0.  This affected ADTs whose
+# field-bearing constructors all had tag > 0 (common for the
+# nullary-+-unary-+-binary shape, where Leaf takes tag 0 nullary and the
+# field-bearing constructors start at tag 1).
+#
+# Symptom: `match (Branch a b) { | Leaf → 0 | Node n → n | Branch a b → ANY }`
+# returned `<0>` (P(0)) regardless of the Branch arm body.
+# ---------------------------------------------------------------------------
+
+_TREE_SRC = '''
+type Tree =
+  | Leaf
+  | Node Nat
+  | Branch Nat Nat
+'''
+
+
+def test_match_nullary_unary_binary_branch_arm():
+    """Branch (binary tag=2) arm fires correctly when Leaf and Node also exist."""
+    src = _TREE_SRC + '''
+let depth = λ tt → match tt {
+  | Leaf       → 0
+  | Node nn    → 1
+  | Branch a b → 2
+}
+let main = depth (Branch 11 22)
+'''
+    assert eval_val(src, 'main') == 2
+
+
+def test_match_nullary_unary_binary_branch_field():
+    """Branch arm body can read both fields."""
+    src = _TREE_SRC + '''
+let first_field = λ tt → match tt {
+  | Leaf       → 0
+  | Node nn    → 0
+  | Branch a b → a
+}
+let second_field = λ tt → match tt {
+  | Leaf       → 0
+  | Node nn    → 0
+  | Branch a b → b
+}
+let r1 = first_field  (Branch 11 22)
+let r2 = second_field (Branch 33 44)
+'''
+    assert eval_val(src, 'r1') == 11
+    assert eval_val(src, 'r2') == 44
+
+
+def test_match_nullary_unary_binary_all_arms():
+    """All three arities dispatch correctly in the same match."""
+    src = _TREE_SRC + '''
+let go = λ tt → match tt {
+  | Leaf       → 100
+  | Node nn    → nn
+  | Branch a b → a
+}
+let r0 = go Leaf
+let r1 = go (Node 7)
+let r2 = go (Branch 11 22)
+'''
+    assert eval_val(src, 'r0') == 100
+    assert eval_val(src, 'r1') == 7
+    assert eval_val(src, 'r2') == 11
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 

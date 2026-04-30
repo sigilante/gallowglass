@@ -2348,29 +2348,35 @@ class Compiler:
         zero_val = tag_val_pairs[0][1]
         first_tag = tag_val_pairs[0][0]
 
+        # Whenever first_tag > 0, the outer op2's zero branch must be wild
+        # (no arm matches scrutinee=0); the chain of succ laws steps down
+        # one tag at a time until reaching the first arm.  The single-arm
+        # case below was already handling this; the multi-arm case
+        # previously ignored first_tag and used tag_val_pairs[0][1] as
+        # zero_val unconditionally, which silently mis-routes the dispatch.
+        if first_tag > 0:
+            wild_val = _get_wild_val(env)
+            z_val = wild_val if wild_val is not None else body_nat(0, env.arity)
+            ext_env, pred_ref = make_ext_env(env)
+            shifted = [(t - 1, v) for t, v in tag_val_pairs]
+            inner = self._build_precompiled_nat_dispatch(
+                shifted, wild_body, wild_var,
+                pred_ref, ext_env, name_hint,
+                wild_precompiled=wild_precompiled,
+            )
+            succ_law = P(L(ext_env.arity, 0, inner))
+            succ = partially_apply(succ_law, env)
+            return self._make_op2_dispatch(z_val, succ, scrutinee, env)
+
         if len(tag_val_pairs) == 1:
             wild_val = _get_wild_val(env)
             if wild_val is not None:
                 const_wild = bapp(const2_pin, wild_val) if env.arity > 0 else A(const2_pin, wild_val)
             else:
                 const_wild = bapp(const2_pin, P(N(0))) if env.arity > 0 else A(const2_pin, N(0))
+            return self._make_op2_dispatch(zero_val, const_wild, scrutinee, env)
 
-            if first_tag <= 0:
-                return self._make_op2_dispatch(zero_val, const_wild, scrutinee, env)
-            else:
-                z_val = wild_val if wild_val is not None else body_nat(0, env.arity)
-                ext_env, pred_ref = make_ext_env(env)
-                inner = self._build_precompiled_nat_dispatch(
-                    [(first_tag - 1, zero_val)], wild_body, wild_var,
-                    pred_ref, ext_env, name_hint,
-                    wild_precompiled=wild_precompiled
-                )
-                succ_law = P(L(ext_env.arity, 0, inner))
-                succ = partially_apply(succ_law, env)
-                return self._make_op2_dispatch(z_val, succ, scrutinee, env)
-        else:
-            succ = make_succ_compiled(0)
-
+        succ = make_succ_compiled(0)
         return self._make_op2_dispatch(zero_val, succ, scrutinee, env)
 
     def _make_op2_dispatch_reflect(self, zero_val: Any, app_handler: Any,
