@@ -52,9 +52,13 @@ The Python harness evaluator is recursive; deep PLAN evaluation can hit Python's
 default recursion limit. As a rule of thumb:
 
 - Default Python limit is 1000. Almost any demo will exceed this.
-- Demos touching list operations over more than ~100 cells need `sys.setrecursionlimit(100_000)` or higher.
-- Demos with three or more nested folds over moderate-sized lists may need `200_000`.
-- The real fix is jets in `dev/harness/bplan.py` for `length`, `map`, `foldl`, `foldr`, `append`, `concat_list` — planned (F5).
+- Demos touching list operations over more than ~100 cells should call
+  `dev.harness.bplan.register_prelude_jets(compiled)` to dispatch list ops
+  to native Python implementations. With jets, the recursion-limit pressure
+  is bounded by algorithmic depth instead of allocation depth.
+- Without jets, demos with three or more nested folds may need
+  `sys.setrecursionlimit(200_000)`.
+- Jetted prelude ops: `Core.List.{map, foldl, foldr, filter, length, append, concat_list}`.
 
 `tests/demos/test_calculator.py` and `tests/demos/test_csv_table.py` show the
 typical pattern: bump `sys.setrecursionlimit` before evaluating, and don't

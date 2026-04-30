@@ -362,5 +362,76 @@ class TestCoreListJets(unittest.TestCase):
             self.fn('foldr'), add), N(0)), nil)), 0)
 
 
+# ---------------------------------------------------------------------------
+# F7: length / append / concat_list — prelude additions plus jets
+# ---------------------------------------------------------------------------
+
+class TestCoreListLengthAppendConcat(unittest.TestCase):
+    """length/append/concat_list defined in the prelude AND jetted in BPLAN."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.c = _get_list()
+        register_prelude_jets(cls.c)
+
+    def fn(self, name):
+        fq = f'{MODULE}.{name}'
+        self.assertIn(fq, self.c, f"'{fq}' not compiled")
+        return self.c[fq]
+
+    def test_length_empty(self):
+        result = bevaluate(_bapply(self.fn('length'), mk_nil()))
+        self.assertEqual(result, 0)
+
+    def test_length_three(self):
+        result = bevaluate(_bapply(self.fn('length'), mk_list(10, 20, 30)))
+        self.assertEqual(result, 3)
+
+    def test_append_empty_left(self):
+        result = bevaluate(_bapply(_bapply(self.fn('append'),
+                                            mk_nil()), mk_list(1, 2)))
+        from dev.harness.bplan import _list_to_pylist
+        self.assertEqual(_list_to_pylist(result), [1, 2])
+
+    def test_append_empty_right(self):
+        result = bevaluate(_bapply(_bapply(self.fn('append'),
+                                            mk_list(1, 2)), mk_nil()))
+        from dev.harness.bplan import _list_to_pylist
+        self.assertEqual(_list_to_pylist(result), [1, 2])
+
+    def test_append_two_lists(self):
+        result = bevaluate(_bapply(_bapply(self.fn('append'),
+                                            mk_list(1, 2)), mk_list(3, 4)))
+        from dev.harness.bplan import _list_to_pylist
+        self.assertEqual(_list_to_pylist(result), [1, 2, 3, 4])
+
+    def test_concat_list_empty(self):
+        result = bevaluate(_bapply(self.fn('concat_list'), mk_nil()))
+        from dev.harness.bplan import _list_to_pylist
+        self.assertEqual(_list_to_pylist(result), [])
+
+    def test_concat_list_flatten(self):
+        # [[1,2], [3], [4,5,6]] → [1,2,3,4,5,6]
+        l1 = mk_list(1, 2)
+        l2 = mk_list(3)
+        l3 = mk_list(4, 5, 6)
+        outer = A(A(1, l1), A(A(1, l2), A(A(1, l3), mk_nil())))
+        result = bevaluate(_bapply(self.fn('concat_list'), outer))
+        from dev.harness.bplan import _list_to_pylist
+        self.assertEqual(_list_to_pylist(result), [1, 2, 3, 4, 5, 6])
+
+    def test_length_jet_matches_unjetted(self):
+        """Confirm the length jet returns the same value as pure-PLAN reduction."""
+        from dev.harness.bplan import _JET_REGISTRY
+        xs = mk_list(1, 2, 3, 4, 5)
+        register_prelude_jets(self.c)
+        jetted = bevaluate(_bapply(self.fn('length'), xs))
+        _JET_REGISTRY.clear()
+        unjetted = evaluate(apply(self.fn('length'), xs))
+        self.assertEqual(jetted, 5)
+        self.assertEqual(unjetted, 5)
+        register_prelude_jets(self.c)
+
+
 if __name__ == '__main__':
     unittest.main()
