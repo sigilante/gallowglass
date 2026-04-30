@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
-**Last updated:** 2026-04-08
-**Current status:** Alpha — M8–M20 complete. M20 (0.999 syntax: where, operator sections, export lists) complete. 1210 tests passing, 145 skipped.
+**Last updated:** 2026-04-30
+**Current status:** v0.99999-beta released. Reaver migration complete (Phases 0/A/B+C/D/E/F merged via #47–#53). Self-host validation on Reaver (Phase G) is the next coherent arc. 1261 tests passing.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -678,10 +678,109 @@ code that introspects Text/Bytes representation. Deferred until the encoding is
 finalized upstream.
 
 ### VM I/O integration (M8.8 Path A equivalent for 1.0)
-Once the direct side-effects + virtualization API stabilizes, wrap `Compiler.main` to
-read source from the VM's I/O channel and write Plan Assembler to the output channel.
-Run the compiled compiler on its own source via the VM and assert byte-identical output.
-This is the definitive planvm-executed self-hosting gate.
+**Superseded by Phase G (below).** Original framing assumed a stable `cog`-wrapping
+API in xocore-tech/PLAN; per Sol that approach is gone. The replacement is to wrap
+`Compiler.main` against Reaver's RPLAN ABI (`runReplFn` + `Input`/`Output`/etc. named
+ops in `vendor/reaver/src/hs/Plan.hs op 82`).
+
+---
+
+## Phase G — RPLAN self-host validation on Reaver
+
+**Status:** scoped, not started. Successor to the original M8.8 Path A gate.
+**Acceptance:** gallowglass-compiled `Compiler.main` runs under Reaver, reads its
+own source on stdin, writes Plan Assembler on stdout, and the output is
+byte-identical to what the bootstrap-compiled `Compiler.main` produces under
+the BPLAN harness for the same input.
+
+### Why this is a separate arc
+
+The Reaver migration arc (Phases 0–F, PRs #47–#53) made Reaver a viable runtime
+for gallowglass-emitted programs. It did not retarget `Compiler.main`'s I/O
+shape — that's still `Bytes → Bytes`, which is harness-evaluable but not
+runnable as a Reaver process. Phase G is the I/O-shape change.
+
+### Reaver's RPLAN surface
+
+Reaver's `op 82` (= `strNat("R")`) dispatches the RPLAN named ops, defined in
+`vendor/reaver/src/hs/Plan.hs` and surfaced via the `(rplan ...)` macro in
+`vendor/reaver/src/plan/boot.plan`:
+
+| Name | Arity | Purpose |
+|---|---|---|
+| `Input` | 1 | Read bytes from stdin (arg = max length nat) |
+| `Output` | 1 | Write bytes to stdout |
+| `Warn` | 1 | Write bytes to stderr |
+| `ReadFile` | 1 | Read a file by path |
+| `Print` | 1 | Pretty-print a PLAN value |
+| `Stamp` | 1 | mtime of a path |
+| `Now` | 1 | wall-clock |
+
+The Haskell driver loads a `.plan` module, then if a third CLI arg is given,
+treats that name as the entry point and applies it to the rest of the args:
+`runReplFn args fun = ... evaluate $ force $ (fun %) $ array $ map (N . strNat) $ args`.
+
+### Concrete deliverables
+
+1. **Source-level RPLAN bindings.** Add an `external mod Reaver.RPLAN { ... }`
+   module that mirrors the `op 82` named-op set. Bootstrap codegen registers
+   each as a BPLAN-style Pin'd Law that delegates to `((P("R")) ("Name" args))`,
+   parallel to how `Core.PLAN.*` works for op 66 (see
+   `bootstrap/codegen.py::_make_bplan_prim` and `bootstrap/bplan_deps.py`).
+2. **Re-shape `Compiler.main`.** Current shape: `Bytes → Bytes`. New shape: a
+   procedure that calls `Input` to read source, runs the lex/parse/scope/codegen/
+   emit pipeline, and calls `Output` with the Plan Assembler result. The
+   pipeline interior stays `Bytes → Bytes`; only the I/O wrapper changes.
+3. **`tests/reaver/test_selfhost.py`.** Compile `Compiler.gls` to `compiler.plan`,
+   run under Reaver against a fixture source, capture stdout, compare against
+   the BPLAN-harness output via `Compiler.emit_program`. Byte-identical or
+   the test fails.
+4. **CI gate.** Add the self-host test to the existing `reaver` job in
+   `.github/workflows/ci.yml` (or a separate job if its runtime is large).
+
+### Risk surface
+
+- **RPLAN is tentative, not frozen** (Sol, 2026-04-30). RPLAN sits a tier
+  *above* BPLAN's "drift expected" risk — Sol explicitly flagged it as
+  "tentative maturity." Names, arities, and the calling shape may all
+  change. Phase G should plan for this:
+  - Add `tests/sanity/test_rplan_deps.py` mirroring `test_bplan_deps.py`,
+    asserting every RPLAN op gallowglass uses still exists at the right
+    arity in `Plan.hs`. CI fires on the next vendor.lock bump that drifts.
+  - Keep the `Compiler.main` I/O layer thin (a small wrapper around the
+    pure pipeline) so an upstream RPLAN re-shape is bounded to ~50 LoC.
+  - Pin `vendor.lock` deliberately when starting Phase G; don't auto-bump
+    during the implementation window.
+- **Performance.** The compiled compiler running under pure-PLAN evaluation
+  may be slow even with BPLAN jets active. May need additional jet
+  registrations or alternate paths.
+- **Trace output vs `Output` bytes.** Reaver's `Trace` writes to stderr and
+  prints via `showVal`, which mangles byte-range nats. The self-host test
+  must check `Output`'s stdout bytes literally, not Trace output. (Phase F's
+  `tests/reaver/test_smoke.py` ran into this; see PR #53 for the mitigation
+  of using values >255 in test fixtures.)
+- **Canonical Elim wire form is upstream-pending.** The canonical CC (per
+  Sol) is `(<0> (2 p l a z m o))` — all pinned nats arity 1, dispatch on
+  inner App head. Reaver's runtime doesn't yet implement this; we currently
+  emit a bare `Elim` symbol that resolves via `boot.plan`'s BPLAN binding.
+  See `DECISIONS.md §"The canonical 3-opcode ABI"` for the full picture.
+  When Reaver lands the canonical CC upstream, `bootstrap/emit_pla.py`'s
+  Elim translation needs to update accordingly. This isn't a Phase G
+  blocker but is on the same flight path.
+
+### Estimated effort
+
+1–2 weeks. The bulk of the work is the RPLAN bindings and the `Compiler.main`
+I/O re-shape. The test infra inherits from Phase F's `tests/reaver/`. No
+upstream changes needed — Reaver's RPLAN is stable today.
+
+### Why this closes 1.0
+
+After Phase G lands, the loop is closed: gallowglass compiles its own source,
+the resulting compiler runs as a Reaver process, processes input on stdin,
+emits Plan Asm on stdout, and produces the same bytes as the harness
+implementation. Byte-identical self-hosting against the canonical runtime is
+the 1.0 acceptance criterion that's been outstanding since alpha.
 
 ---
 

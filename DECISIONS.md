@@ -75,7 +75,7 @@ When derived documentation disagrees with the `.hs` files, the `.hs` files win.
 | **PLAN proper** (4 ctors, opcodes 0–2 = Pin/Law/Elim) | Frozen | Build against this freely. |
 | **Plan Asm text format** | Frozen | `spec/07-seed-format.md §13` is durable once derived correctly. |
 | **BPLAN** (`op 66` named ops in `Plan.hs`) | Drift expected | Audit on each `vendor.lock` bump. |
-| **RPLAN** (`op 82` named ops) | Drift expected | Same as BPLAN. |
+| **RPLAN** (`op 82` named ops) | **Tentative, not frozen** (per Sol, 2026-04-30) | Higher churn risk than BPLAN; assume any RPLAN op may rename or change shape. The canary discipline in `bootstrap/bplan_deps.py` should extend to RPLAN-using code (Phase G). |
 
 Gallowglass's `bootstrap/bplan_deps.py` enumerates the BPLAN names+arities we depend on
 and is sanity-tested against `vendor/reaver/src/hs/Plan.hs`. This is the canary for vendor bumps.
@@ -108,6 +108,30 @@ Claims in our specs about upstream behavior must cite a specific line range in
 `vendor/reaver/src/hs/<file>.hs` so future readers can verify mechanically.
 When `vendor.lock` is bumped, re-run the round-trip tests in `tests/reaver/`; if any
 pass, our derived docs are still accurate.
+
+### Why Phase G (RPLAN self-host) is a separate arc from the migration (2026-04-30)
+
+The Reaver migration arc (Phases 0/A/B+C/D/E/F, PRs #47–#53) made Reaver a viable
+runtime for gallowglass-emitted programs by retargeting the codegen and emitter
+to the canonical 3-opcode + BPLAN-named ABI. **It did not retarget
+`Compiler.main`'s I/O shape.** That's a separate concern with its own scope:
+
+- The migration is about *what shape gallowglass output takes* on the wire.
+- Phase G is about *how `Compiler.main` interacts with the host process*: stdin
+  reading, stdout writing, exit handling. RPLAN's `Input` / `Output` / etc.
+  named ops (`op 82` in `vendor/reaver/src/hs/Plan.hs`) are the substrate.
+
+Splitting the arcs has two payoffs:
+1. The migration's review surface stayed narrow — every PR was a focused codegen
+   or harness change. Mixing in an I/O re-shape would have doubled the diff and
+   the bisect surface.
+2. Phase G's risk profile is meaningfully larger (performance under pure-PLAN
+   evaluation; sensitivity to RPLAN ABI churn). Containing it lets the migration
+   ship as 0.99999-beta independently.
+
+The full Phase G scope and acceptance criteria live in `ROADMAP.md §"Phase G —
+RPLAN self-host validation on Reaver"`. Future sessions picking up the work
+should start there.
 
 ### Why XPLAN compatibility is being abandoned (2026-04-30)
 
@@ -157,8 +181,34 @@ land upstream eventually, but the BPLAN-named path works now and is what
 **Pattern matching uses the renumbered Elim opcode** (canonical 2, formerly
 xocore 3). The semantics are identical — the C-rules in
 `vendor/reaver/doc/plan-spec.txt` match xocore's Case_ exactly: pin → `p i`,
-law → `l a m b`, app → `a f x`, nat 0 → `z`, nat n>0 → `m (n-1)`. The
-6-arity argument shape is unchanged.
+law → `l a m b`, app → `a f x`, nat 0 → `z`, nat n>0 → `m (n-1)`.
+
+**Canonical wire form for Elim** (Sol clarified, 2026-04-30): the new ABI's
+unified calling convention requires **all pinned nats to have arity 1** — so
+`<0>`, `<1>`, `<2>` etc. all saturate with exactly one argument, which
+must itself be a saturated App carrying the actual op identity at its head.
+The canonical Elim form is therefore:
+
+    (<0> (2 p l a z m o))
+
+— `<0>` saturates with one arg (the App `(2 p l a z m o)`). The runtime
+evaluates the inner App, recognises N(2) at the head with 6 args saturating
+opcode 2, and dispatches Elim. **Not** `(<2> p l a z m o)` — under the
+new CC, `<2>` is also arity 1 and would saturate after one arg.
+
+The point of the unified CC is that XPLAN / BPLAN / Reaver all share the
+same evaluation rule (and the wrappers are easy to recognise and optimise
+even in a minimal implementation); only the actual syscall behaviour
+differs across runtimes.
+
+**What gallowglass emits today.** Reaver's runtime does not yet implement
+the canonical `(<0> (...))` dispatch — its `Plan.hs` only has `op 66`
+(BPLAN) and `op 82` (RPLAN) cases. So our `bootstrap/emit_pla.py` emits
+the bare symbol `Elim`, which Reaver resolves via `boot.plan`'s
+`(bplan (Elim p l a z m o))` binding to a BPLAN-named primitive. This is
+a transitional shape: it works today, but does not match the canonical
+wire form Sol described. When Reaver implements the unified CC upstream,
+`emit_pla.py`'s Elim translation should be revisited (one-line change).
 
 ---
 

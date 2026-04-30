@@ -56,12 +56,19 @@ def emit_top(v: Any) -> str:
     if is_nat(v):
         return str(int(v))
     if is_pin(v):
-        # `(#pin 2)` is the canonical PLAN Elim opcode pin (6-arity dispatch).
+        # `(#pin 2)` is gallowglass codegen's Elim reference (6-arity dispatch).
         # Reaver's runtime hardcodes `arity (P _ _ _) = 1`, so the opcode-pin
-        # form fires after only one arg. Translate to the BPLAN-named `Elim`
-        # primitive — `boot.plan` binds it via the `bplan` macro and Reaver
-        # dispatches via `op 66 ["Elim", ...]`. Programs must `@boot` to
-        # bring Elim into scope.
+        # form fires after only one arg. We translate to the bare symbol `Elim`,
+        # which `boot.plan` binds via the `bplan` macro to a BPLAN-named
+        # primitive Reaver dispatches at `op 66 ["Elim", ...]`. Programs must
+        # `@boot` to bring Elim into scope.
+        #
+        # CANONICAL FORWARD-GOING SHAPE (per Sol, 2026-04-30): the unified
+        # calling convention has all pinned nats arity 1, with dispatch on
+        # the inner App head — Elim becomes `(<0> (2 p l a z m o))`. Reaver
+        # doesn't yet implement this CC upstream; revisit this branch when it
+        # does. See DECISIONS.md §"The canonical 3-opcode ABI (target for
+        # Phase B/C, 2026-04-30)" for the full story.
         if is_nat(v.val) and v.val == 2:
             return 'Elim'
         return f'(#pin {emit_top(v.val)})'
@@ -104,9 +111,10 @@ def _emit_body(v: Any, depth: int) -> str:
         # Defensive: emit as bare numeric literal (parses to atom-embed).
         return str(i)
     if is_pin(v):
-        # Same Elim translation as in `emit_top`, applied in body context.
+        # Same Elim translation as `emit_top`, applied in body context.
         # The bare `Elim` symbol resolves via global lookup at compile-time
         # in Reaver's `compileExpr`, becoming an embedded constant.
+        # See `emit_top` for the canonical forward-going shape note.
         if is_nat(v.val) and v.val == 2:
             return 'Elim'
         return f'(#pin {emit_top(v.val)})'
