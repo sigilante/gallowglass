@@ -31,18 +31,23 @@ jobs:
       - name: Run all Python-only tests
         run: python3 -m pytest tests/bootstrap/ tests/compiler/ tests/prelude/ tests/sanity/ tests/demos/ -v --tb=short
 
-  # ── Reaver runtime gate ────────────────────────────────────────────────
-  # Compiles small programs through gallowglass, emits Plan Assembler text
-  # via bootstrap/emit_pla, runs them under Reaver (vendor/reaver), and
-  # asserts the traced output. This is the end-to-end gate against the
-  # canonical PLAN runtime.
-  #
-  # Runs everything under tests/reaver/:
-  #   - test_smoke.py        : 3 minimal end-to-end fixtures
-  #   - test_differential.py : 9 fixtures asserting harness ≡ Reaver output
+  # ── Reaver runtime gate (parallel matrix) ─────────────────────────────
+  # Two parallel jobs against vendor/reaver's plan-assembler:
+  #   - smoke        : 3 minimal end-to-end fixtures (test_smoke.py)
+  #   - differential : 9 fixtures asserting harness ≡ Reaver (test_differential.py)
+  # Same Nix + plan-assembler setup; the actions/cache step lets the second
+  # job hit the warm Nix store rather than rebuilding GHC from scratch.
   reaver:
-    name: Reaver runtime tests (smoke + differential)
+    name: Reaver ${{ matrix.suite }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: smoke
+            target: tests/reaver/test_smoke.py
+          - suite: differential
+            target: tests/reaver/test_differential.py
     steps:
       - uses: actions/checkout@v4
 
@@ -78,5 +83,5 @@ jobs:
         working-directory: vendor/reaver
         run: nix develop --command cabal build plan-assembler
 
-      - name: Run Reaver smoke tests
-        run: python3 -m pytest tests/reaver/ -v --tb=short
+      - name: Run ${{ matrix.suite }} tests
+        run: python3 -m pytest ${{ matrix.target }} -v --tb=short
