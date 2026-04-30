@@ -203,6 +203,7 @@ python3 -m pytest tests/            # all tests
 - `Show` and `Debug` are distinct typeclasses. Never conflate them.
 - Contracts must be statable from the mathematical specification alone.
 - Pin content is reduced to WHNF + law spine — **not** to full normal form. Do not assume or assert full normalization of pin contents.
+- Every user-facing diagnostic (`ParseError`, `ScopeError`, `TypecheckError`, `CodegenError`) carries a `Loc` and prints `file:line:col: error: <msg>`. New error sites in user-reachable paths must plumb a `Loc` through. Bare-message errors are reserved for compiler-internal invariants the user can't trigger.
 
 ## Bootstrap Codegen Pitfalls (read before touching `bootstrap/codegen.py`)
 

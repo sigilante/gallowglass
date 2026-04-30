@@ -185,6 +185,54 @@ PatVar (`| _kk → ...`) and PatWild (`| _ → ...`) succ arms are equivalent fo
 the purpose of capture lifting; PatVar additionally binds the predecessor to
 the named variable.
 
+#### 2.4.4 Effect handlers that resume with constructor values
+
+Handler op arms can pass any value to the resumed continuation, including
+constructor applications. The continuation is just a PLAN value (`kk val` is
+`App(kk, val)`), so resuming with a `Some x`, `MkPair a b`, or `Ok v` works
+with no special ceremony. The downstream do-bind binds the constructor value
+to its variable; pattern-matching on it happens wherever the bound variable
+flows next — typically in the `return` arm of the same handler.
+
+```gallowglass
+type MyOpt = | MyNone | MySome Nat
+
+eff Lookup {
+  lookup : () → MyOpt
+}
+
+let comp = oo ← lookup () in pure oo
+
+-- Handler resumes with `MySome 99`; the return arm pattern-matches it.
+let extracted = handle comp {
+  | return rr → match rr { | MyNone → 0 | MySome xx → xx }
+  | lookup _ kk → kk (MySome 99)
+}
+-- extracted = 99
+```
+
+The same pattern works for any constructor — unary (`Some`, `Ok`), binary
+(`MkPair`), or single-constructor records. See
+`tests/bootstrap/test_coverage_gaps.py::TestEffectHandlerEdgeCases` for the
+worked test cases (F6).
+
+#### 2.4.5 Reading existing code
+
+`Compiler.gls` (the self-hosting compiler in `compiler/src/`) is ~3000 lines
+of restricted-dialect Gallowglass and is the canonical reference for "how do
+I write \<X\>?" questions. It exercises every pattern in this section: the
+tagged-record idiom for variants, recursive Bool dispatch for the lexer's
+state machine, wildcard succ-arm captures throughout, effect handlers for
+the parser's error-reporting style, mutual recursion via shared-pin SCCs,
+and typeclass dictionary passing.
+
+Lines 25–205 cover the tagged-record encoding for AST nodes — start there
+for variant-type questions. The full prelude inlining at the top of the
+file also serves as a worked reference for the dialect-safe idioms.
+
+For shorter examples, the working demos in `demos/` (and `demos/README.md`)
+are calibrated to teach one concept at a time.
+
 ---
 
 ## 3. Pipeline
@@ -422,3 +470,11 @@ Sub-milestones:
   Exception: constant-folding of literal Nat arithmetic is permitted.
 - **One module per file.** The bootstrap has no multi-module file support yet.
 - **Error messages include source locations.** Every diagnostic includes `file:line:col`.
+  This applies to all four error classes — `ParseError`, `ScopeError`,
+  `TypecheckError`, `CodegenError` — and to any new error class added
+  later. When introducing a new `raise SomeError(...)` site, plumb a
+  `Loc` through unless the error truly arises from a compiler-internal
+  invariant (in which case the bare-message form is acceptable). The
+  field-feedback report flagged the absence of source locations on
+  codegen errors as the single biggest UX gap; F2 closed that gap and
+  the property must be preserved as new diagnostics get added.
