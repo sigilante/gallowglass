@@ -21,6 +21,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from dev.harness.plan import A, evaluate
+from dev.harness.bplan import bevaluate, _bapply, register_prelude_jets
 
 SRC_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'demos', 'csv_table.gls')
 MODULE = 'CsvTable'
@@ -29,18 +30,21 @@ _COMPILED = None
 
 
 def compile_demo():
+    """Compile the demo with the full Core prelude available for `use` imports.
+
+    F4 + F7: the demo now imports `Core.List.length`, `Core.Option`, etc. from
+    the prelude instead of redefining them inline.  build_with_prelude prepends
+    all eight Core modules and returns the merged compiled dict.
+    """
     global _COMPILED
     if _COMPILED is not None:
         return _COMPILED
-    from bootstrap.lexer import lex
-    from bootstrap.parser import parse
-    from bootstrap.scope import resolve
-    from bootstrap.codegen import compile_program
+    from bootstrap.build import build_with_prelude
     with open(SRC_PATH) as f:
         src = f.read()
-    prog = parse(lex(src, SRC_PATH), SRC_PATH)
-    resolved, _ = resolve(prog, MODULE, {}, SRC_PATH)
-    _COMPILED = compile_program(resolved, MODULE)
+    _COMPILED = build_with_prelude(MODULE, src)
+    # Register list jets so length/foldl etc. dispatch natively in the harness.
+    register_prelude_jets(_COMPILED)
     return _COMPILED
 
 
@@ -49,7 +53,7 @@ def eval_name(name):
     old = sys.getrecursionlimit()
     sys.setrecursionlimit(max(old, 10000))
     try:
-        return evaluate(c[f'{MODULE}.{name}'])
+        return bevaluate(c[f'{MODULE}.{name}'])
     finally:
         sys.setrecursionlimit(old)
 
@@ -71,30 +75,30 @@ class TestCsvTableCompilation(unittest.TestCase):
 class TestCsvTableUtilities(unittest.TestCase):
     """List and Nat utilities produce correct results."""
 
-    def test_list_length_nil(self):
-        """list_length Nil = 0"""
+    def test_prelude_length_nil(self):
+        """Core.List.length Nil = 0 (via the demo's `length` import)."""
         c = compile_demo()
-        nil = evaluate(c['CsvTable.Nil'])
-        result = evaluate(A(c['CsvTable.list_length'], nil))
+        nil = bevaluate(c['Core.List.Nil'])
+        result = bevaluate(_bapply(c['Core.List.length'], nil))
         self.assertEqual(result, 0)
 
-    def test_list_length_three(self):
-        """list_length of a 3-element list = 3"""
+    def test_prelude_length_three(self):
+        """length of a 3-element list = 3."""
         c = compile_demo()
-        result = evaluate(c['CsvTable.row0'])
-        length = evaluate(A(c['CsvTable.list_length'], result))
-        self.assertEqual(length, 3)
+        row0 = bevaluate(c['CsvTable.row0'])
+        result = bevaluate(_bapply(c['Core.List.length'], row0))
+        self.assertEqual(result, 3)
 
     def test_max_nat(self):
-        """max_nat 3 8 = 8"""
+        """max_nat 3 8 = 8 (defined locally in the demo)."""
         c = compile_demo()
-        result = evaluate(A(A(c['CsvTable.max_nat'], 3), 8))
+        result = bevaluate(_bapply(_bapply(c['CsvTable.max_nat'], 3), 8))
         self.assertEqual(result, 8)
 
     def test_max_nat_first_larger(self):
-        """max_nat 8 3 = 8"""
+        """max_nat 8 3 = 8."""
         c = compile_demo()
-        result = evaluate(A(A(c['CsvTable.max_nat'], 8), 3))
+        result = bevaluate(_bapply(_bapply(c['CsvTable.max_nat'], 8), 3))
         self.assertEqual(result, 8)
 
 
