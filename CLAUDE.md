@@ -207,26 +207,38 @@ python3 -m pytest tests/            # all tests
 
 ## Bootstrap Codegen Pitfalls (read before touching `bootstrap/codegen.py`)
 
-The bootstrap codegen has two known classes of bugs that re-emerge when new types or
-match patterns are introduced. Both are documented with fixes in DECISIONS.md §"Bootstrap
-Compiler" — read that section before writing new constructor match patterns.
+The bootstrap codegen has had several recurring classes of bugs around
+constructor pattern matching. All are now fixed and pinned with regression
+tests in `tests/bootstrap/test_codegen.py` and `test_coverage_gaps.py`. Read
+the fix log in `DECISIONS.md §"Bootstrap Compiler"` before writing new
+constructor match patterns — the same shapes keep surfacing edge cases.
 
-**Wildcard arm drop (`_compile_con_body_extraction`).** When a constructor match has
-exactly one non-wildcard arm and a wildcard, `_compile_con_match` routes to
-`_compile_con_body_extraction`. The wildcard arm *must* be passed through to
-`_compile_con_match_case3`; if it is not, all constructors (being PLAN Apps) match the
-single arm and the wildcard body is silently unreachable. Pattern: `| Con x → body | _ → default`.
-Symptom: `f(OtherConstructor)` returns the same result as `f(Con ...)`. Fix: pass `wild_arm`
-explicitly. This bit us during M8.6 for `planval_is_nat`, `planval_is_app`, etc.
+**Wildcard arm drop (`_compile_con_body_extraction`).** When a constructor
+match has exactly one non-wildcard arm and a wildcard, `_compile_con_match`
+routes to `_compile_con_body_extraction`. The wildcard arm *must* be passed
+through to `_compile_con_match_case3`; if it is not, all constructors (being
+PLAN Apps) match the single arm and the wildcard body is silently unreachable.
+Pattern: `| Con x → body | _ → default`. Symptom: `f(OtherConstructor)`
+returns the same result as `f(Con ...)`. Fix: pass `wild_arm` explicitly.
+This bit us during M8.6 for `planval_is_nat`, `planval_is_app`, etc.
 
-**Mixed-arity binary path (`_build_app_handler`).** When a type has both unary (arity=1)
-and binary (arity=2) field-bearing constructors, the binary path is active (max_arity=2).
-Unary constructors encode as `A(Nat(tag), field)` — their `outer_fun` is a bare Nat.
-The inner Case_ Nat dispatch (`z`/`m`) fires for them, *not* the App handler. If the
-unary arm has tag=0, its body must be compiled in `handler_env` with `field=N(arg_idx)`
-and used as `z_body`. Unary arms with tag>0 require a lambda-lifted `m_body` sub-law (not
-yet implemented; those test cases are skipped). Symptom: `emit_pval (PNat n)` returns
-`<0>` (P(0)) instead of bytes. This bit us during M8.6 for `emit_pval_dispatch`.
+**Mixed-arity binary path (`_build_app_handler`).** When a type has both
+unary (arity=1) and binary (arity=2) field-bearing constructors, the binary
+path is active (max_arity=2). Unary constructors encode as `A(Nat(tag), field)`
+— their `outer_fun` is a bare Nat. The inner Case_ Nat dispatch (`z`/`m`) fires
+for them, *not* the App handler. The unary tag=0 case uses the unary arm body
+as `z_body`; the unary tag>0 case uses a lambda-lifted `m_body` sub-law. Both
+cases are now implemented and tested (`test_match_mixed_arity_*`).
 
-The **prelude types** (Option, Result, List) are not affected because they only use
-exhaustive 2-arm matches with either same-arity constructors or one nullary + one unary.
+**`first_tag > 0` in `_build_precompiled_nat_dispatch`.** When the
+field-bearing constructors all have tag > 0 (e.g. `type Tree = | Leaf | Node X
+| Branch X Y` where Leaf is nullary tag=0), the inner tag dispatch's
+multi-arm branch previously ignored `first_tag` and used `tag_val_pairs[0][1]`
+as the `zero_val` of an op2 dispatch. The single-arm branch handled this
+correctly; the multi-arm branch did not. Symptom: `Branch a b` arms returned
+`<0>` (P(0)). Fix: when `first_tag > 0`, set `z_val = wild`, shift all tags
+down by 1, and recurse. (F11 from the field-feedback follow-ups.)
+
+The **prelude types** (Option, Result, List) only use 2-constructor matches.
+The above bugs surface in user-defined types with three or more constructors
+in mixed-arity combinations — write tests when you add such a type.
