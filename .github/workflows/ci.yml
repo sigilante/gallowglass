@@ -36,8 +36,12 @@ jobs:
   # via bootstrap/emit_pla, runs them under Reaver (vendor/reaver), and
   # asserts the traced output. This is the end-to-end gate against the
   # canonical PLAN runtime.
+  #
+  # Runs everything under tests/reaver/:
+  #   - test_smoke.py        : 3 minimal end-to-end fixtures
+  #   - test_differential.py : 9 fixtures asserting harness ≡ Reaver output
   reaver:
-    name: Reaver runtime smoke
+    name: Reaver runtime tests (smoke + differential)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
