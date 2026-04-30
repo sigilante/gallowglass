@@ -30,3 +30,49 @@ jobs:
 
       - name: Run all Python-only tests
         run: python3 -m pytest tests/bootstrap/ tests/compiler/ tests/prelude/ tests/sanity/ tests/demos/ -v --tb=short
+
+  # ── Reaver runtime gate ────────────────────────────────────────────────
+  # Compiles small programs through gallowglass, emits Plan Assembler text
+  # via bootstrap/emit_pla, runs them under Reaver (vendor/reaver), and
+  # asserts the traced output. This is the end-to-end gate against the
+  # canonical PLAN runtime.
+  reaver:
+    name: Reaver runtime smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Set up vendored upstreams (vendor.lock)
+        run: ./tools/vendor.sh
+
+      - name: Verify vendor pins
+        run: ./tools/vendor.sh verify
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Cache Nix store
+        uses: actions/cache@v4
+        with:
+          path: /nix/store
+          key: nix-${{ runner.os }}-${{ hashFiles('vendor/reaver/flake.lock') }}
+          restore-keys: nix-${{ runner.os }}-
+
+      - name: Pre-build plan-assembler
+        working-directory: vendor/reaver
+        run: nix develop --command cabal build plan-assembler
+
+      - name: Run Reaver smoke tests
+        run: python3 -m pytest tests/reaver/ -v --tb=short
