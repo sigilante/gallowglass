@@ -199,13 +199,19 @@ blocker exists.
       function whose return value is never used (the comment at 1669 says
       so). Delete all three; call `_build_nat_dispatch` directly.
 
-- [ ] **C5. `glass_ir.py` conflates two concerns under one name.**
-      `render_value` debug-dumps a raw PLAN value; the AST renderer emits the
-      spec-defined Glass IR fragment. CLAUDE.md gospel: "Show is for users,
-      Debug is for developers — never conflate them"; this file conflates
-      them. Move debug rendering to `glass_ir_debug.py`; rename `render_value`
-      to `debug_dump_plan_value`; `glass_ir.py` exports only the spec
-      renderer.
+- [x] **C5. `glass_ir.py` conflates two concerns under one name.** Split.
+      The debug renderer (`render_value`, `render`, `render_entry`,
+      `decode_name`) moved to a new `bootstrap/glass_ir_debug.py` and was
+      renamed to honour the gospel's `Show` vs `Debug` distinction:
+      `render_value` → `debug_dump_plan_value`, `render` →
+      `debug_dump_all`, `render_entry` → `debug_dump_entry`. `decode_name`
+      kept its name (it's a utility, not a render). `glass_ir.py` no
+      longer imports from `dev.harness.plan` and exports only the
+      spec-conforming AST renderer (`render_fragment`, `render_decl`,
+      `render_module`, etc.). Updated the single user of the debug
+      renderer (`tests/bootstrap/test_codegen.py`) with a
+      backward-compatible import alias so the existing `test_render_*`
+      tests keep their names. (PR: cleanup/c5-glass-ir-split)
 
 - [ ] **C6. Codegen function names trace bug-discovery order.** Adopt the
       cleaner GLS self-host vocabulary (Compiler.gls uses
