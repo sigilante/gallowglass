@@ -744,7 +744,23 @@ class TestDeepRecursion:
     Note: The Python PLAN evaluator (dev/harness/plan.py) uses recursive kal()
     calls and hits Python's default recursion limit (~1000) for deep evaluations.
     Tests that exceed this are marked xfail to document the known limitation.
+
+    The depth-guard in `evaluate()` (formerly `if _depth > 10000: return val`)
+    used to silently return the partial value, so the `except RecursionError`
+    arms below would never fire — tests would assert against an `A` node and
+    pass-with-wrong-result.  AUDIT.md B1 fixed the guard to raise; the
+    `pin_depth_guard_raises` test below is the contract for that behaviour.
     """
+
+    def test_evaluate_depth_guard_raises(self):
+        """`evaluate()` raises `RecursionError` past `EVALUATE_DEPTH_LIMIT`
+        rather than silently returning a partial value (AUDIT.md B1)."""
+        from dev.harness.plan import evaluate, EVALUATE_DEPTH_LIMIT, P, N
+        v = N(0)
+        for _ in range(EVALUATE_DEPTH_LIMIT + 5):
+            v = P(v)
+        with pytest.raises(RecursionError):
+            evaluate(v)
 
     def test_deep_nat_recursion_100(self):
         """Recursive function called 100 times deep."""

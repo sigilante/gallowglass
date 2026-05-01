@@ -64,16 +64,27 @@ blocker exists.
 
 ## Sharp edges
 
-- [ ] **B1. `dev/harness/plan.py:493` — depth guard returns the partial value
-      instead of raising.** `if _depth > 10000: return val` silently produces
-      an `A` node where callers expect a `Nat`. The four `TestDeepRecursion`
-      tests catch `RecursionError` to skip; that handler now never fires.
-      Raise `RecursionError("PLAN evaluator depth exceeded")`.
+- [x] **B1. `dev/harness/plan.py:493` — depth guard returns the partial value
+      instead of raising.** Both `evaluate()` (plan.py) and `bevaluate()`
+      (bplan.py — same defect, same shape) now raise `RecursionError` past
+      named limits (`EVALUATE_DEPTH_LIMIT = 10000`,
+      `BEVALUATE_DEPTH_LIMIT = 100000`) instead of silently returning the
+      partial value. Contract pinned by
+      `TestDeepRecursion.test_evaluate_depth_guard_raises` in
+      `tests/bootstrap/test_coverage_gaps.py`. The four pre-existing
+      stress tests already had `except RecursionError: pytest.skip(...)`
+      arms that never fired before; they now correctly skip when Python's
+      own recursion limit trips first. (PR: fix/harness-depth-guard-and-pin-store-toctou)
 
-- [ ] **B2. `dev/harness/pin_store.py:37-41` — TOCTOU on save.**
-      Existence-check → `open(wb)` → write, no atomic rename. Latent today
-      (no `make -j`), active the moment CI parallelizes. Write to `.tmp` then
-      `os.replace()`.
+- [x] **B2. `dev/harness/pin_store.py:37-41` — TOCTOU on save.**
+      `PinStore.save()` now writes to a per-process unique tmp path
+      (`{path}.tmp.{pid}.{8-hex}`) and `os.replace()`s it into place
+      atomically, with best-effort cleanup of the tmp on any failure
+      (including `KeyboardInterrupt`). Three new tests in
+      `TestPinStoreAtomicWrite` (`tests/sanity/test_pin_store.py`) pin
+      the guarantees: no tmp leakage on success; no tmp *or* partial file
+      on mid-write failure; idempotent re-save leaves a clean tree.
+      (PR: fix/harness-depth-guard-and-pin-store-toctou)
 
 - [ ] **B3. 11 of 14 `CodegenError` sites lack `Loc`.** Notably
       `unknown global` (1270), `unknown constructor` (1910), `empty match`
