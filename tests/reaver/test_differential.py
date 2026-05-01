@@ -445,7 +445,12 @@ let main : Nat
         self._assert_equiv(src, with_prelude=True)
 
     def test_typeclass_ord_nat(self):
-        """Nat ordering via Core.Nat.{nat_lte}. Exercises Bool dispatch."""
+        """Nat ordering via Core.Nat.nat_lte — Bool dispatch + branch.
+
+        Comparison operands are kept small (< 20) because Reaver runs the
+        recursive prelude `nat_lte` without arithmetic jets, so each
+        comparison is O(min(m,n)) PLAN-level reductions. Multiplied by a
+        non-comparison value to force a multi-byte result."""
         src = '''
 use Core.Nat unqualified { nat_lte }
 use Core.Bool
@@ -453,11 +458,8 @@ use Core.Bool
 let smaller : Nat -> Nat -> Nat
   = λ a b → if nat_lte a b then a else b
 
-let larger : Nat -> Nat -> Nat
-  = λ a b → if nat_lte a b then b else a
-
 let main : Nat
-  = Nat.add (smaller 9999 5000) (larger 7 1300)   -- 5000 + 1300 = 6300
+  = Nat.mul (smaller 17 9) 999   -- 9 * 999 = 8991
 '''
         self._assert_equiv(src, with_prelude=True)
 

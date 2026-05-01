@@ -84,4 +84,36 @@ jobs:
         run: nix develop --command cabal build plan-assembler
 
       - name: Run ${{ matrix.suite }} tests
-        run: python3 -m pytest ${{ matrix.target }} -v --tb=short
+        run: python3 -m pytest ${{ matrix.target }} -v --tb=short --junit-xml=/tmp/junit.xml
+
+      - name: Per-test pass/fail to job summary
+        if: always()
+        run: |
+          python3 << 'EOF' >> $GITHUB_STEP_SUMMARY
+          import xml.etree.ElementTree as ET
+          tree = ET.parse('/tmp/junit.xml')
+          root = tree.getroot()
+          suite = root.find('testsuite') or root
+          totals = {'pass': 0, 'fail': 0, 'error': 0, 'skip': 0}
+          rows = []
+          for case in suite.iter('testcase'):
+              name = case.get('name', '?')
+              t = float(case.get('time', '0') or '0')
+              if case.findall('failure'):
+                  res, sym = 'FAIL', ':x:'; totals['fail'] += 1
+              elif case.findall('error'):
+                  res, sym = 'ERROR', ':boom:'; totals['error'] += 1
+              elif case.findall('skipped'):
+                  res, sym = 'SKIP', ':fast_forward:'; totals['skip'] += 1
+              else:
+                  res, sym = 'PASS', ':white_check_mark:'; totals['pass'] += 1
+              rows.append((name, res, sym, t))
+          print(f"## ${{ matrix.suite }} — "
+                f"{totals['pass']} passed, {totals['fail']} failed, "
+                f"{totals['error']} errors, {totals['skip']} skipped")
+          print()
+          print('| Result | Test | Time |')
+          print('|---|---|---|')
+          for name, res, sym, t in rows:
+              print(f'| {sym} `{res}` | `{name}` | {t:.2f}s |')
+          EOF
