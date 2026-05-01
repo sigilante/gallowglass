@@ -20,20 +20,20 @@ blocker exists.
 
 ## Blockers
 
-- [ ] **A1. `bootstrap/codegen.py:2027` — outer locals dropped in mixed
+- [x] **A1. `bootstrap/codegen.py:2027` — outer locals dropped in mixed
       nullary/field dispatch.** When a type has ≥2 explicitly-named nullary
-      constructors *and* ≥1 field-bearing constructor, secondary nullary arms
-      are compiled with `pred_env = Env(globals=env.globals, arity=1)`,
-      dropping `env.locals`. Repro:
-      ```gallowglass
-      type XY = | X | Y | Extra Nat
-      let check : XY → Nat → Nat
-        = λ t v → match t { | X → 0 | Y → v | Extra n → n }
-      ```
-      Same shape as the published "wildcard arm drop" pitfall, different
-      sub-path. Fix: mirror the lambda-lifting in `_make_succ_law` (lines
-      1780–1818) — collect free vars across `remaining_nullary + [wild_body]`,
-      allocate lifted params, partial-apply at the call site.
+      constructors *and* ≥1 field-bearing constructor, secondary nullary
+      arms were compiled with `pred_env = Env(globals=env.globals,
+      arity=1)`, dropping `env.locals` and `self_ref_name`. Fixed by
+      mirroring `make_succ_law`'s capture pattern: collect free vars across
+      `remaining_nullary` bodies plus `wild_body` (and check self-ref
+      usage), build a lifted law of arity `n_cap + 1`, partial-apply at
+      the outer env's perspective. Pitfall now documented in CLAUDE.md
+      "Bootstrap Codegen Pitfalls"; six regression tests `test_a1_*` in
+      `tests/bootstrap/test_codegen.py` pin the fix shape (secondary-tag
+      arm uses outer param; tag-0 arm; field arm; secondary-tag uses
+      self-ref + outer; three-nullary chain; top-level no-regression).
+      (PR: fix/codegen-mixed-nullary-locals)
 
 - [x] **A2. CLAUDE.md "Build and Test" snippet does not run.** Used `module`
       where the parser keyword is `mod`, and referenced `sys.argv[1]` without

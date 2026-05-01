@@ -290,6 +290,19 @@ correctly; the multi-arm branch did not. Symptom: `Branch a b` arms returned
 `<0>` (P(0)). Fix: when `first_tag > 0`, set `z_val = wild`, shift all tags
 down by 1, and recurse. (F11 from the field-feedback follow-ups.)
 
+**Outer locals dropped in mixed nullary/field dispatch
+(`_compile_con_match_case3`).** When a type has ≥2 explicitly-named nullary
+constructors *and* ≥1 field-bearing constructor, the secondary nullary arms
+(tags > 0) used to be compiled with `pred_env = Env(globals=env.globals,
+arity=1)` — discarding `env.locals` and any `self_ref_name`. Arm bodies that
+referenced an outer-lambda parameter raised `CodegenError: unbound
+variable`. Pattern: `type XY = | X | Y | Extra Nat; λ t v → match t { | X →
+0 | Y → v | Extra n → n }`. Fix: mirror `make_succ_law`'s capture pattern —
+collect free vars across `remaining_nullary` bodies plus `wild_body`, build
+a lifted law of arity `n_cap + 1`, partial-apply at the outer env's
+perspective. (AUDIT.md A1; regression tests `test_a1_*` in
+`tests/bootstrap/test_codegen.py`.)
+
 The **prelude types** (Option, Result, List) only use 2-constructor matches.
 The above bugs surface in user-defined types with three or more constructors
 in mixed-arity combinations — write tests when you add such a type.
