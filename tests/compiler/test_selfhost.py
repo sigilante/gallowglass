@@ -770,5 +770,117 @@ class TestSelfhostPathA(unittest.TestCase):
             f'Path A output does not end with newline: {output[-20:]!r}')
 
 
+# ---------------------------------------------------------------------------
+# TestSelfhostGolden: byte-identity gate against checked-in goldens (AUDIT.md A4)
+# ---------------------------------------------------------------------------
+#
+# With Path A skipped pending Phase G, byte-identity is the only correctness
+# criterion for self-host emission — but `TestSelfhostEmitProgram` only
+# verifies structural shape (starts with `(#bind`, bind count matches).
+# Emit-layer drift would slip through.
+#
+# This class compares Path B output against checked-in golden files.  We use
+# three scopes:
+#   - snippet: 82 bytes, two trivial bindings.  Smallest possible drift signal.
+#   - curated: 1217 bytes, exercises PNat / PApp / PLaw / PPin via the same
+#              fixture TestSelfhostEmitProgram already uses.
+#   - mixed:   2903 bytes, mixed-arity (Leaf/Node/Wrap) constructor matching,
+#              the codepath that hosted the F11 + AUDIT.md A1 bugs.
+#
+# Each is checked into `tests/compiler/golden/path_b_<label>.pla`.  The full
+# Compiler.gls Path B run takes minutes (Path A territory) and is deferred to
+# Phase G; these three small fixtures cover the same emit-layer logic in
+# under a tenth of a second.
+#
+# When the goldens are intentionally outdated (e.g. an emit-format change),
+# regenerate by running with `UPDATE_GOLDEN=1`:
+#
+#     UPDATE_GOLDEN=1 python3 -m pytest tests/compiler/test_selfhost.py \
+#         -k TestSelfhostGolden
+#
+# Then inspect the diff with `git diff tests/compiler/golden/` and commit.
+# ---------------------------------------------------------------------------
+
+GOLDEN_DIR = os.path.join(os.path.dirname(__file__), 'golden')
+
+# Snippet shared with TestSelfhostEmitProgram.test_tiny_snippet_path_b — keep
+# in sync.  If you change one, change the other (and regenerate the golden).
+_GOLDEN_SNIPPET_GLS = 'let answer : Nat = 42\nlet double : Nat\n  = answer\n'
+
+
+class TestSelfhostGolden(unittest.TestCase):
+    """
+    Path B byte-identity gate against checked-in golden files.
+
+    See module-level comment for rationale and the UPDATE_GOLDEN workflow.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.bc = compile_module_bplan()
+
+    def _compile(self, src, module):
+        from bootstrap.lexer import lex
+        from bootstrap.parser import parse
+        from bootstrap.scope import resolve
+        from bootstrap.codegen import compile_program
+        prog = parse(lex(src, '<golden>'), '<golden>')
+        resolved, _ = resolve(prog, module, {}, '<golden>')
+        return compile_program(resolved, module)
+
+    def _check_golden(self, label, src, module):
+        actual = run_path_b(self.bc, self._compile(src, module))
+        self.assertIsNotNone(actual,
+            f'run_path_b returned None for {label!r} — gls_bytes_decode failed')
+        path = os.path.join(GOLDEN_DIR, f'path_b_{label}.pla')
+
+        if os.environ.get('UPDATE_GOLDEN'):
+            os.makedirs(GOLDEN_DIR, exist_ok=True)
+            with open(path, 'wb') as f:
+                f.write(actual)
+            self.skipTest(f'UPDATE_GOLDEN: rewrote {path} ({len(actual)} bytes)')
+
+        self.assertTrue(os.path.exists(path),
+            f'Golden file missing: {path}\n'
+            f'Generate with: UPDATE_GOLDEN=1 python3 -m pytest '
+            f'tests/compiler/test_selfhost.py -k TestSelfhostGolden')
+        with open(path, 'rb') as f:
+            expected = f.read()
+        if actual != expected:
+            # Locate the first byte that diverges to make the failure readable.
+            for i, (a, b) in enumerate(zip(actual, expected)):
+                if a != b:
+                    diverge_at = i
+                    break
+            else:
+                diverge_at = min(len(actual), len(expected))
+            ctx_lo = max(0, diverge_at - 20)
+            ctx_hi = diverge_at + 40
+            self.fail(
+                f'Path B output for {label!r} drifted from golden.\n'
+                f'  golden:  {len(expected)} bytes ({path})\n'
+                f'  actual:  {len(actual)} bytes\n'
+                f'  diverge at byte {diverge_at}:\n'
+                f'    expected: {expected[ctx_lo:ctx_hi]!r}\n'
+                f'    actual:   {actual[ctx_lo:ctx_hi]!r}\n'
+                f'If this drift is intentional, regenerate with:\n'
+                f'  UPDATE_GOLDEN=1 python3 -m pytest '
+                f'tests/compiler/test_selfhost.py -k TestSelfhostGolden\n'
+                f'then inspect `git diff tests/compiler/golden/` before committing.'
+            )
+
+    def test_golden_snippet(self):
+        """Two-binding snippet: smallest drift signal."""
+        self._check_golden('snippet', _GOLDEN_SNIPPET_GLS, 'Test')
+
+    def test_golden_curated(self):
+        """Curated GLS exercising PNat/PApp/PLaw/PPin shapes."""
+        self._check_golden('curated', _CURATED_GLS, _CURATED_MODULE)
+
+    def test_golden_mixed(self):
+        """Mixed-arity (Leaf/Node/Wrap) — codepath that hosted F11 and A1."""
+        self._check_golden('mixed', _MIXED_GLS, _MIXED_MODULE)
+
+
 if __name__ == '__main__':
     unittest.main()
