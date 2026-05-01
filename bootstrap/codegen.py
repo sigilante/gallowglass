@@ -1918,29 +1918,29 @@ class Compiler:
             # For a single-constructor type (like a record/singleton), just bind fields
             if len(con_arms) == 1:
                 info, field_pats, body = con_arms[0]
-                return self._compile_con_body_extraction(
+                return self._compile_single_arm_field_bind(
                     scrutinee, info, field_pats, body, env, name_hint, wild_arm, loc=loc
                 )
             else:
-                return self._compile_con_match_case3(scrutinee, con_arms, wild_arm, env, name_hint, loc=loc)
+                return self._compile_adt_dispatch(scrutinee, con_arms, wild_arm, env, name_hint, loc=loc)
 
-    def _compile_con_body_extraction(self, scrutinee, info, field_pats, body, env, name_hint,
+    def _compile_single_arm_field_bind(self, scrutinee, info, field_pats, body, env, name_hint,
                                       wild_arm=None, loc=None):
         """
         Bind field patterns of a constructor and compile the body.
-        Uses _compile_con_match_case3 for single-constructor field extraction.
+        Uses _compile_adt_dispatch for single-constructor field extraction.
         wild_arm: the wildcard arm from the enclosing match, if any; passed through so
         non-matching constructors fall to the default instead of returning P(0).
         """
         if info.arity == 0:
             return self._compile_expr(body, env, name_hint)
 
-        # Use a single-arm version of _compile_con_match_case3, preserving wild_arm
+        # Use a single-arm version of _compile_adt_dispatch, preserving wild_arm
         # so that constructors other than `info` dispatch to the wildcard body.
         single_arm = [(info, field_pats, body)]
-        return self._compile_con_match_case3(scrutinee, single_arm, wild_arm, env, name_hint, loc=loc)
+        return self._compile_adt_dispatch(scrutinee, single_arm, wild_arm, env, name_hint, loc=loc)
 
-    def _compile_con_match_case3(self, scrutinee: Any, con_arms, wild_arm, env: Env, name_hint: str, loc=None) -> Any:
+    def _compile_adt_dispatch(self, scrutinee: Any, con_arms, wild_arm, env: Env, name_hint: str, loc=None) -> Any:
         """
         Compile a multi-constructor match where some constructors have fields.
 
@@ -2057,12 +2057,12 @@ class Compiler:
         if not field_arms:
             app_handler = id_pin
         else:
-            app_handler = self._build_app_handler(field_arms, wild_body, wild_var_con, env, name_hint, loc=loc)
+            app_handler = self._build_field_arm_law(field_arms, wild_body, wild_var_con, env, name_hint, loc=loc)
 
         # --- Assemble Case_ dispatch ---
         return self._make_reflect_dispatch(app_handler, z_body, m_body, scrutinee, env)
 
-    def _build_app_handler(self, field_arms, wild_body, wild_var_con, env: Env, name_hint: str, loc=None) -> Any:
+    def _build_field_arm_law(self, field_arms, wild_body, wild_var_con, env: Env, name_hint: str, loc=None) -> Any:
         """
         Build the App-handler law for Case_.
 
@@ -2158,7 +2158,7 @@ class Compiler:
                                         self_ref_name=handler_env.self_ref_name,
                                         locals=dict(handler_env.locals))
                         pred_ref = N(n_cap + 1)
-                        m_inner = self._build_precompiled_nat_dispatch(
+                        m_inner = self._build_tag_chain(
                             [(info.tag - 1, arm_body)], wild_body, None,
                             pred_ref, m_ext_env, f'{name_hint}_tag_m'
                         )
@@ -2182,7 +2182,7 @@ class Compiler:
                     bv = self._compile_expr(body, arm_env, f'{name_hint}_{info.fq_name.split(".")[-1]}')
                     tag_val_pairs.append((info.tag, bv))
                 # Dispatch on outer_fun using a precompiled nat dispatch
-                handler_body = self._build_precompiled_nat_dispatch(
+                handler_body = self._build_tag_chain(
                     tag_val_pairs, wild_body, wild_var_con, N(fun_idx), handler_env, f'{name_hint}_tag'
                 )
 
@@ -2237,7 +2237,7 @@ class Compiler:
                         arm_env.locals[pats[1].name] = field2_inner_idx
                     bv = self._compile_expr(body, arm_env, f'{name_hint}_{info.fq_name.split(".")[-1]}')
                     tag_val_pairs.append((info.tag, bv))
-                inner_law_body = self._build_precompiled_nat_dispatch(
+                inner_law_body = self._build_tag_chain(
                     tag_val_pairs, wild_body, wild_var_con, N(inner_tag_idx), inner_env, f'{name_hint}_inner_tag'
                 )
 
@@ -2293,7 +2293,7 @@ class Compiler:
                         f'{name_hint}_{m_info.fq_name.split(".")[-1]}'
                     )
                     m_tag_val_pairs.append((m_info.tag - 1, m_arm_compiled))
-                m_dispatch = self._build_precompiled_nat_dispatch(
+                m_dispatch = self._build_tag_chain(
                     m_tag_val_pairs, wild_body, wild_var_con,
                     pred_ref_m, m_ext_env, f'{name_hint}_m_tag'
                 )
@@ -2354,7 +2354,7 @@ class Compiler:
             step = bapp(step, scrutinee)
             return step
 
-    def _build_precompiled_nat_dispatch(self, tag_val_pairs: list, wild_body, wild_var,
+    def _build_tag_chain(self, tag_val_pairs: list, wild_body, wild_var,
                                          scrutinee: Any, env: Env, name_hint: str,
                                          wild_precompiled: Any = None) -> Any:
         """
@@ -2403,7 +2403,7 @@ class Compiler:
             ext_env, pred_ref = make_ext_env(env)
             remaining = [(t - tag_val_pairs[idx][0] - 1, v) for t, v in tag_val_pairs[idx+1:]]
             if remaining:
-                body = self._build_precompiled_nat_dispatch(
+                body = self._build_tag_chain(
                     remaining, wild_body, wild_var, pred_ref, ext_env, name_hint,
                     wild_precompiled=wild_precompiled
                 )
@@ -2430,7 +2430,7 @@ class Compiler:
             z_val = wild_val if wild_val is not None else body_nat(0, env.arity)
             ext_env, pred_ref = make_ext_env(env)
             shifted = [(t - 1, v) for t, v in tag_val_pairs]
-            inner = self._build_precompiled_nat_dispatch(
+            inner = self._build_tag_chain(
                 shifted, wild_body, wild_var,
                 pred_ref, ext_env, name_hint,
                 wild_precompiled=wild_precompiled,
@@ -2450,7 +2450,7 @@ class Compiler:
         succ = make_succ_compiled(0)
         return self._make_op2_dispatch(zero_val, succ, scrutinee, env)
 
-    def _make_op2_dispatch_reflect(self, zero_val: Any, app_handler: Any,
+    def _build_elim_app_dispatch(self, zero_val: Any, app_handler: Any,
                                     scrutinee: Any, env: Env) -> Any:
         """
         Build Case_ dispatch where the App branch uses app_handler.
@@ -2735,7 +2735,7 @@ class Compiler:
                 wild_arm = (pat, body)
         if not con_arms:
             return self._compile_fallback_match(scrutinee, arms, env, name_hint, loc=loc)
-        return self._compile_con_match_case3(scrutinee, con_arms, wild_arm, env, name_hint, loc=loc)
+        return self._compile_adt_dispatch(scrutinee, con_arms, wild_arm, env, name_hint, loc=loc)
 
     # -----------------------------------------------------------------------
     # Tuples
@@ -2972,7 +2972,7 @@ class Compiler:
 
         tag_val_pairs.sort(key=lambda t: t[0])
 
-        dispatch_body = self._build_precompiled_nat_dispatch(
+        dispatch_body = self._build_tag_chain(
             tag_val_pairs, None, None,
             N(op_tag_idx), dispatch_env, f'{name_hint}_dispatch',
             wild_precompiled=forward_body
@@ -3231,7 +3231,7 @@ class Compiler:
         # body: nat dispatch on N(n+1) returning N(1)..N(n)
         selector_env = Env(globals=self.env.globals, arity=n + 1)
         tag_val_pairs = [(j, N(j + 1)) for j in range(n)]
-        dispatch_body = self._build_precompiled_nat_dispatch(
+        dispatch_body = self._build_tag_chain(
             tag_val_pairs, None, None, N(n + 1), selector_env, '_selector'
         )
         selector_law = L(n + 1, 0, dispatch_body)

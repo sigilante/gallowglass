@@ -48,7 +48,7 @@ law arity = len(user_params). `_compile_fix` in `bootstrap/codegen.py`.
 ### ✅ M9.2 — Tuples
 
 `(a, b)` encodes as `A(tag_0, a, b)` using quote form for tag 0 in law bodies.
-`PatTuple` dispatches via `_compile_con_match_case3` with ConInfo(tag=0, arity=2).
+`PatTuple` dispatches via `_compile_adt_dispatch` with ConInfo(tag=0, arity=2).
 
 ### ✅ M9.3 — Mutual recursion (SCC compilation)
 

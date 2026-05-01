@@ -98,8 +98,8 @@ blocker exists.
         propagated from `_compile_constrained_app`.
       - `_compile_match` captures `expr.loc` and threads it through
         `_compile_{nat,con,tuple,fallback}_match` via a new
-        `loc=None` keyword. `_compile_con_match_case3`,
-        `_compile_con_body_extraction`, and `_build_app_handler` chain
+        `loc=None` keyword. `_compile_adt_dispatch`,
+        `_compile_single_arm_field_bind`, and `_build_field_arm_law` chain
         the same kwarg, surfacing the match's loc on `unknown
         constructor`, `only 2-tuples supported`, `empty match`, and
         `arity > 2 not yet supported`. Pattern-specific sites prefer
@@ -238,19 +238,25 @@ blocker exists.
       backward-compatible import alias so the existing `test_render_*`
       tests keep their names. (PR: cleanup/c5-glass-ir-split)
 
-- [ ] **C6. Codegen function names trace bug-discovery order.** Adopt the
-      cleaner GLS self-host vocabulary (Compiler.gls uses
+- [x] **C6. Codegen function names trace bug-discovery order.** Renamed
+      the dispatch family in `bootstrap/codegen.py` to match the
+      vocabulary the GLS self-host already uses (Compiler.gls names them
       `cg_build_unary_z_body`, `cg_build_binary_handler_body`, etc.):
-      | current | proposed |
+      | old name | new name |
       |---|---|
       | `_compile_con_match_case3` | `_compile_adt_dispatch` |
       | `_compile_con_body_extraction` | `_compile_single_arm_field_bind` |
       | `_build_app_handler` | `_build_field_arm_law` |
       | `_build_precompiled_nat_dispatch` | `_build_tag_chain` |
       | `_make_op2_dispatch_reflect` | `_build_elim_app_dispatch` |
-      Defer the larger Maranget decision-tree refactor — regression tests
-      pin the current shape well enough that the rewrite's risk currently
-      exceeds its value.
+      Pure rename: every call site was internal. Doc references in
+      CLAUDE.md (Bootstrap Codegen Pitfalls), DECISIONS.md, BOOTSTRAP.md,
+      ROADMAP.md, CODEGEN_PLAN.md, and the test-file comments were
+      swept in the same pass so the war-diary still names live
+      symbols. The larger Maranget decision-tree refactor is deferred —
+      regression tests pin the current shape well enough that the
+      rewrite's risk currently exceeds its value. (PR:
+      refactor/c6-codegen-rename-dispatch)
 
 ## Long view (deferred, do not start without revisiting)
 

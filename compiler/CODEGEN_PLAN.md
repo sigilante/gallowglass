@@ -11,7 +11,7 @@
 The single most important constraint throughout this section. The bootstrap codegen
 creates a fresh `pred_env` (arity=1, no locals) for arm[1+] when there are:
 - Multiple App-bearing constructor arms in one `match`, OR
-- Multiple nullary constructor arms compiled via nat-dispatch (handled in `_compile_con_match_case3`)
+- Multiple nullary constructor arms compiled via nat-dispatch (handled in `_compile_adt_dispatch`)
 
 **Rule:** Every `match` on an algebraic type must have **at most one App arm** whose body
 references outer lambda parameters. Violate this and you get `unbound variable` errors.
@@ -253,7 +253,7 @@ cg_make_pred_succ_law : Expr → Nat → CEnv → ConTable → Nat → PlanVal
 
 ## 6. Constructor Match Compilation
 
-Mirrors Python `_compile_con_match` and `_compile_con_match_case3`.
+Mirrors Python `_compile_con_match` and `_compile_adt_dispatch`.
 
 ```
 cg_compile_con_match : PlanVal → List MatchArm → CEnv → ConTable → Nat → PlanVal
@@ -271,20 +271,20 @@ Use `cg_build_reflect_dispatch` (opcode 3) with:
 - `app_fn`: the app handler law
 
 ```
-cg_build_app_handler : List (Pair Nat (Pair (List Nat) Expr))
+cg_build_field_arm_law : List (Pair Nat (Pair (List Nat) Expr))
                       → Option (Pair (Option Nat) Expr)
                       → CEnv → ConTable → Nat → PlanVal
   -- field_arms = [(tag, (field_names, body))], wild, env, ctab, hint → handler PlanVal
   -- Finds free locals in field arm bodies, lambda-lifts, partially applies
 ```
 
-**pred_env note for `cg_build_app_handler`:** The "free_locals from field arm bodies only"
+**pred_env note for `cg_build_field_arm_law`:** The "free_locals from field arm bodies only"
 rule (not wild_body) is the same limitation as in Python. The handler law only captures
 variables that appear in field arm bodies. Wild body must not reference locals that
 don't appear in any field arm body.
 
 ```
-cg_build_precompiled_nat_dispatch :
+cg_build_tag_chain :
     List (Pair Nat PlanVal) → Option (Pair (Option Nat) Expr)
     → PlanVal → CEnv → ConTable → Nat → PlanVal
   -- Already-compiled field arm values, wild, scrutinee, env, ctab, hint
@@ -454,7 +454,7 @@ Write in this order to satisfy the no-forward-reference constraint:
 22. `cg_build_nat_dispatch`, `cg_compile_nat_match`
 
 **Layer 7: Constructor match compilation**
-23. `cg_build_app_handler`, `cg_build_precompiled_nat_dispatch`
+23. `cg_build_field_arm_law`, `cg_build_tag_chain`
 24. `cg_compile_case3_reflect`, `cg_compile_con_match`
 25. `cg_compile_fallback_match`
 

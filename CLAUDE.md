@@ -263,16 +263,16 @@ tests in `tests/bootstrap/test_codegen.py` and `test_coverage_gaps.py`. Read
 the fix log in `DECISIONS.md §"Bootstrap Compiler"` before writing new
 constructor match patterns — the same shapes keep surfacing edge cases.
 
-**Wildcard arm drop (`_compile_con_body_extraction`).** When a constructor
+**Wildcard arm drop (`_compile_single_arm_field_bind`).** When a constructor
 match has exactly one non-wildcard arm and a wildcard, `_compile_con_match`
-routes to `_compile_con_body_extraction`. The wildcard arm *must* be passed
-through to `_compile_con_match_case3`; if it is not, all constructors (being
+routes to `_compile_single_arm_field_bind`. The wildcard arm *must* be passed
+through to `_compile_adt_dispatch`; if it is not, all constructors (being
 PLAN Apps) match the single arm and the wildcard body is silently unreachable.
 Pattern: `| Con x → body | _ → default`. Symptom: `f(OtherConstructor)`
 returns the same result as `f(Con ...)`. Fix: pass `wild_arm` explicitly.
 This bit us during M8.6 for `planval_is_nat`, `planval_is_app`, etc.
 
-**Mixed-arity binary path (`_build_app_handler`).** When a type has both
+**Mixed-arity binary path (`_build_field_arm_law`).** When a type has both
 unary (arity=1) and binary (arity=2) field-bearing constructors, the binary
 path is active (max_arity=2). Unary constructors encode as `A(Nat(tag), field)`
 — their `outer_fun` is a bare Nat. The inner Case_ Nat dispatch (`z`/`m`) fires
@@ -280,7 +280,7 @@ for them, *not* the App handler. The unary tag=0 case uses the unary arm body
 as `z_body`; the unary tag>0 case uses a lambda-lifted `m_body` sub-law. Both
 cases are now implemented and tested (`test_match_mixed_arity_*`).
 
-**`first_tag > 0` in `_build_precompiled_nat_dispatch`.** When the
+**`first_tag > 0` in `_build_tag_chain`.** When the
 field-bearing constructors all have tag > 0 (e.g. `type Tree = | Leaf | Node X
 | Branch X Y` where Leaf is nullary tag=0), the inner tag dispatch's
 multi-arm branch previously ignored `first_tag` and used `tag_val_pairs[0][1]`
@@ -290,7 +290,7 @@ correctly; the multi-arm branch did not. Symptom: `Branch a b` arms returned
 down by 1, and recurse. (F11 from the field-feedback follow-ups.)
 
 **Outer locals dropped in mixed nullary/field dispatch
-(`_compile_con_match_case3`).** When a type has ≥2 explicitly-named nullary
+(`_compile_adt_dispatch`).** When a type has ≥2 explicitly-named nullary
 constructors *and* ≥1 field-bearing constructor, the secondary nullary arms
 (tags > 0) used to be compiled with `pred_env = Env(globals=env.globals,
 arity=1)` — discarding `env.locals` and any `self_ref_name`. Arm bodies that

@@ -480,7 +480,7 @@ class TestSelfhostEmitProgram(unittest.TestCase):
 #   Wrap Nat    — unary, tag=2 → outer Case_ m fires (non-zero unary tag)
 #
 # Wrap exercises the non-zero-unary-tag path fixed in cg_build_unary_m_body
-# and cg_build_precompiled_nat_dispatch.
+# and cg_build_tag_chain.
 _MIXED_GLS = """\
 type Tree =
   | Leaf Nat
@@ -533,7 +533,7 @@ class TestMixedArityBehavioral(unittest.TestCase):
 
     Before the M8.8 revisit fix, Wrap returned 0 instead of the field value.
     The fix: cg_build_unary_z_body / cg_build_unary_m_body + the
-    cg_build_precompiled_nat_dispatch non-zero first-tag branch.
+    cg_build_tag_chain non-zero first-tag branch.
 
     Note: these tests verify the PYTHON BOOTSTRAP codegen, which was also
     fixed with an equivalent patch (see tests/bootstrap/test_codegen.py).
