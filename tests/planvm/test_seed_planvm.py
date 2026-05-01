@@ -61,7 +61,7 @@ def compile_to_seed(src: str, name: str, module: str = 'Test') -> bytes:
     from bootstrap.parser import parse
     from bootstrap.scope import resolve
     from bootstrap.codegen import compile_program
-    from bootstrap.emit import emit
+    from bootstrap.emit_seed import emit
     prog = parse(lex(src, '<shim>'), '<shim>')
     resolved, _env = resolve(prog, module, {}, '<shim>')
     compiled = compile_program(resolved, module)

@@ -317,7 +317,7 @@ Typed AST
     ▼  bootstrap/codegen.py     (de Bruijn, constructors, opcode dispatch)
 PLAN values (dict[fq_name → PLAN value])
     │
-    ▼  bootstrap/emit.py        (spec/07-seed-format.md)
+    ▼  bootstrap/emit_seed.py        (spec/07-seed-format.md)
 Seed bytes
     │
     ▼  x/plan seed_file         (xocore-tech/PLAN VM)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Codegen tests — bootstrap/codegen.py, bootstrap/emit.py, bootstrap/glass_ir.py
+Codegen tests — bootstrap/codegen.py, bootstrap/emit_seed.py, bootstrap/glass_ir.py
 
 Covers: literal compilation, variable references, lambda/application,
 if/then/else, pattern matching (Nat, Bool), local let, constructor compilation,
@@ -19,7 +19,7 @@ from bootstrap.lexer import lex
 from bootstrap.parser import parse
 from bootstrap.scope import resolve
 from bootstrap.codegen import compile_program, CodegenError, encode_name
-from bootstrap.emit import emit, emit_all
+from bootstrap.emit_seed import emit, emit_all
 from bootstrap.glass_ir_debug import (
     debug_dump_all as render,
     debug_dump_plan_value as render_value,

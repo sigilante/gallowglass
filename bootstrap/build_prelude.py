@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from bootstrap.build import build_modules
 from bootstrap.glass_ir import render_fragment, render_decl, collect_pin_deps
 from bootstrap.pin import build_manifest, save_manifest
-from bootstrap.emit import emit_pinned
+from bootstrap.emit_seed import emit_pinned
 
 CORE_DIR = os.path.join(os.path.dirname(__file__), '..', 'prelude', 'src', 'Core')
 MANIFEST_DIR = os.path.join(os.path.dirname(__file__), '..', 'prelude', 'manifest')

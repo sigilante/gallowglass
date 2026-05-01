@@ -177,12 +177,20 @@ blocker exists.
 
 ## Excrescences to trim
 
-- [ ] **C1. Legacy emit path — rename and bound.** `bootstrap/emit.py`
-      (86 lines) is the xocore-era binary seed emitter; the Reaver pipeline
-      goes through `emit_pla.py`. Tests still import `emit.py`, so it isn't
-      dead — but the symmetric naming hides the asymmetry of role. Rename to
-      `emit_seed.py`; module docstring should lead with "Legacy binary
-      format. Test-only. Not the production output path."
+- [x] **C1. Legacy emit path — rename and bound.** Renamed
+      `bootstrap/emit.py` → `bootstrap/emit_seed.py` and rewrote the
+      module docstring to lead with "LEGACY BINARY SEED FORMAT" plus
+      a pointer to `emit_pla.py` as the production Reaver path. The
+      docstring enumerates the three remaining consumers (test
+      round-trips, `build_prelude.py`'s pin manifests, the demo
+      invocation in CLAUDE.md "Build and Test"). Updated 23 importers
+      across the tree (`from bootstrap.emit import …` →
+      `from bootstrap.emit_seed import …`) plus six doc references
+      (CLAUDE.md, README.md, BOOTSTRAP.md, COMPILER.md, the language
+      guide, and AUDIT.md itself). Also fixed the
+      `EXPECTED_PYTHON_MODULES` list in
+      `test_bootstrap_python_modules_present`.
+      (PR: cleanup/c1-rename-emit-seed)
 
 - [x] **C2. `tests/planvm/` and `requires_planvm` decorator.** Collapsed.
       `tests/planvm/test_eval_planvm.py` (336 lines) was deleted entirely

@@ -295,7 +295,7 @@ Key implementation notes for future reference:
 **Input:** `List (Pair Nat PlanVal)` + entry FQ name.
 **Output:** `Bytes` (seed format per `spec/07-seed-format.md`).
 
-Port of `bootstrap/emit.py:save_seed()`. Algorithm:
+Port of `bootstrap/emit_seed.py:save_seed()`. Algorithm:
 1. Traverse PlanVal DAG; build deduplicated intern table.
 2. Classify atoms: byte (0–255), word (256–2^64-1), bignat.
 3. Build scope table: holes, bignats, words, bytes, cells.
@@ -307,7 +307,7 @@ All byte construction uses the `Bytes = MkPair len content_nat` encoding already
 in the file; `byte_append`, `u64_le`, and `bits_append` helpers will be needed.
 
 Tests: `tests/compiler/test_emit.py` — byte-level comparison against Python
-`bootstrap/emit.py` for the same PlanVal inputs.
+`bootstrap/emit_seed.py` for the same PlanVal inputs.
 
 ### Milestone 8.7: Driver/main ✓ COMPLETE
 

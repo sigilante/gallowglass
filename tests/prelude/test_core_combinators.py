@@ -39,7 +39,7 @@ def compile_module():
 
 def make_seed(name):
     """Emit a seed for one definition in the compiled module."""
-    from bootstrap.emit import emit
+    from bootstrap.emit_seed import emit
     compiled = compile_module()
     return emit(compiled, f'{MODULE}.{name}')
 

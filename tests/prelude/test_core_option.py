@@ -159,7 +159,7 @@ class TestCoreOptionHarness(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 def _make_seed(name):
-    from bootstrap.emit import emit
+    from bootstrap.emit_seed import emit
     compiled = _get_option()
     return emit(compiled, f'{MODULE}.{name}')
 
