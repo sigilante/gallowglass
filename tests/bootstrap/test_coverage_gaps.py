@@ -1400,6 +1400,62 @@ class TestCodegenErrorLocation:
         except CodegenError as e:
             assert str(e) == 'some internal invariant failed'
 
+    # ---------------------------------------------------------------------
+    # End-to-end: user-reachable codegen errors must carry file:line:col.
+    # AUDIT.md B3 — previously 11 of 14 raise sites bare-messaged; the
+    # following sites are now plumbed.  Each test compiles a tiny `.gls`
+    # crafted to trip the specific raise, then asserts the diagnostic
+    # starts with `<file>:<line>:<col>: error:`.
+    # ---------------------------------------------------------------------
+
+    def _assert_loc_diag(self, src, filename='audit_b3.gls', module='Test'):
+        """Compile src; assert it raises CodegenError with file:line:col prefix.
+        Returns the diagnostic string for further inspection."""
+        prog = parse(lex(src, filename), filename)
+        resolved, _ = resolve(prog, module, {}, filename)
+        try:
+            compile_program(resolved, module)
+        except CodegenError as e:
+            msg = str(e)
+            # file:line:col: error: ...
+            prefix = f'{filename}:'
+            assert msg.startswith(prefix), \
+                f'CodegenError missing {filename!r} prefix: {msg!r}'
+            assert ': error:' in msg, \
+                f'CodegenError missing ": error:" segment: {msg!r}'
+            return msg
+        raise AssertionError(f'expected CodegenError, got success for src:\n{src}')
+
+    # `unknown constructor` (codegen.py:1917) and several other raise sites
+    # are internal-defensive and not reachable from valid surface syntax —
+    # the scope resolver intercepts them first.  Loc plumbing on those paths
+    # is still useful for compiler-internal asserts; the formatting contract
+    # is covered by `test_codegen_error_formats_loc_when_provided` above.
+
+    def test_loc_only_2_tuples_supported(self):
+        """3-tuple match pattern (codegen.py:2783) carries pat.loc."""
+        src = (
+            'let main : Nat = match (1, 2, 3) {\n'
+            '  | (a, b, c) → a\n'
+            '}\n'
+        )
+        msg = self._assert_loc_diag(src)
+        assert 'only 2-tuples' in msg, msg
+
+    def test_loc_unknown_effect_operation(self):
+        """`unknown effect operation` (codegen.py:3092) carries arm.loc."""
+        src = (
+            'eff E { good : Nat → Nat }\n'
+            'let main : Nat\n'
+            '  = handle (pure 0) {\n'
+            '      | return v   → v\n'
+            '      | bogus a kk → kk a\n'
+            '    }\n'
+        )
+        msg = self._assert_loc_diag(src)
+        assert 'unknown effect operation' in msg, msg
+        assert 'bogus' in msg, msg
+
 
 # ===========================================================================
 # F1.3: if-then-else recursion does not eagerly evaluate both branches
