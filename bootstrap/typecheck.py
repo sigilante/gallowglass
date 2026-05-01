@@ -799,23 +799,39 @@ class TypeChecker:
     # ------------------------------------------------------------------ #
 
     def _check_exhaustiveness(self, scrutinee, scr_ty, arms, loc):
-        """Check pattern match exhaustiveness; raise TypecheckError if incomplete."""
-        import warnings as _warnings
+        """Check pattern match exhaustiveness; raise TypecheckError on
+        either non-exhaustive matches or redundant arms.
+
+        Redundancy is a hard error rather than a warning because the
+        bootstrap codegen dispatches constructor matches by tag-sorted
+        order (`codegen.py:_compile_con_match`), not by source order.
+        A pattern subsumed by an earlier arm in source order may still
+        execute at runtime — i.e. the source-level and codegen-level
+        views of "which arm fires" diverge.  Rejecting the program at
+        type-check time prevents the codegen from ever seeing the
+        inconsistent state.  AUDIT.md B4.
+        """
         from bootstrap.exhaustiveness import (
             check_exhaustiveness, ExhaustivenessError,
         )
         resolved_ty = self.deref(scr_ty)
         try:
-            redundancy_warnings = check_exhaustiveness(
+            redundancies = check_exhaustiveness(
                 resolved_ty, arms, self.type_constructors, self.deref, loc
             )
-            for idx, desc in redundancy_warnings:
-                _warnings.warn(
-                    f"redundant match arm at index {idx}: {desc}",
-                    stacklevel=2,
-                )
         except ExhaustivenessError as e:
             raise TypecheckError(str(e), e.loc) from None
+
+        if redundancies:
+            idx, desc = redundancies[0]
+            arm_loc = getattr(arms[idx][0], 'loc', None) or loc
+            raise TypecheckError(
+                f"redundant match arm at index {idx}: {desc} is subsumed "
+                f"by an earlier pattern. Reorder so the catch-all pattern "
+                f"comes last (the bootstrap codegen dispatches by "
+                f"constructor tag, not source order — see AUDIT.md B4).",
+                arm_loc,
+            )
 
     # ------------------------------------------------------------------ #
     # Constructor type reconstruction from DeclType                        #
