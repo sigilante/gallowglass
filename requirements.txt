@@ -1,0 +1,10 @@
+# Gallowglass bootstrap dependencies.
+#
+# blake3 is required for spec-compliant PinIds. Without it, bootstrap/pin.py
+# warns and falls back to SHA-256 — pin hashes in that mode will not match
+# the canonical Gallowglass values and pin-DAG tests will produce
+# incorrect-but-non-failing results. AUDIT.md A3 tracks tightening this.
+blake3>=0.4.0
+
+# Test runner.
+pytest>=7.0

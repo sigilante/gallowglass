@@ -874,8 +874,8 @@ Combinators: id, const, flip, fix, ·, |>, fst, snd, absurd
 | Surface syntax spec | ✅ Complete | `spec/06-surface-syntax.md` |
 | Seed format spec | ✅ Complete | `spec/07-seed-format.md` |
 | Python bootstrap compiler | ✅ Complete (M1–M7.5) | `bootstrap/` |
-| Core prelude (36 definitions) | ✅ Complete (M7–M7.5) | `prelude/src/Core/` |
-| Self-hosting compiler | ✅ Alpha candidate (M8 complete) | `compiler/src/` |
+| Core prelude (112 definitions across 8 modules, as of M14.6) | ✅ Complete (M7–M14.6) | `prelude/src/Core/` |
+| Self-hosting compiler | ✅ Alpha candidate (M8 complete; M8.8 Path B) | `compiler/src/` |
 | Rust VM | 🔲 Post-1.0 | `vm/src/` |
 | Debugger | 🔲 Post-1.0 | — |
 
@@ -884,8 +884,9 @@ Combinators: id, const, flip, fix, ·, |>, fst, snd, absurd
 | Layer | What is tested | Tool |
 |---|---|---|
 | Python harness | Semantic correctness of compiled PLAN | `dev/harness/plan.py` |
-| planvm seed loading | Seed format validity; `x/plan` accepts the file | Docker `planvm` |
-| planvm evaluation | **Not yet tested** — format valid ≠ computation correct | Pending Reaver CLI |
+| Reaver runtime gate | Plan Asm output executes correctly under Reaver | `tests/reaver/` |
+| Reaver differential | Bytewise comparison vs Reaver reference | `tests/reaver/test_differential.py` |
+| ~~planvm seed loading~~ | Archived — xocore is no longer a deployment target (DECISIONS.md) | — |
 
 M8.8 Path B partially closes this gap: GLS `emit_program` is verified against the
 full Compiler.gls module via the BPLAN harness. M8.8 Path A (running `compiler.seed`

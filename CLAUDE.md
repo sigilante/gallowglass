@@ -145,7 +145,7 @@ All Gallowglass types are erased at compile time. The PLAN output is untyped. Ty
 
 ## Current Phase
 
-**Alpha.** All Milestone 8 phases complete. M9–M20 complete. 112 prelude definitions (65 source-level lets + instance methods) across 8 modules. Eq/Ord/Show/Debug typeclasses with constrained instances. 1210 tests passing.
+**Alpha.** All Milestone 8 phases complete. M9–M20 complete. 112 prelude definitions (65 source-level lets + instance methods) across 8 modules. Eq/Ord/Show/Debug typeclasses with constrained instances. Test count is live — run `python3 -m pytest tests/ -q` for the current passing/skipped totals rather than trusting an inline number here.
 
 - Phase 0 (spec): complete.
 - Phase 1 (Python bootstrap compiler): complete. Milestones 1–7.5 done. Core prelude: 112 definitions (65 lets + instance methods), planvm-valid.
@@ -191,44 +191,55 @@ See `bootstrap/BOOTSTRAP.md` for what the restricted dialect permits.
 ## Build and Test
 
 ```bash
-# Run the xocore PLAN reference VM
-# (requires xocore-tech/PLAN installed)
-planvm <seed-file>
+# Install dependencies (blake3 is required for spec-compliant PinIds;
+# without it pin.py warns and falls back to SHA-256 — see A3 in AUDIT.md).
+pip install -r requirements.txt
 
-# Run the Python bootstrap compiler directly
+# Compile a Gallowglass source file to legacy seed bytes (test-only path).
+# The source file should contain bare top-level declarations (let, type, ...)
+# — no enclosing `mod ModName { ... }` header. The module name 'Module' is
+# supplied by the harness, not parsed from the source.
 python3 -c "
-from bootstrap.lexer import lex; from bootstrap.parser import parse
-from bootstrap.scope import resolve; from bootstrap.codegen import compile_program
-from bootstrap.emit import emit
 import sys
-src = open(sys.argv[1]).read()
+from bootstrap.lexer import lex
 from bootstrap.parser import parse
-prog = parse(lex(src, sys.argv[1]), sys.argv[1])
-resolved, _ = resolve(prog, 'Module', {}, sys.argv[1])
+from bootstrap.scope import resolve
+from bootstrap.codegen import compile_program
+from bootstrap.emit import emit
+path = sys.argv[1]
+src = open(path).read()
+prog = parse(lex(src, path), path)
+resolved, _ = resolve(prog, 'Module', {}, path)
 compiled = compile_program(resolved, 'Module')
 sys.stdout.buffer.write(emit(compiled, 'Module.main'))
 " input.gls > output.seed
 
+# Compile to Plan Assembler text (the production Reaver path); see
+# tests/reaver/test_smoke.py for end-to-end usage with `bootstrap.emit_pla`.
+
 # Run tests
 python3 -m pytest tests/bootstrap/  # bootstrap compiler tests
 python3 -m pytest tests/compiler/   # self-hosting compiler tests
-python3 -m pytest tests/prelude/    # prelude tests (some require planvm)
+python3 -m pytest tests/prelude/    # prelude tests
+python3 -m pytest tests/reaver/     # Reaver runtime gate (skipped if absent)
 python3 -m pytest tests/            # all tests
 ```
 
 ### Test skip categories
 
-1258 passing, 117 skipped (post-Reaver-migration). The skips are all expected:
+Skips are all expected and fall into a small number of categories:
 
 - **planvm archived (~110):** Every test gated on `requires_planvm` is now
   unconditionally skipped. xocore-tech/PLAN's xplan VM is no longer a
   Gallowglass deployment target — see `DECISIONS.md §"Why XPLAN compatibility
   is being abandoned"`. The decorator and infrastructure are preserved so
-  historical imports still resolve. Reaver-runtime tests live under
-  `tests/reaver/` once Phase F lands.
+  historical imports still resolve. AUDIT.md C2 tracks collapsing the shim.
+- **Reaver runtime absent:** `tests/reaver/` skips when `nix`/`cabal` and the
+  Reaver binary aren't available. CI runs them; local runs typically don't.
 - **Deep recursion (4):** Stress tests (`TestDeepRecursion` in `test_coverage_gaps.py`)
   that hit the Python evaluator's recursion limit. These will work on the
   PLAN VM; fixing in the Python harness requires native jets (post-1.0).
+  AUDIT.md B1 tracks the related "depth guard returns wrong value" bug.
 
 ## Key Invariants to Never Violate
 
@@ -236,7 +247,10 @@ python3 -m pytest tests/            # all tests
 - Abort never appears in an effect row.
 - External effects must be in the row of any function crossing the VM boundary.
 - Canonical SCC ordering is lexicographic by name — any deviation changes PinIds.
-- BLAKE3-256 is the hash algorithm everywhere. No exceptions.
+- BLAKE3-256 is the spec-required hash algorithm. The bootstrap soft-falls
+  back to SHA-256 with a warning if the `blake3` pip package is missing —
+  PinIds in that mode are not spec-compliant. Install via
+  `pip install -r requirements.txt`. AUDIT.md A3 tracks tightening this.
 - `Show` and `Debug` are distinct typeclasses. Never conflate them.
 - Contracts must be statable from the mathematical specification alone.
 - Pin content is reduced to WHNF + law spine — **not** to full normal form. Do not assume or assert full normalization of pin contents.
