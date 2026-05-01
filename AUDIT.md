@@ -184,11 +184,19 @@ blocker exists.
       `emit_seed.py`; module docstring should lead with "Legacy binary
       format. Test-only. Not the production output path."
 
-- [ ] **C2. `tests/planvm/` and `requires_planvm` decorator.** ~110
-      unconditionally skipped tests. CLAUDE.md preserves "the decorator and
-      infrastructure" for "historical imports," but the cost outweighs the
-      value. Collapse `requires_planvm` to a 3-line shim that always skips
-      with a deprecation message; archive (or delete) the test bodies.
+- [x] **C2. `tests/planvm/` and `requires_planvm` decorator.** Collapsed.
+      `tests/planvm/test_eval_planvm.py` (336 lines) was deleted entirely
+      — its tests were all unconditionally skipped via
+      `requires_planvm`, contributing zero signal. `test_seed_planvm.py`
+      shrank from 266 lines to a slim shim exporting the names existing
+      importers (across `tests/{prelude,compiler}/...`) depend on:
+      `requires_planvm`, `seed_loads`, `PLANVM`, `planvm_available`,
+      `compile_to_seed`. `requires_planvm` is now an unconditional
+      `unittest.skip(reason)` pointing at `tests/reaver/`; `seed_loads`
+      and `planvm_available` are `False` stubs (their callers always
+      skip first); `compile_to_seed` is preserved as an opaque legacy
+      helper. Net delta: 28 fewer skipped tests in CI output (145 → 117).
+      (PR: cleanup/c2-planvm-shim)
 
 - [ ] **C3. `bootstrap/archive/sire/`.** `grep -r 'archive.sire' .` returns
       no consumers. Delete; git history preserves it.
