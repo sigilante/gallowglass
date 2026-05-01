@@ -118,12 +118,21 @@ blocker exists.
       `demo.gls:2:5: error: codegen: only 2-tuples supported in
       bootstrap, got 3-tuple`. (PR: fix/codegen-loc-diagnostics)
 
-- [ ] **B4. Source-order vs tag-order semantic mismatch.** The redundancy
-      checker (`typecheck.py:809`) uses source order; the codegen sorts arms
-      by tag (`codegen.py:1918`). A wildcard-first match warns "subsequent
-      arms redundant" but the runtime executes them. Upgrade redundancy to an
-      error, or rephrase the message to clarify the codegen still dispatches
-      by tag.
+- [x] **B4. Source-order vs tag-order semantic mismatch.** Took option
+      (c) from the audit: redundancy is now a `TypecheckError` instead
+      of a `warnings.warn`. The typechecker rejects ambiguous code
+      before the codegen ever sees it, eliminating the disagreement.
+      The error message is explicit about the cause and the fix:
+      "redundant match arm at index N: <pat> is subsumed by an earlier
+      pattern. Reorder so the catch-all pattern comes last (the
+      bootstrap codegen dispatches by constructor tag, not source
+      order — see AUDIT.md B4)." Verified that no existing code
+      triggered the warning before the upgrade (full suite under
+      `-W error::UserWarning` passed). Five new contract tests in
+      `TestE2ERedundancyIsError` cover the wildcard-first shape, the
+      after-full-coverage shape, the duplicate-constructor shape, the
+      error-message contract, and the wildcard-last no-regression.
+      (PR: fix/b4-redundancy-warning)
 
 - [ ] **B5. Documented invariants without enforcement.** "Abort never appears
       in an effect row" and the `External` requirement are CLAUDE.md

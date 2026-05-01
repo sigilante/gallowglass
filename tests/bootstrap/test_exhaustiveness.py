@@ -491,3 +491,69 @@ type Option a = | Some a | None
 let always = λ x → match x { | _ → 42 }
 '''
         _pipeline(src)
+
+
+# ------------------------------------------------------------------ #
+# AUDIT.md B4: redundant arms are a hard typecheck error
+#
+# Previously the redundancy checker in `typecheck._check_exhaustiveness`
+# emitted `warnings.warn(...)`, leaving ambiguous code to reach codegen.
+# Codegen sorts constructor arms by tag, not source order, so a named
+# arm subsumed by an earlier wildcard would still execute at runtime —
+# contradicting the warning that claimed it was dead.  The contract is
+# now: redundancy is a `TypecheckError`, so the codegen never sees the
+# inconsistent state.
+# ------------------------------------------------------------------ #
+
+
+class TestE2ERedundancyIsError:
+    """Redundant match arms must fail typechecking (AUDIT.md B4)."""
+
+    def test_wildcard_first_named_arm_after_is_error(self):
+        """The exact source-order-vs-tag-order shape from gnome's audit:
+        wildcard arm first, named arm after.  Source order claims `Left`
+        is dead; codegen tag-sort would still execute it.  Now rejected."""
+        src = '''
+type Dir = | Left | Right
+let order_test : Dir → Nat
+  = λ d → match d { | _ → 99 | Left → 1 }
+'''
+        _check_error(src, 'redundant match arm')
+
+    def test_redundant_after_full_coverage_is_error(self):
+        """Wildcard after all constructors are covered — dead code."""
+        src = '''
+type Option a = | Some a | None
+let extra = λ xx → match xx { | Some vv → vv | None → 0 | _ → 99 }
+'''
+        _check_error(src, 'redundant match arm')
+
+    def test_duplicate_constructor_arm_is_error(self):
+        """Two arms for the same constructor — second is dead."""
+        src = '''
+type Option a = | Some a | None
+let dup = λ xx → match xx { | Some vv → vv | Some ww → ww | None → 0 }
+'''
+        _check_error(src, 'redundant match arm')
+
+    def test_error_message_mentions_subsumption_and_fix(self):
+        """The error must mention 'subsumed' and how to reorder."""
+        src = '''
+type Dir = | Left | Right
+let order_check : Dir → Nat = λ d → match d { | _ → 99 | Left → 1 }
+'''
+        try:
+            _pipeline(src)
+            assert False, "expected TypecheckError"
+        except TypecheckError as e:
+            msg = str(e)
+            assert 'subsumed' in msg, msg
+            assert 'Reorder' in msg or 'reorder' in msg, msg
+
+    def test_correctly_ordered_match_still_passes(self):
+        """Wildcard-last is fine; specific arms first is fine."""
+        src = '''
+type Dir = | Left | Right
+let good : Dir → Nat = λ d → match d { | Left → 1 | _ → 99 }
+'''
+        _pipeline(src)
