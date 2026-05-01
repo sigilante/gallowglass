@@ -533,7 +533,7 @@ from bootstrap.lexer import lex
 from bootstrap.parser import parse
 from bootstrap.scope import resolve
 from bootstrap.codegen import compile_program
-from bootstrap.emit import emit
+from bootstrap.emit_seed import emit
 import sys
 src = open(sys.argv[1]).read()
 prog = parse(lex(src, sys.argv[1]), sys.argv[1])

@@ -13,7 +13,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from bootstrap.build import build_modules
-from bootstrap.emit import emit_pinned
+from bootstrap.emit_seed import emit_pinned
 from dev.harness.plan import P, N, is_pin
 
 

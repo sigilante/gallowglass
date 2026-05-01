@@ -332,12 +332,12 @@ class TestCoreTextHarness(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 def _make_seed(name):
-    from bootstrap.emit import emit
+    from bootstrap.emit_seed import emit
     compiled = _load_text()
     return emit(compiled, f'{MODULE}.{name}')
 
 def _make_nat_seed(name):
-    from bootstrap.emit import emit
+    from bootstrap.emit_seed import emit
     compiled = _load_text()
     return emit(compiled, f'Core.Nat.{name}')
 

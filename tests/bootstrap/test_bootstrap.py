@@ -21,7 +21,7 @@ EXPECTED_PYTHON_MODULES = [
     'scope.py',
     'typecheck.py',
     'codegen.py',
-    'emit.py',
+    'emit_seed.py',
     'glass_ir.py',
     'ast.py',
 ]

@@ -25,7 +25,7 @@ BOOL_PATH = os.path.join(CORE_DIR, 'Bool.gls')
 
 def make_seed(name):
     from bootstrap.build import build_modules
-    from bootstrap.emit import emit
+    from bootstrap.emit_seed import emit
     with open(NAT_PATH) as f:
         nat_src = f.read()
     with open(BOOL_PATH) as f:

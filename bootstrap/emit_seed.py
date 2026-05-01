@@ -1,7 +1,21 @@
 """
-Gallowglass bootstrap emitter.
+Gallowglass bootstrap emitter — LEGACY BINARY SEED FORMAT.
 
-Serializes compiled PLAN values to the seed format.
+This is the xocore-era emitter that serializes compiled PLAN values
+to the binary seed format (`spec/07-seed-format.md`).  It is **not**
+the production output path.  The Reaver pipeline goes through
+`bootstrap/emit_pla.py`, which produces Plan Assembler text.
+
+This module is preserved for:
+  - test infrastructure (`tests/bootstrap/test_pin_wrap.py`,
+    `tests/prelude/test_*.py`, etc.) that round-trips compiled
+    values through binary seeds for unit-level checks;
+  - `bootstrap/build_prelude.py`, which writes pin manifests via
+    `emit_pinned`;
+  - the historical demo invocation in CLAUDE.md "Build and Test."
+
+If you are emitting output that runs under Reaver, use
+`bootstrap.emit_pla.emit_program` instead.  See AUDIT.md C1.
 
 Public API:
     emit(compiled, entry) -> bytes
@@ -11,6 +25,9 @@ Public API:
 
     emit_all(compiled) -> bytes
         Emit all top-level values as a single pinned record.
+
+    emit_pinned(compiled, module) -> bytes
+        Emit per-binding pinned manifest (used by build_prelude.py).
 """
 
 import os
