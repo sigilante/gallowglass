@@ -134,12 +134,22 @@ blocker exists.
       error-message contract, and the wildcard-last no-regression.
       (PR: fix/b4-redundancy-warning)
 
-- [ ] **B5. Documented invariants without enforcement.** "Abort never appears
-      in an effect row" and the `External` requirement are CLAUDE.md
-      invariants and `spec/05-type-system.md:1191` defines E0011, but
-      `typecheck.py` enforces neither. Comment at `typecheck.py:449` admits
-      the deferral. Either add `@xfail(strict=True)` enforcement gates, or
-      annotate the spec with "not yet enforced."
+- [x] **B5. Documented invariants without enforcement.** Took option (a)
+      and the annotation simultaneously. Two
+      `@pytest.mark.xfail(strict=True)` regression gates added in
+      `tests/bootstrap/test_typecheck.py`:
+      `test_b5_abort_in_effect_row_is_rejected` and
+      `test_b5_missing_external_is_rejected`. Each test body asserts the
+      *correct-future* behaviour (`TypecheckError` with the relevant
+      fragment); today both correctly xfail because the type checker
+      silently accepts. When enforcement lands they flip to `XPASS`,
+      `strict=True` fails the suite, and someone removes the markers —
+      at which point B5 is fully closed. CLAUDE.md effect-system bullets
+      and `spec/05-type-system.md` §4.4 (Abort) and §14.11 (E0011) now
+      each carry an "Implementation status" note pointing at the gate
+      tests. Suite: 1302 passed, 117 skipped, **2 xfailed** — the
+      xfail count is the new tally to watch. (PR:
+      test/b5-invariant-xfail-gates)
 
 - [x] **B6. Three-way drift on test counts.** CLAUDE.md said "1210 tests
       passing" and "1258 passing, 117 skipped" in the same file; the live
