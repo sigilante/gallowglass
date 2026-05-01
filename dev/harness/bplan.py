@@ -217,10 +217,20 @@ def _bop(opcode, e):
     raise ValueError(f'_bop: unknown opcode {opcode}')
 
 
+BEVALUATE_DEPTH_LIMIT = 100000
+
+
 def bevaluate(val, _depth: int = 0):
-    """Force a PLAN value to normal form, dispatching jets where registered."""
-    if _depth > 100000:
-        return val
+    """Force a PLAN value to normal form, dispatching jets where registered.
+
+    Raises RecursionError if PLAN-level recursion exceeds
+    BEVALUATE_DEPTH_LIMIT.  Previously returned the partial value silently
+    — same defect as evaluate() (AUDIT.md B1).
+    """
+    if _depth > BEVALUATE_DEPTH_LIMIT:
+        raise RecursionError(
+            f'BPLAN evaluator depth exceeded (limit={BEVALUATE_DEPTH_LIMIT})'
+        )
     if is_nat(val):
         return val
     if _is_jet(val):

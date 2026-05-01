@@ -483,15 +483,25 @@ def make_bplan_law(prim_name: str, prim_arity: int, law_name=0):
 
 # --- Evaluation entry point ---
 
+EVALUATE_DEPTH_LIMIT = 10000
+
+
 def evaluate(val, _depth=0):
     """Force a PLAN value to normal form (recursive).
 
     When an App is structurally stuck (arity 0), we evaluate sub-expressions
     and retry — this handles cases like A(A(P(0),1), body) where evaluating
     the function sub-part (A(P(0),1) → P(1)) unlocks further reduction.
+
+    Raises RecursionError if PLAN-level recursion exceeds
+    EVALUATE_DEPTH_LIMIT.  Previously this returned the partially-evaluated
+    `val` silently, which produced wrong results downstream rather than a
+    detectable failure (AUDIT.md B1).
     """
-    if _depth > 10000:
-        return val  # guard against runaway reduction
+    if _depth > EVALUATE_DEPTH_LIMIT:
+        raise RecursionError(
+            f'PLAN evaluator depth exceeded (limit={EVALUATE_DEPTH_LIMIT})'
+        )
     if is_nat(val):
         return val
     if is_pin(val):
