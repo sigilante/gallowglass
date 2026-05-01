@@ -47,12 +47,20 @@ blocker exists.
       install instruction, kept the soft fallback so contributors get a loud
       warning rather than an opaque ImportError. (PR: docs/audit-truth-up)
 
-- [ ] **A4. No byte-identity gate on self-host emission.**
-      `tests/compiler/test_selfhost.py` checks structure but doesn't compare
-      `emit_program` output to a stored golden. With Path A skipped pending
-      Phase G, byte-identity is the only correctness criterion for self-host
-      and nothing enforces it. Stash a hash of the prelude `Compiler.gls`
-      Plan-Asm output; fail loudly when it drifts.
+- [x] **A4. No byte-identity gate on self-host emission.** Added
+      `TestSelfhostGolden` in `tests/compiler/test_selfhost.py` plus three
+      checked-in golden files under `tests/compiler/golden/`: `snippet`
+      (82 bytes — smallest drift signal), `curated` (1217 bytes —
+      PNat/PApp/PLaw/PPin shapes), `mixed` (2903 bytes — mixed-arity
+      Leaf/Node/Wrap, the codepath that hosted F11 and A1). Each test
+      bytewise compares the live Path B output to the golden and on
+      mismatch reports the divergence offset with surrounding context.
+      Regenerate with `UPDATE_GOLDEN=1 python3 -m pytest
+      tests/compiler/test_selfhost.py -k TestSelfhostGolden` and inspect
+      `git diff tests/compiler/golden/` before committing. The full
+      Compiler.gls Path B run takes minutes and is deferred to Phase G;
+      these three small fixtures cover the same emit-layer logic in
+      <0.1 s. (PR: test/selfhost-golden-snapshot)
 
 ## Sharp edges
 
