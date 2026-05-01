@@ -751,9 +751,17 @@ treats that name as the entry point and applies it to the rest of the args:
     pure pipeline) so an upstream RPLAN re-shape is bounded to ~50 LoC.
   - Pin `vendor.lock` deliberately when starting Phase G; don't auto-bump
     during the implementation window.
-- **Performance.** The compiled compiler running under pure-PLAN evaluation
-  may be slow even with BPLAN jets active. May need additional jet
-  registrations or alternate paths.
+- **Performance.** Reaver has no jet substrate today — `op 66` dispatches
+  BPLAN named ops by name+arity at runtime, and there is no jet matcher
+  converting `Add`/`Sub`/`Inc`/list-ops into native ops. Every Nat reduction
+  in the compiled compiler is a real PLAN reduction. The list-op jets added
+  in F5/F7 (`length`, `map`, `foldl`, `foldr`, `append`, `concat_list`,
+  `filter`) live only in `dev/harness/plan.py`; they do not carry over to a
+  Reaver self-host run. The 4 `TestDeepRecursion` skips in
+  `tests/bootstrap/test_coverage_gaps.py` are a preview of this wall.
+  Phase G's gate is **correctness, not throughput** — expect the self-host
+  run to be slow. Throughput is a separate post-1.0 concern blocked on
+  upstream jet infrastructure landing in Reaver.
 - **Trace output vs `Output` bytes.** Reaver's `Trace` writes to stderr and
   prints via `showVal`, which mangles byte-range nats. The self-host test
   must check `Output`'s stdout bytes literally, not Trace output. (Phase F's
@@ -772,7 +780,8 @@ treats that name as the entry point and applies it to the rest of the args:
 
 1–2 weeks. The bulk of the work is the RPLAN bindings and the `Compiler.main`
 I/O re-shape. The test infra inherits from Phase F's `tests/reaver/`. No
-upstream changes needed — Reaver's RPLAN is stable today.
+upstream changes needed — RPLAN's surface is usable today even though it's
+flagged tentative; see the risk-surface notes above.
 
 ### Why this closes 1.0
 
