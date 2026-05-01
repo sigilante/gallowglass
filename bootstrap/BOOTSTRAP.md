@@ -42,7 +42,8 @@ language). Python was used instead because:
   emit the seed, run natively on `x/plan`.
 - Sire is harder to write and the bootstrap is thrown away anyway.
 
-The archived Sire outlines are in `bootstrap/archive/sire/` for reference only.
+The Sire outlines have been removed from the tree (AUDIT.md C3); git history
+preserves them for anyone curious about the never-executed stubs.
 
 ### 1.2 The Bootstrap Path
 

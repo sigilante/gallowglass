@@ -26,10 +26,6 @@ EXPECTED_PYTHON_MODULES = [
     'ast.py',
 ]
 
-# The archived Sire stubs (moved to bootstrap/archive/sire/)
-ARCHIVED_SIRE_STUBS = os.path.join(BOOTSTRAP_DIR, 'archive', 'sire')
-
-
 # ============================================================
 # Structural checks
 # ============================================================
@@ -44,11 +40,13 @@ def test_bootstrap_python_modules_present():
     assert not missing, f"Missing bootstrap Python modules: {missing}"
 
 
-def test_sire_stubs_archived():
-    """Sire stubs are in bootstrap/archive/sire/ (not in bootstrap/src/)."""
-    archive_readme = os.path.join(ARCHIVED_SIRE_STUBS, 'README.md')
-    assert os.path.isfile(archive_readme), \
-        "bootstrap/archive/sire/README.md not found — Sire stubs should be archived there"
+def test_no_sire_stubs_in_tree():
+    """Sire stubs were deleted in AUDIT.md C3 — they have no consumers and
+    git history preserves them.  This test guards against accidental
+    re-introduction."""
+    archive_dir = os.path.join(BOOTSTRAP_DIR, 'archive')
+    assert not os.path.exists(archive_dir), \
+        f"bootstrap/archive/ resurfaced at {archive_dir}; see AUDIT.md C3"
 
 
 def test_bootstrap_md_exists():
