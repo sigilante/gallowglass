@@ -800,7 +800,7 @@ let mod3_is_2 = λ n → match n {
 # ---------------------------------------------------------------------------
 # Mixed-arity constructor match (unary tag>0 in binary path)
 # ---------------------------------------------------------------------------
-# These tests exercise the `max_arity == 2` path in `_build_app_handler` when
+# These tests exercise the `max_arity == 2` path in `_build_field_arm_law` when
 # the type has both binary (arity=2) and unary (arity=1, tag>0) constructors.
 # The canonical example is PlanVal: PNat(unary,tag=0), PApp(binary,tag=1),
 # PLaw(binary,tag=2), PPin(unary,tag=3).
@@ -1057,7 +1057,7 @@ let main : Nat = match Y { | X → 0 | Y → 1 | Extra n → n }
 # ---------------------------------------------------------------------------
 # F11 (D from feedback follow-ups): nullary + unary + binary mix
 #
-# `_build_precompiled_nat_dispatch` had a bug in its multi-arm branch where
+# `_build_tag_chain` had a bug in its multi-arm branch where
 # `first_tag > 0` was ignored: the code unconditionally used
 # `tag_val_pairs[0][1]` as the zero_val of an op2 dispatch, regardless of
 # whether tag_val_pairs[0][0] was actually 0.  This affected ADTs whose

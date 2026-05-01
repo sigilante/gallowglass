@@ -469,7 +469,7 @@ Implementing predecessor binding correctly requires three coordinated changes:
 Deferring to Milestone 7.5 ensured the fix had concrete usage patterns from the
 Core prelude as test cases (Core.Nat.pred, Core.Nat.add, etc.).
 
-The same fix also addressed multi-constructor field extraction: `_compile_con_match_case3`
+The same fix also addressed multi-constructor field extraction: `_compile_adt_dispatch`
 now uses Case_ (opcode 3) App handler `(fun=tag, arg=field)` to extract fields,
 enabling `| Some x → f x` in the restricted dialect.
 
@@ -477,21 +477,21 @@ enabling `| Some x → f x` in the restricted dialect.
 
 *Fixed in M8.6. This entry documents the pattern so future agents recognise it immediately.*
 
-**Bug 1 — `_compile_con_body_extraction` drops `wild_arm`.**
+**Bug 1 — `_compile_single_arm_field_bind` drops `wild_arm`.**
 
 When a constructor match has exactly one non-wildcard arm:
 ```gallowglass
 match v { | PNat _ → 1 | _ → 0 }
 ```
-`_compile_con_match` routes to `_compile_con_body_extraction` (single-arm path). The
-original code passed `wild_arm=None` to `_compile_con_match_case3`, silently losing the
+`_compile_con_match` routes to `_compile_single_arm_field_bind` (single-arm path). The
+original code passed `wild_arm=None` to `_compile_adt_dispatch`, silently losing the
 wildcard body. The Case_ App handler matched ALL constructors (they are all PLAN Apps) and
 returned 1 regardless. So `planval_is_nat(PApp ...)` returned 1 instead of 0.
 
-**Fix:** pass `wild_arm` from `_compile_con_match` to `_compile_con_body_extraction` and
-thence to `_compile_con_match_case3`.
+**Fix:** pass `wild_arm` from `_compile_con_match` to `_compile_single_arm_field_bind` and
+thence to `_compile_adt_dispatch`.
 
-**Invariant to maintain:** Any call site that invokes `_compile_con_body_extraction` (which
+**Invariant to maintain:** Any call site that invokes `_compile_single_arm_field_bind` (which
 is only ever called from `_compile_con_match`) must pass the enclosing `wild_arm`. Do not
 add call sites that omit it.
 
@@ -502,7 +502,7 @@ In `Compiler.gls`, predicate functions like `decl_is_let`, `decl_is_type`, etc. 
 let decl_is_let : Decl → Nat
   = λ d → match d { | DLet _ _ → 1 | _ → 0 }
 ```
-This is the wildcard-arm-drop pattern that triggers `_compile_con_body_extraction`. Since all
+This is the wildcard-arm-drop pattern that triggers `_compile_single_arm_field_bind`. Since all
 Decl constructors have arity 2, the extraction always returns 1 (the non-wildcard body) for
 any App-constructor input. The predicates were effectively `λ _ → 1`.
 
@@ -515,7 +515,7 @@ because the M8.8 Path B self-hosting test only exercises `emit_program`, not `co
 pattern as `sr_collect_globals` and `sr_resolve_decls`). Each arm names its constructor
 explicitly; no wildcard arm is used.
 
-**Bug 2 — Binary path in `_build_app_handler` ignores unary arms.**
+**Bug 2 — Binary path in `_build_field_arm_law` ignores unary arms.**
 
 The binary path (`max_arity == 2`) handles constructors where the outer_fun from Case_ App
 is `A(tag, field1)`. For unary constructors (arity=1, e.g. PNat), outer_fun is a bare Nat
@@ -530,7 +530,7 @@ Unary arms with tag>0 (like PPin=3) are handled by the `unary_arms_gt0` block: a
 lambda-lifted `m_succ_law` (arity = handler_env.arity + 1) is built and partially applied
 with N(1)..N(handler_env.arity) from the handler env, leaving one slot for the predecessor.
 Inside the succ law, `N(arg_idx)` correctly refers to `outer_arg` because the partial
-application passes it through. A `_build_precompiled_nat_dispatch` succ chain fires the
+application passes it through. A `_build_tag_chain` succ chain fires the
 arm body when the predecessor equals (tag − 1). **Fixed and tested (M8.8 revisit).**
 
 **Constraint:** The binary path handles PlanVal-style types with any combination of
@@ -541,9 +541,9 @@ unary (arity=1) and binary (arity=2) constructors. Tags must be contiguous start
 
 *These are the direct GLS mirrors of Python Bug 2 above. Fixed in M8.8 revisit.*
 
-**Bug A — `cg_build_precompiled_nat_dispatch` fails for non-zero first tag.**
+**Bug A — `cg_build_tag_chain` fails for non-zero first tag.**
 
-`cg_build_precompiled_nat_dispatch` builds a Case_ Nat dispatch chain from pre-compiled
+`cg_build_tag_chain` builds a Case_ Nat dispatch chain from pre-compiled
 `(tag, PlanVal)` pairs. The original single-entry branch assumed tag=0, so a call with
 pairs = `[(2, pval)]` produced a chain that never fired at tag=2.
 
@@ -565,7 +565,7 @@ a unary constructor, outer_fun is a bare Nat (tag), not an App — so outer Case
   field to `arg_idx` (= outer_arg from the outer Case_ App). Used as z_body in the
   outer `cg_build_reflect_dispatch` call.
 - `cg_build_unary_m_body`: for unary arms with tag>0, builds a lambda-lifted succ law
-  (arity = n_cap+1) that dispatches on the predecessor via `cg_build_precompiled_nat_dispatch`.
+  (arity = n_cap+1) that dispatches on the predecessor via `cg_build_tag_chain`.
   Uses `cg_apply_params` to pass captured outer-env locals through as partial application.
 
 `cg_build_binary_handler_body` (line ~3315) now calls `cg_build_reflect_dispatch` with the

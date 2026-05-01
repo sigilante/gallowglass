@@ -372,7 +372,7 @@ Three changes to `bootstrap/codegen.py`; prelude upgraded to full implementation
 2. **PatVar predecessor binding**: `_make_pred_succ_law` in `_build_nat_dispatch`
    lambda-lifts captured locals and binds the wild variable to the predecessor
    passed by Case_. Enables `| k → use_k` where `k` is the predecessor.
-3. **Multi-constructor field extraction**: `_compile_con_match_case3` uses
+3. **Multi-constructor field extraction**: `_compile_adt_dispatch` uses
    Case_ (opcode 3) App handler to extract fields. For unary `| Some x → f x`,
    the App branch receives `(fun=tag, arg=field)` and binds `x = arg`.
 4. **Bool global quoting**: nat globals (`True=1`, `False=0`, nullary constructors)
@@ -401,7 +401,7 @@ Three codegen additions enabling the prelude and self-hosting compiler to use ri
 **M9.2 — Tuples:**
 Binary tuple construction `(a, b)` encodes as `A(tag_0, a, b)` using the quote form
 `A(N(0), N(0))` for tag 0 inside law bodies (not Pin). Tuple match `(x, y)` dispatches
-via `_compile_con_match_case3` with synthetic ConInfo(tag=0, arity=2).
+via `_compile_adt_dispatch` with synthetic ConInfo(tag=0, arity=2).
 
 **M9.3 — Mutual recursion (SCC compilation):**
 Tarjan's SCC detection added to `compile()` pass 3. Single-element SCCs compile as before.
@@ -451,7 +451,7 @@ added to `bootstrap/codegen.py` and `bootstrap/scope.py`.
 3. **`_compile_handle`**: Assembles `A(A(comp_val, dispatch_fn), return_fn)` (top level) or
    `bapp(bapp(...))` (law body). Dispatch fn and return fn are lambda-lifted from outer locals.
 4. **`_compile_dispatch_fn`**: Builds `L(n_cap+3, name, nat_dispatch_body)` — N(1)=op_tag,
-   N(2)=op_arg, N(3)=resume; dispatches on op_tag via `_build_precompiled_nat_dispatch`.
+   N(2)=op_arg, N(3)=resume; dispatches on op_tag via `_build_tag_chain`.
 5. **`_compile_return_fn`**: Builds `L(n_cap+1, name, body)` — N(last)=return value.
 6. **`_compile_do`**: CPS bind `x ← rhs in body` compiles to an `(n_cap+2)`-arg law; the inner
    continuation `λ x → body_comp dispatch k_outer` is lambda-lifted as an `(n_cap+3)`-arg law.
@@ -510,8 +510,8 @@ Sub-milestones:
 - **M8.6 Plan Assembler emitter** ✅ — `emit_program`: `List (Pair Nat PlanVal)` → `Bytes`
   Tests: `tests/compiler/test_emit.py` — 38 pass, 1 skipped (planvm-gated
   `TestSeedLoading`; all evaluation tests now active via BPLAN jets).
-  Two bootstrap codegen bugs fixed: wildcard-arm drop in `_compile_con_body_extraction`
-  and unary tag=0 z_body in the binary path of `_build_app_handler`. See DECISIONS.md.
+  Two bootstrap codegen bugs fixed: wildcard-arm drop in `_compile_single_arm_field_bind`
+  and unary tag=0 z_body in the binary path of `_build_field_arm_law`. See DECISIONS.md.
 - **M8.7 Driver** ✅ — `main : Bytes → Bytes` chains lex→parse→scope→codegen→emit.
   Module name hardcoded to "Compiler" (nn = 8243113893085146947).
   Tests: `tests/compiler/test_driver.py` — 3 pass, 3 skipped (planvm-gated).
