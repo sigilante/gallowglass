@@ -857,6 +857,85 @@ def test_pp_scheme_constraint_no_vars():
 
 
 # ---------------------------------------------------------------------------
+# AUDIT.md B5: documented-but-not-enforced effect-system invariants
+#
+# CLAUDE.md states two invariants the type checker should eventually
+# enforce:
+#
+#   1. `Abort` is NOT in any effect row.  It is unhandleable and propagates
+#      to the VM's virtualization supervisor.
+#   2. `External` marks VM boundary crossings — any function calling a
+#      `Core.PLAN.*` op (or other `external mod` op) must carry `External`
+#      in its effect row.  `spec/05-type-system.md` defines E0011 for the
+#      missing-External diagnostic.
+#
+# Neither is enforced today; `bootstrap/typecheck.py` is permissive about
+# effects in non-handle positions.  These two tests are `xfail(strict=True)`
+# regression gates: each test body asserts the *correct-future* behaviour
+# (`TypecheckError` with the relevant fragment in the message).  Today
+# they correctly xfail because the type checker silently accepts the
+# program, so `_expect_typecheck_error` raises `AssertionError`.  When
+# enforcement lands, both tests will start raising `TypecheckError` as
+# asserted, the `strict=True` xfail will turn into an `XPASS` failure,
+# and someone removes the `xfail` marker — at which point B5 is fully
+# closed.
+#
+# If you implement enforcement, drop the markers and adjust the assertion
+# fragments.  Do NOT delete the tests — they are the spec gate.
+# ---------------------------------------------------------------------------
+
+import pytest
+
+
+def _expect_typecheck_error(src: str, fragment: str = '', module: str = 'M'):
+    """Compile & typecheck `src`; assert TypecheckError whose message
+    contains `fragment`.  Used by the B5 xfail gates below."""
+    prog = parse(lex(src, '<b5>'), '<b5>')
+    resolved, env = resolve(prog, module, {}, '<b5>')
+    try:
+        typecheck(resolved, env, module, '<b5>')
+    except TypecheckError as e:
+        if fragment:
+            assert fragment in str(e), \
+                f"expected {fragment!r} in error: {str(e)!r}"
+        return
+    raise AssertionError(
+        f"expected TypecheckError; the type checker silently accepted:\n{src}"
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason='B5: Abort-in-effect-row enforcement not yet implemented '
+           '(see CLAUDE.md effect-system bullet, AUDIT.md B5)',
+)
+def test_b5_abort_in_effect_row_is_rejected():
+    """`Abort` must never appear in an effect row.  CLAUDE.md gospel."""
+    src = '''
+eff Bomb { boom : Nat → Nat }
+let bomb : {Bomb, Abort | r} Nat = 42
+let main : Nat = bomb
+'''
+    _expect_typecheck_error(src, 'Abort')
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason='B5: missing-External enforcement (E0011) not yet implemented '
+           '(see spec/05-type-system.md E0011, AUDIT.md B5)',
+)
+def test_b5_missing_external_is_rejected():
+    """A function calling a `Core.PLAN.*` op must carry `External` in its
+    effect row.  `spec/05-type-system.md` defines this as error E0011."""
+    src = '''
+external mod Core.PLAN { inc : Nat → Nat }
+let wrap : Nat → Nat = λ n → inc n
+let main : Nat = wrap 5
+'''
+    _expect_typecheck_error(src, 'External')
+
+
+# ---------------------------------------------------------------------------
 # Run as script
 # ---------------------------------------------------------------------------
 

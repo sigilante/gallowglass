@@ -319,6 +319,13 @@ where `ρ₃` is a fresh row variable. This captures the insight that each row m
 let bad : Nat → {Abort} Nat
 ```
 
+> **Implementation status (AUDIT.md B5):** the bootstrap typechecker does
+> not yet enforce the "no Abort in effect row" invariant — `let bad :
+> Nat → {Abort} Nat` is silently accepted today. The strict-xfail
+> regression gate
+> `tests/bootstrap/test_typecheck.py::test_b5_abort_in_effect_row_is_rejected`
+> will turn into an XPASS the moment enforcement lands.
+
 ### 4.5 External
 
 `External` marks VM boundary crossings. Any function that calls an `external mod` operation must include `External` in its effect row (or an open row variable that subsumes it):
@@ -1193,6 +1200,13 @@ note: Nat values are always ≥ 0
 **E0011: Missing External effect**
 
 A function calls an `external mod` operation but does not have `External` in its effect row.
+
+> **Implementation status (AUDIT.md B5):** the bootstrap typechecker does
+> not yet enforce E0011 — calls to `external mod` operations are silently
+> accepted regardless of the caller's effect row. The strict-xfail
+> regression gate
+> `tests/bootstrap/test_typecheck.py::test_b5_missing_external_is_rejected`
+> will turn into an XPASS the moment enforcement lands.
 
 ```
 error[E0011]: missing External effect

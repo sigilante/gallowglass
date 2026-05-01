@@ -119,8 +119,8 @@ type Result a b =
 ASCII alternatives are normalized to Unicode at the lexer — never appear post-lex.
 
 ### Effect System
-- `Abort` is NOT in any effect row. It is unhandleable, propagates to the VM's virtualization supervisor.
-- `External` marks VM boundary crossings.
+- `Abort` is NOT in any effect row. It is unhandleable, propagates to the VM's virtualization supervisor. *(Not yet enforced by the bootstrap typechecker — AUDIT.md B5; gate test in `tests/bootstrap/test_typecheck.py::test_b5_abort_in_effect_row_is_rejected`.)*
+- `External` marks VM boundary crossings; functions calling `external mod` operations must carry `External` in their effect row (spec error E0011). *(Not yet enforced — AUDIT.md B5; gate test in `tests/bootstrap/test_typecheck.py::test_b5_missing_external_is_rejected`.)*
 - `{}` empty row means pure. Absence of annotation also means pure.
 - Dictionaries are implicit in source, explicit in Glass IR.
 
