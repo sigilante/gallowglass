@@ -382,7 +382,9 @@ The original design called for a bootstrap compiler in Sire (PLAN's macro/assemb
 - Sire requires PLAN to be installed and running to execute, adding a circular dependency during early development. Python has no such dependency.
 - The Gallowglass self-hosting compiler (Compiler.gls) replaces the Python bootstrap entirely. There is no long-term maintenance burden.
 
-The archived Sire outlines are in `bootstrap/archive/sire/` for reference; they were superseded before any Sire code was executed. See `bootstrap/BOOTSTRAP.md` for the complete rationale.
+The Sire outlines were superseded before any Sire code was executed and were
+removed from the tree in AUDIT.md C3; they remain accessible via git history.
+See `bootstrap/BOOTSTRAP.md` for the complete rationale.
 
 ### Why validate with Fibonacci and list operations before attempting the self-hosting compiler?
 

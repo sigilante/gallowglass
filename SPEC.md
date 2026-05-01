@@ -42,7 +42,8 @@ Phase 6: Hardening and ecosystem
 ```
 
 **Bootstrap language:** Python (not Sire). The bootstrap compiler lives in `bootstrap/*.py`.
-Archived Sire stubs (never executed) are in `bootstrap/archive/sire/`.
+Sire stubs were sketched but never executed; they were removed from the tree in
+AUDIT.md C3 (git history preserves them).
 See `bootstrap/BOOTSTRAP.md` and `DECISIONS.md §"Why Python for the bootstrap compiler?"` for rationale.
 
 ---

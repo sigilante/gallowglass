@@ -1673,61 +1673,17 @@ class Compiler:
         wild_body = wild_arm[1] if wild_arm else None
         wild_var = wild_arm[0].name if (wild_arm and isinstance(wild_arm[0], PatVar)) else None
 
-        # `build_ladder` is dead-code below (its result is computed and
-        # discarded; the function delegates to `_nat_match_{top,body}`).
-        # The `op2` reference inside `build_ladder` is preserved against
-        # canonical Elim (opcode 2) so the dead path still constructs valid
-        # PLAN, even though it's never returned.
-        op2 = P(N(2))
-
-        # Find max tag used
         if not nat_arms:
             # Only wildcard
             return self._compile_expr(wild_body, env, name_hint)
 
-        max_tag = max(v for v, _ in nat_arms)
-
-        def build_ladder(current_n: int, pred_var: str | None, outer_env: Env) -> Any:
-            """Build the nested op2 ladder starting from current_n."""
-            # Find arm for current_n
-            arm_body = next((body for v, body in nat_arms if v == current_n), None)
-            if arm_body is None:
-                arm_body = wild_body
-
-            # Build the zero case (when remaining tag == 0)
-            if arm_body is not None:
-                # Bind pred_var if wildcard arm refers to it
-                if pred_var is not None and wild_arm and wild_var:
-                    arm_env = outer_env.child()
-                    # pred_var is bound to the predecessor in the succ context
-                    # For now we don't bind it (bootstrap limitation)
-                arm_env = outer_env
-                zero_val = self._compile_expr(arm_body, arm_env, name_hint + f'_{current_n}')
-            else:
-                zero_val = N(0)  # unreachable
-
-            if current_n >= max_tag:
-                # Base case: just return the zero val
-                return zero_val
-
-            # Succ case: build a const law that ignores the predecessor and recurses
-            next_val = build_ladder(current_n + 1, pred_var, outer_env)
-
-            if outer_env.arity == 0:
-                succ_fn = self._make_const_law(next_val, name_hint + f'_succ{current_n}')
-                return A(A(A(op2, zero_val), succ_fn), scrutinee if current_n == 0 else N(0))
-            else:
-                succ_fn = self._make_const_law_body(next_val, outer_env, name_hint + f'_succ{current_n}')
-                inner_scrutinee = scrutinee if current_n == 0 else N(1)  # prev predecessor
-                return bapp(bapp(bapp(op2, zero_val), succ_fn), inner_scrutinee)
-
-        if env.arity == 0:
-            result = build_ladder(0, None, env)
-            # The ladder at the outermost level uses `scrutinee` already
-            # but build_ladder doesn't automatically thread it; fix:
-            return self._nat_match_top(nat_arms, wild_body, wild_var, scrutinee, op2, env, name_hint)
-        else:
-            return self._nat_match_body(nat_arms, wild_body, wild_var, scrutinee, op2, env, name_hint)
+        # Sort arms by tag and dispatch.  Top-level and law-body contexts
+        # share the same dispatch shape; `_build_nat_dispatch` handles the
+        # `env.arity == 0` vs `env.arity > 0` split internally.
+        nat_arms = sorted(nat_arms, key=lambda t: t[0])
+        return self._build_nat_dispatch(
+            nat_arms, wild_body, wild_var, scrutinee, env, name_hint
+        )
 
     def _make_op2_dispatch(self, zero_val, succ_body, scrutinee_body, env: Env) -> Any:
         """
@@ -1878,16 +1834,6 @@ class Compiler:
             # Multiple arms: arm[1:] become succ laws that use the predecessor
             succ = make_succ_law(1, env)
             return self._make_op2_dispatch(zero_val0, succ, scrutinee, env)
-
-    def _nat_match_top(self, nat_arms, wild_body, wild_var, scrutinee, op2, env, name_hint):
-        """Build nat match in top-level (non-law-body) context."""
-        nat_arms = sorted(nat_arms, key=lambda t: t[0])
-        return self._build_nat_dispatch(nat_arms, wild_body, wild_var, scrutinee, env, name_hint)
-
-    def _nat_match_body(self, nat_arms, wild_body, wild_var, scrutinee, op2, env, name_hint):
-        """Build nat match inside a law body."""
-        nat_arms = sorted(nat_arms, key=lambda t: t[0])
-        return self._build_nat_dispatch(nat_arms, wild_body, wild_var, scrutinee, env, name_hint)
 
     def _compile_con_match(self, scrutinee: Any, arms: list, env: Env, name_hint: str, loc=None) -> Any:
         """

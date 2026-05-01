@@ -198,14 +198,23 @@ blocker exists.
       helper. Net delta: 28 fewer skipped tests in CI output (145 → 117).
       (PR: cleanup/c2-planvm-shim)
 
-- [ ] **C3. `bootstrap/archive/sire/`.** `grep -r 'archive.sire' .` returns
-      no consumers. Delete; git history preserves it.
+- [x] **C3. `bootstrap/archive/sire/`.** Deleted. `grep -r 'archive.sire'`
+      returned no Python consumers; the four doc references (CLAUDE.md
+      structure block, SPEC.md §1 footnote, DECISIONS.md §"Why Python for
+      the bootstrap compiler", bootstrap/BOOTSTRAP.md §1.1) were updated
+      to point at git history instead. The previous
+      `test_sire_stubs_archived` was inverted to
+      `test_no_sire_stubs_in_tree`, guarding against accidental
+      re-introduction. (PR: cleanup/c3-c4-archive-and-dead-codegen)
 
-- [ ] **C4. Codegen dead-code wrappers.** `_nat_match_top` and
-      `_nat_match_body` (codegen.py:1875-1883) are 3-line passthroughs to
-      `_build_nat_dispatch`. `build_ladder` (line 1683) is a dead inner
-      function whose return value is never used (the comment at 1669 says
-      so). Delete all three; call `_build_nat_dispatch` directly.
+- [x] **C4. Codegen dead-code wrappers.** Deleted. `build_ladder` was a
+      ~35-line nested function inside `_compile_nat_match` whose return
+      value was discarded (the surrounding comment admitted it).
+      `_nat_match_top` and `_nat_match_body` were three-line passthroughs
+      that sorted by tag then called `_build_nat_dispatch` — collapsed into
+      a direct call from `_compile_nat_match`. Net delta: -53 lines. Suite
+      unchanged at 1297 passed / 145 skipped — the dead path was indeed
+      dead. (PR: cleanup/c3-c4-archive-and-dead-codegen)
 
 - [x] **C5. `glass_ir.py` conflates two concerns under one name.** Split.
       The debug renderer (`render_value`, `render`, `render_entry`,

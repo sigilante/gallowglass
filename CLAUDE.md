@@ -35,7 +35,6 @@ gallowglass/
   bootstrap/
     BOOTSTRAP.md         ← Bootstrap compiler overview and milestones
     *.py                 ← Python bootstrap compiler (lexer, parser, scope, codegen, emit)
-    archive/             ← Archived Sire stubs (superseded, reference only)
 
   prelude/
     PRELUDE.md           ← Prelude scope and organization
