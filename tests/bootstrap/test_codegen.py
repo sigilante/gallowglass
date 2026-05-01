@@ -944,6 +944,113 @@ let main = partial (PPin 7)
 
 
 # ---------------------------------------------------------------------------
+# AUDIT.md A1: outer locals dropped in mixed nullary/field dispatch
+#
+# When a type has ≥2 explicitly-named nullary constructors *and* ≥1
+# field-bearing constructor, the secondary nullary arms (tags > 0) used to
+# be compiled with `pred_env = Env(globals=env.globals, arity=1)`, which
+# discarded `env.locals`.  Any arm body referencing an outer-lambda
+# parameter raised `CodegenError: unbound variable`.  The fix mirrors the
+# capture-and-partial-apply pattern in `make_succ_law`: collect free vars
+# across `remaining_nullary` bodies plus `wild_body`, build a lifted law,
+# partial-apply at the outer env's perspective.
+# ---------------------------------------------------------------------------
+
+
+_XY_TYPE = '''
+type XY =
+  | X
+  | Y
+  | Extra Nat
+'''
+
+
+def test_a1_secondary_nullary_arm_references_outer_lambda():
+    """`| Y → v` (tag 1, nullary) must see outer lambda param `v`."""
+    src = _XY_TYPE + '''
+let check : XY → Nat → Nat
+  = λ t v → match t {
+      | X       → 0
+      | Y       → v
+      | Extra n → n
+    }
+let main : Nat = check Y 42
+'''
+    assert eval_val(src, 'main') == 42
+
+
+def test_a1_x_arm_still_returns_zero():
+    """The fix must not regress the tag=0 nullary arm."""
+    src = _XY_TYPE + '''
+let check : XY → Nat → Nat
+  = λ t v → match t { | X → 0 | Y → v | Extra n → n }
+let main : Nat = check X 42
+'''
+    assert eval_val(src, 'main') == 0
+
+
+def test_a1_field_arm_still_extracts():
+    """The fix must not regress the field-bearing arm."""
+    src = _XY_TYPE + '''
+let check : XY → Nat → Nat
+  = λ t v → match t { | X → 0 | Y → v | Extra n → n }
+let main : Nat = check (Extra 7) 42
+'''
+    assert eval_val(src, 'main') == 7
+
+
+def test_a1_secondary_nullary_arm_references_self_and_outer():
+    """A secondary nullary arm body that uses self-ref AND an outer local."""
+    src = _XY_TYPE + '''
+let go : XY → Nat → Nat
+  = λ t v → match t {
+      | X       → 0
+      | Y       → v
+      | Extra n → go X v
+    }
+let main : Nat = go (Extra 99) 7
+'''
+    assert eval_val(src, 'main') == 0
+
+
+def test_a1_three_nullary_plus_field_outer_capture():
+    """Three nullary tags (0,1,2) plus a field arm — the C arm at tag 2
+    is reached via the lifted-law's nat-dispatch chain, exercising
+    `_build_nat_dispatch` recursion under the new pred_env."""
+    src = '''
+type Three =
+  | A
+  | B
+  | C
+  | Field Nat
+let pick : Three → Nat → Nat
+  = λ t v → match t {
+      | A       → 0
+      | B       → v
+      | C       → 100
+      | Field n → n
+    }
+let r1 : Nat = pick A 42
+let r2 : Nat = pick B 42
+let r3 : Nat = pick C 42
+let r4 : Nat = pick (Field 7) 42
+'''
+    assert eval_val(src, 'r1') == 0
+    assert eval_val(src, 'r2') == 42
+    assert eval_val(src, 'r3') == 100
+    assert eval_val(src, 'r4') == 7
+
+
+def test_a1_top_level_path_unchanged():
+    """At env.arity == 0 (top level), the old `pred_env = arity=1, no locals`
+    path is still taken — no captures to lift.  Pin the no-regression."""
+    src = _XY_TYPE + '''
+let main : Nat = match Y { | X → 0 | Y → 1 | Extra n → n }
+'''
+    assert eval_val(src, 'main') == 1
+
+
+# ---------------------------------------------------------------------------
 # F11 (D from feedback follow-ups): nullary + unary + binary mix
 #
 # `_build_precompiled_nat_dispatch` had a bug in its multi-arm branch where

@@ -2023,12 +2023,74 @@ class Compiler:
         # m: fired when scrutinee is Nat k+1 (nullary constructors with tag > 0)
         remaining_nullary = [(tag - 1, body) for tag, body in nullary_nat_arms if tag > 0]
         if remaining_nullary:
-            # Build a succ law that dispatches on predecessor (= tag - 1)
-            pred_env = Env(globals=env.globals, arity=1)
-            m_inner_body = self._build_nat_dispatch(
-                remaining_nullary, wild_body, wild_var_con, N(1), pred_env, f'{name_hint}_tag_succ'
-            )
-            m_body = P(L(1, encode_name(f'{name_hint}_m'), m_inner_body))
+            # Build a succ law that dispatches on predecessor (= tag - 1).
+            #
+            # In an in-law context (env.arity > 0) the arm bodies and the
+            # wildcard body may reference outer-lambda locals or the
+            # enclosing function's self-ref.  Naively wrapping in
+            # `P(L(1, ..., body))` would discard env.locals and fail to
+            # compile any such reference (AUDIT.md A1).  Mirror the
+            # capture-and-partial-apply pattern from `make_succ_law`
+            # (~lines 1770-1816): collect free vars across all bodies in
+            # the dispatch chain, build a lifted law of arity
+            # `n_cap + 1` (captures plus predecessor), compile the inner
+            # dispatch in the lifted env, then partial-apply the law to
+            # env's bindings of the captures so the m_body slot receives
+            # an arity-1 function on predecessor.
+            if env.arity == 0:
+                pred_env = Env(globals=env.globals, arity=1,
+                               self_ref_name=env.self_ref_name)
+                m_inner_body = self._build_nat_dispatch(
+                    remaining_nullary, wild_body, wild_var_con, N(1), pred_env,
+                    f'{name_hint}_tag_succ'
+                )
+                m_body = P(L(1, encode_name(f'{name_hint}_m'), m_inner_body))
+            else:
+                # Collect captures across remaining_nullary arm bodies and
+                # the wildcard body.  Nullary constructors bind nothing, so
+                # bound_set starts with only wild_var_con (the case3
+                # wildcard's pattern var, if any).
+                bound_set: set = {wild_var_con} if wild_var_con is not None else set()
+                free_set: set = set()
+                for _, b in remaining_nullary:
+                    self._collect_free(b, bound_set, env, free_set)
+                if wild_body is not None:
+                    self._collect_free(wild_body, bound_set, env, free_set)
+                free_locals = [k for k in env.locals if k in free_set]
+
+                uses_self = bool(env.self_ref_name) and (
+                    any(self._body_uses_self_ref(b, env) for _, b in remaining_nullary)
+                    or (wild_body is not None and self._body_uses_self_ref(wild_body, env))
+                )
+
+                # Build lifted_env layout: [self?][captures...][predecessor]
+                lifted_env = Env(globals=env.globals, arity=0)
+                lifted_env.self_ref_name = ''
+                if uses_self:
+                    lifted_env.arity += 1
+                    si = lifted_env.arity
+                    lifted_env.locals[env.self_ref_name] = si
+                    short = env.self_ref_name.split('.')[-1]
+                    lifted_env.locals[short] = si
+                for fv in free_locals:
+                    lifted_env.arity += 1
+                    lifted_env.locals[fv] = lifted_env.arity
+                lifted_env.arity += 1
+                pred_idx = lifted_env.arity
+
+                m_inner_body = self._build_nat_dispatch(
+                    remaining_nullary, wild_body, wild_var_con, N(pred_idx),
+                    lifted_env, f'{name_hint}_tag_succ'
+                )
+                lifted_law = P(L(lifted_env.arity, encode_name(f'{name_hint}_m'), m_inner_body))
+
+                # Partial-apply at env's perspective so the m slot is a
+                # 1-arity function on predecessor.
+                m_body = lifted_law
+                if uses_self:
+                    m_body = bapp(m_body, N(0))
+                for fv in free_locals:
+                    m_body = bapp(m_body, N(env.locals[fv]))
         elif wild_body is not None:
             wv = self._compile_expr(wild_body, env, f'{name_hint}_wild')
             m_body = A(const2_pin, wv) if env.arity == 0 else bapp(const2_pin, wv)
