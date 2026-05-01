@@ -223,7 +223,61 @@ The same pattern works for any constructor — unary (`Some`, `Ok`), binary
 `tests/bootstrap/test_coverage_gaps.py::TestEffectHandlerEdgeCases` for the
 worked test cases (F6).
 
-#### 2.4.5 Reading existing code
+#### 2.4.5 Known sharp edges that still bite
+
+These are not bugs in the codegen — they're operational quirks of the
+Python harness or current restrictions of the demo build path. Each
+field-tested complaint from `feedback_for_gallowglass.md` not already
+covered in §§2.4.1–2.4.4 lives here.
+
+##### Recursion-limit guidance
+
+The Python harness evaluator (`dev/harness/plan.py`) uses recursive
+`evaluate`/`apply` calls. Each PLAN-level reduction step costs one
+Python frame, and laziness combinators inflate the cost: a list of
+length N processed by `foldl`/`foldr`/`map`/`append` typically costs
+~10–20 Python frames per cell.
+
+Concrete bumps observed in practice (these numbers are calibrated
+against the demos in `demos/` and are reasonable upper bounds):
+
+| Workload                                         | `sys.setrecursionlimit` |
+|--------------------------------------------------|------------------------:|
+| Simple arithmetic, ≤100 list cells               | default (1 000)         |
+| Recursive numeric (factorial, Fibonacci ≤30)     | 10 000                  |
+| `Compiler.gls`-class computations (~500 defs)    | 100 000                 |
+| Multi-fold over large nested lists (e.g. 3-deep) | 200 000                 |
+
+The harness evaluator additionally raises `RecursionError` past
+`EVALUATE_DEPTH_LIMIT` (`dev/harness/plan.py`, currently 10 000) and
+`bevaluate` past `BEVALUATE_DEPTH_LIMIT` (100 000). Both are PLAN-level
+counts and trip well after Python's own limit fires for typical
+programs — but if your program is deep-but-narrow you may hit them
+first. The fix in either case is the same: bump
+`sys.setrecursionlimit` *and* the relevant depth limit, or rewrite
+the algorithm to be tail-iterative.
+
+The proper post-1.0 fix is jetting the bread-and-butter combinators
+(`length`, `map`, `foldl`, `foldr`, `append`, `concat_list`) so they
+collapse to a single native step in `dev/harness/bplan.py` instead of
+a per-cell PLAN reduction. Several of those are already jetted; check
+`bplan.py`'s `_PRELUDE_JETS` registry to see the current set.
+
+##### Demos and `use` imports
+
+`demos/*.gls` files compile in isolation: the test harness invokes
+the bootstrap with `module_env={}`, so even though the prelude
+modules compile, they aren't in scope. Each demo redefines
+`add`/`mul`/`map`/`foldl`/etc. inline at the top.
+
+This is a fixable shortcoming of the demo harness (M12 module support
+is in place; the demo runner just doesn't thread a prebuilt
+`module_env` through). For now: copy the utilities you need from
+`Compiler.gls`'s prelude inlining at lines 25–205, or from the
+relevant `Core/*.gls` source. Keeping demo source self-contained also
+makes each demo readable as a single file without cross-references.
+
+#### 2.4.6 Reading existing code
 
 `Compiler.gls` (the self-hosting compiler in `compiler/src/`) is ~3000 lines
 of restricted-dialect Gallowglass and is the canonical reference for "how do

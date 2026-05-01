@@ -141,13 +141,30 @@ blocker exists.
       across 8 modules. Stale at M7; never updated through M14.6. Corrected.
       (PR: docs/audit-truth-up)
 
-- [ ] **B8. Real-world friction not surfaced in BOOTSTRAP.md.**
-      `feedback_for_gallowglass.md` (2026-04-29) lists six concrete defects.
-      The two open ones — Bool-constructor match in recursive functions
-      losing `self_ref_name`, and `if/then/else` eager desugaring — are still
-      latent and a stranger has no way to know. Add a "Known sharp edges"
-      section to BOOTSTRAP.md mirroring the published "Bootstrap Codegen
-      Pitfalls" treatment.
+- [x] **B8. Real-world friction not surfaced in BOOTSTRAP.md.** Audited
+      `feedback_for_gallowglass.md` against current behaviour and updated
+      BOOTSTRAP.md accordingly:
+      - Issues #1a (Bool-constructor match in recursive function),
+        #1b (if/then/else eager desugaring), #2 (wildcard pred binding),
+        #3 (mixed-arity footgun), and #7 (eff/handle returning
+        constructors) are all *already* covered in §§2.4.1–2.4.4 and
+        verified fixed by direct reproduction (`go _k T` in a recursive
+        T-arm and `if c then go n else 99` both compile and evaluate
+        correctly).
+      - Issue #5 (codegen errors point at law not source) was closed by
+        B3 and is invariant'd in §5 of BOOTSTRAP.md.
+      - Issues #4 (demos can't `use` the prelude) and #6
+        (recursion-limit guidance) were the two unwritten-lore
+        complaints. Added a new §2.4.5 "Known sharp edges that still
+        bite" with: a calibrated workload-vs-`sys.setrecursionlimit`
+        table, an explanation of the `EVALUATE_DEPTH_LIMIT` /
+        `BEVALUATE_DEPTH_LIMIT` raises (B1) including the "fix is the
+        same: bump both, or rewrite tail-iteratively, or wait for
+        jets" guidance, a pointer to `_PRELUDE_JETS`, and a note
+        explaining why demos redefine utilities inline plus where to
+        copy them from (`Compiler.gls` lines 25–205). The previous
+        §2.4.5 ("Reading existing code") moved to §2.4.6.
+      (PR: docs/bootstrap-known-sharp-edges)
 
 ## Excrescences to trim
 
