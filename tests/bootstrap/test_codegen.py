@@ -20,7 +20,11 @@ from bootstrap.parser import parse
 from bootstrap.scope import resolve
 from bootstrap.codegen import compile_program, CodegenError, encode_name
 from bootstrap.emit import emit, emit_all
-from bootstrap.glass_ir import render, render_value, decode_name
+from bootstrap.glass_ir_debug import (
+    debug_dump_all as render,
+    debug_dump_plan_value as render_value,
+    decode_name,
+)
 from dev.harness.plan import P, L, A, N, is_nat, is_pin, is_law, is_app, evaluate
 from dev.harness.seed import save_seed, load_seed
 
