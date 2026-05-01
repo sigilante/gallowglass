@@ -10,3 +10,6 @@ build/
 vendor/
 prelude/glass_ir/
 prelude/pins/
+
+# Local IDE / agent state
+.claude/
