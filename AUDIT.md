@@ -86,12 +86,37 @@ blocker exists.
       on mid-write failure; idempotent re-save leaves a clean tree.
       (PR: fix/harness-depth-guard-and-pin-store-toctou)
 
-- [ ] **B3. 11 of 14 `CodegenError` sites lack `Loc`.** Notably
-      `unknown global` (1270), `unknown constructor` (1910), `empty match`
-      (2459), `arity > 2 not yet supported` (2294). CLAUDE.md asserts
-      user-facing diagnostics print `file:line:col:`; these violate the
-      contract. `feedback_for_gallowglass.md` complaint #5 calls this out.
-      Plumb `expr.loc` into each raise.
+- [x] **B3. 11 of 14 `CodegenError` sites lack `Loc`.** All 14 raise
+      sites in `bootstrap/codegen.py` now plumb `loc`. Three already had
+      it (1118/1148/1160 in `_compile_var`); the remaining eleven were
+      threaded as follows:
+      - Sites with `expr` directly in scope (`unsupported expression`,
+        `interpolated strings`, `cannot determine instance type`,
+        `no instance`, `fix requires at least one parameter`):
+        passed `getattr(expr, 'loc', None)` directly.
+      - `_compile_global_ref` gained an optional `loc=None` parameter,
+        propagated from `_compile_constrained_app`.
+      - `_compile_match` captures `expr.loc` and threads it through
+        `_compile_{nat,con,tuple,fallback}_match` via a new
+        `loc=None` keyword. `_compile_con_match_case3`,
+        `_compile_con_body_extraction`, and `_build_app_handler` chain
+        the same kwarg, surfacing the match's loc on `unknown
+        constructor`, `only 2-tuples supported`, `empty match`, and
+        `arity > 2 not yet supported`. Pattern-specific sites prefer
+        `pat.loc` and fall back to the match-level `loc`.
+      - `_lookup_op_tag` gained `loc=None`; the call site at the
+        handle-arm loop passes `arm.loc` (HandlerOp has `loc`).
+      Two new end-to-end contract tests under `TestCodegenErrorLocation`
+      in `tests/bootstrap/test_coverage_gaps.py` assert
+      `<file>:<line>:<col>: error:` prefixes for `only 2-tuples` and
+      `unknown effect operation`. The other former bare-message sites
+      (`unknown constructor`, `empty match`, `unknown global`) are
+      intercepted earlier by the scope resolver and not user-reachable
+      from valid surface syntax; loc plumbing on those paths still
+      helps if compiler-internal asserts ever fire. Verified by
+      eyeballing a real diagnostic:
+      `demo.gls:2:5: error: codegen: only 2-tuples supported in
+      bootstrap, got 3-tuple`. (PR: fix/codegen-loc-diagnostics)
 
 - [ ] **B4. Source-order vs tag-order semantic mismatch.** The redundancy
       checker (`typecheck.py:809`) uses source order; the codegen sorts arms

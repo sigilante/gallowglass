@@ -1019,7 +1019,8 @@ class Compiler:
             return self._compile_do(expr, env, name_hint)
 
         raise CodegenError(
-            f'codegen: unsupported expression {type(expr).__name__}'
+            f'codegen: unsupported expression {type(expr).__name__}',
+            getattr(expr, 'loc', None),
         )
 
     def _compile_nat_literal(self, value: int, env: Env) -> Any:
@@ -1067,7 +1068,10 @@ class Compiler:
                 b = expr.value.encode('utf-8')
             else:
                 # interpolated — not supported in bootstrap codegen
-                raise CodegenError('codegen: interpolated strings not supported')
+                raise CodegenError(
+                    'codegen: interpolated strings not supported',
+                    getattr(expr, 'loc', None),
+                )
         elif isinstance(expr, (ExprBytes, ExprHexBytes)):
             b = expr.value
         else:
@@ -1207,7 +1211,7 @@ class Compiler:
         type_key = self._infer_type_key(args[0], env) if args else None
 
         # Compile function reference
-        fn_val = self._compile_global_ref(fq, env)
+        fn_val = self._compile_global_ref(fq, env, getattr(expr, 'loc', None))
         result = fn_val
 
         # Apply dict args (one per method per constraint)
@@ -1216,7 +1220,8 @@ class Compiler:
             if type_key is None:
                 raise CodegenError(
                     f'codegen: cannot determine instance type for constraint {class_short!r} '
-                    f'at call to {fq!r} — use explicit dict passing'
+                    f'at call to {fq!r} — use explicit dict passing',
+                    getattr(expr, 'loc', None),
                 )
             for method_fq in method_fqs:
                 method_short = method_fq.split('.')[-1]
@@ -1246,7 +1251,8 @@ class Compiler:
                     else:
                         raise CodegenError(
                             f'codegen: no instance {class_short} {type_key} '
-                            f'(looked for {inst_method_key!r} or cross-module equivalent)'
+                            f'(looked for {inst_method_key!r} or cross-module equivalent)',
+                            getattr(expr, 'loc', None),
                         )
                 if env.arity == 0:
                     result = A(result, dict_val)
@@ -1263,11 +1269,11 @@ class Compiler:
 
         return result
 
-    def _compile_global_ref(self, fq: str, env: Env) -> Any:
+    def _compile_global_ref(self, fq: str, env: Env, loc=None) -> Any:
         """Compile a reference to a global value, respecting body vs. top-level context."""
         val = self.env.globals.get(fq)
         if val is None:
-            raise CodegenError(f'codegen: unknown global {fq!r}')
+            raise CodegenError(f'codegen: unknown global {fq!r}', loc)
         if env.arity == 0:
             return val
         if is_nat(val):
@@ -1616,19 +1622,20 @@ class Compiler:
         """
         scrutinee = self._compile_expr(expr.scrutinee, env)
         arms = expr.arms
+        match_loc = getattr(expr, 'loc', None)
 
         # Classify the match based on the first meaningful pattern
         first_pat = arms[0][0] if arms else None
 
         if self._is_nat_match(arms):
-            return self._compile_nat_match(scrutinee, arms, env, name_hint)
+            return self._compile_nat_match(scrutinee, arms, env, name_hint, loc=match_loc)
         elif self._is_con_match(arms):
-            return self._compile_con_match(scrutinee, arms, env, name_hint)
+            return self._compile_con_match(scrutinee, arms, env, name_hint, loc=match_loc)
         elif self._is_tuple_match(arms):
-            return self._compile_tuple_match(scrutinee, arms, env, name_hint)
+            return self._compile_tuple_match(scrutinee, arms, env, name_hint, loc=match_loc)
         else:
             # Wildcard or variable match: just bind the scrutinee
-            return self._compile_fallback_match(scrutinee, arms, env, name_hint)
+            return self._compile_fallback_match(scrutinee, arms, env, name_hint, loc=match_loc)
 
     def _is_nat_match(self, arms) -> bool:
         """True if any arm has a PatNat pattern."""
@@ -1644,7 +1651,7 @@ class Compiler:
                 return True
         return False
 
-    def _compile_nat_match(self, scrutinee: Any, arms: list, env: Env, name_hint: str) -> Any:
+    def _compile_nat_match(self, scrutinee: Any, arms: list, env: Env, name_hint: str, loc=None) -> Any:
         """
         Compile match on Nat patterns using opcode 2 (nat iteration).
 
@@ -1882,7 +1889,7 @@ class Compiler:
         nat_arms = sorted(nat_arms, key=lambda t: t[0])
         return self._build_nat_dispatch(nat_arms, wild_body, wild_var, scrutinee, env, name_hint)
 
-    def _compile_con_match(self, scrutinee: Any, arms: list, env: Env, name_hint: str) -> Any:
+    def _compile_con_match(self, scrutinee: Any, arms: list, env: Env, name_hint: str, loc=None) -> Any:
         """
         Compile match on algebraic type constructors.
 
@@ -1907,13 +1914,16 @@ class Compiler:
                 fq = str(pat.name)
                 info = self.con_info.get(fq)
                 if info is None:
-                    raise CodegenError(f'codegen: unknown constructor {fq!r}')
+                    raise CodegenError(
+                        f'codegen: unknown constructor {fq!r}',
+                        getattr(pat, 'loc', None) or loc,
+                    )
                 con_arms.append((info, pat.args, body))
             elif isinstance(pat, (PatWild, PatVar)):
                 wild_arm = (pat, body)
 
         if not con_arms:
-            return self._compile_fallback_match(scrutinee, arms, env, name_hint)
+            return self._compile_fallback_match(scrutinee, arms, env, name_hint, loc=loc)
 
         # Sort by tag
         con_arms.sort(key=lambda t: t[0].tag)
@@ -1963,13 +1973,13 @@ class Compiler:
             if len(con_arms) == 1:
                 info, field_pats, body = con_arms[0]
                 return self._compile_con_body_extraction(
-                    scrutinee, info, field_pats, body, env, name_hint, wild_arm
+                    scrutinee, info, field_pats, body, env, name_hint, wild_arm, loc=loc
                 )
             else:
-                return self._compile_con_match_case3(scrutinee, con_arms, wild_arm, env, name_hint)
+                return self._compile_con_match_case3(scrutinee, con_arms, wild_arm, env, name_hint, loc=loc)
 
     def _compile_con_body_extraction(self, scrutinee, info, field_pats, body, env, name_hint,
-                                      wild_arm=None):
+                                      wild_arm=None, loc=None):
         """
         Bind field patterns of a constructor and compile the body.
         Uses _compile_con_match_case3 for single-constructor field extraction.
@@ -1982,9 +1992,9 @@ class Compiler:
         # Use a single-arm version of _compile_con_match_case3, preserving wild_arm
         # so that constructors other than `info` dispatch to the wildcard body.
         single_arm = [(info, field_pats, body)]
-        return self._compile_con_match_case3(scrutinee, single_arm, wild_arm, env, name_hint)
+        return self._compile_con_match_case3(scrutinee, single_arm, wild_arm, env, name_hint, loc=loc)
 
-    def _compile_con_match_case3(self, scrutinee: Any, con_arms, wild_arm, env: Env, name_hint: str) -> Any:
+    def _compile_con_match_case3(self, scrutinee: Any, con_arms, wild_arm, env: Env, name_hint: str, loc=None) -> Any:
         """
         Compile a multi-constructor match where some constructors have fields.
 
@@ -2101,12 +2111,12 @@ class Compiler:
         if not field_arms:
             app_handler = id_pin
         else:
-            app_handler = self._build_app_handler(field_arms, wild_body, wild_var_con, env, name_hint)
+            app_handler = self._build_app_handler(field_arms, wild_body, wild_var_con, env, name_hint, loc=loc)
 
         # --- Assemble Case_ dispatch ---
         return self._make_reflect_dispatch(app_handler, z_body, m_body, scrutinee, env)
 
-    def _build_app_handler(self, field_arms, wild_body, wild_var_con, env: Env, name_hint: str) -> Any:
+    def _build_app_handler(self, field_arms, wild_body, wild_var_con, env: Env, name_hint: str, loc=None) -> Any:
         """
         Build the App-handler law for Case_.
 
@@ -2354,7 +2364,8 @@ class Compiler:
             )
         else:
             raise CodegenError(
-                f'codegen: constructors with arity > 2 not yet supported in bootstrap match'
+                f'codegen: constructors with arity > 2 not yet supported in bootstrap match',
+                loc,
             )
 
         handler_law = P(L(handler_env.arity, encode_name(f'{name_hint}_app'), handler_body))
@@ -2515,10 +2526,10 @@ class Compiler:
             step = bapp(step, scrutinee)
             return step
 
-    def _compile_fallback_match(self, scrutinee: Any, arms: list, env: Env, name_hint: str) -> Any:
+    def _compile_fallback_match(self, scrutinee: Any, arms: list, env: Env, name_hint: str, loc=None) -> Any:
         """Match with only wildcard/variable patterns — just use the first arm's body."""
         if not arms:
-            raise CodegenError('codegen: empty match')
+            raise CodegenError('codegen: empty match', loc)
         pat, _, body = arms[0]
         arm_env = env.child()
         if isinstance(pat, PatVar):
@@ -2757,7 +2768,7 @@ class Compiler:
                 return True
         return False
 
-    def _compile_tuple_match(self, scrutinee, arms, env, name_hint):
+    def _compile_tuple_match(self, scrutinee, arms, env, name_hint, loc=None):
         """Compile match on tuple patterns.
 
         Tuples are encoded as A(A(0, a), b) — a binary tagged value with tag 0.
@@ -2770,14 +2781,15 @@ class Compiler:
             if isinstance(pat, PatTuple):
                 if len(pat.pats) != 2:
                     raise CodegenError(
-                        f'codegen: only 2-tuples supported in bootstrap, got {len(pat.pats)}-tuple'
+                        f'codegen: only 2-tuples supported in bootstrap, got {len(pat.pats)}-tuple',
+                        getattr(pat, 'loc', None) or loc,
                     )
                 con_arms.append((pair_info, list(pat.pats), body))
             elif isinstance(pat, (PatWild, PatVar)):
                 wild_arm = (pat, body)
         if not con_arms:
-            return self._compile_fallback_match(scrutinee, arms, env, name_hint)
-        return self._compile_con_match_case3(scrutinee, con_arms, wild_arm, env, name_hint)
+            return self._compile_fallback_match(scrutinee, arms, env, name_hint, loc=loc)
+        return self._compile_con_match_case3(scrutinee, con_arms, wild_arm, env, name_hint, loc=loc)
 
     # -----------------------------------------------------------------------
     # Tuples
@@ -2812,7 +2824,10 @@ class Compiler:
         body_expr = self._lambda_body(lam)
 
         if not params:
-            raise CodegenError('codegen: fix requires at least one parameter (self-reference)')
+            raise CodegenError(
+                'codegen: fix requires at least one parameter (self-reference)',
+                getattr(expr, 'loc', None),
+            )
 
         # First param is the self-reference name; remaining are user-visible arguments.
         self_name = self._pat_var_name(params[0])
@@ -2990,7 +3005,7 @@ class Compiler:
         # appropriate open-continuation application (deep or shallow).
         tag_val_pairs = []
         for arm in op_arms:
-            tag = self._lookup_op_tag(arm.op_name)
+            tag = self._lookup_op_tag(arm.op_name, getattr(arm, 'loc', None))
             arm_env = dispatch_env.child()
             for p in arm.arg_pats:
                 pn = self._pat_var_name(p)
@@ -3067,14 +3082,14 @@ class Compiler:
                 result = bapp(result, N(env.locals[fv]))
         return result
 
-    def _lookup_op_tag(self, op_name: str) -> int:
+    def _lookup_op_tag(self, op_name: str, loc=None) -> int:
         """Look up the CPS tag for an effect operation by name."""
         if op_name in self.effect_op_tags:
             return self.effect_op_tags[op_name]
         for k, v in self.effect_op_tags.items():
             if k.endswith('.' + op_name):
                 return v
-        raise CodegenError(f'codegen: unknown effect operation {op_name!r}')
+        raise CodegenError(f'codegen: unknown effect operation {op_name!r}', loc)
 
     def _compile_do(self, expr: ExprDo, env: Env, name_hint: str) -> Any:
         """
