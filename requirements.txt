@@ -8,3 +8,10 @@ blake3>=0.4.0
 
 # Test runner.
 pytest>=7.0
+
+# MCP server (bootstrap.mcp_server). Optional at import time — the module
+# only requires the package when the stdio server actually starts. The
+# unit tests in tests/bootstrap/test_mcp_server.py drive the tool
+# functions directly and don't need it; tests/bootstrap/test_mcp_stdio.py
+# is skipped if it's missing.
+mcp>=1.0
