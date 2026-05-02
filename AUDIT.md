@@ -283,6 +283,90 @@ blocker exists.
 (Add new findings here — keep IDs unique. Reference from commits and PRs
 so future sessions can pick up where the current one stopped.)
 
+- [x] **D1. `typecheck()` defaulted `module='Main'`; renderers silently
+      dropped types on mismatch.** A caller that passed a different module
+      name to `typecheck()` and to `render_module()` / `render_fragment()`
+      saw no type annotations in the IR and got no error — `typecheck`'s
+      `TypeEnv` keys were `Main.*` while the renderer looked up `Other.*`
+      and silently found nothing. The `module` parameter is now required
+      (no `'Main'` default), and both renderers raise `ValueError` if the
+      supplied `type_env` has no keys for the renderer's module, listing
+      observed module prefixes as a hint. `bootstrap/render_demo.py` now
+      honours the tightened contract by passing `type_env=None` when the
+      demo module's own typecheck failed. Two regression tests in
+      `tests/bootstrap/test_glass_ir.py::TestTypeAnnotatedRendering` pin
+      the mismatch-raises and match-passes shapes. (PR: #71)
+
+- [x] **D2. No per-subexpression type accumulation; no IDE-facing position
+      query.** `typecheck()` returned only top-level `fq → Scheme`; there
+      was no `expr_types` map, no "type at position X" hook, no symbol
+      table export. Hover-style queries from any tooling surface had to
+      either re-run inference with a position probe or invent their own
+      walker. Added an opt-in `TypeChecker.expr_types: dict[int, Type] |
+      None`; `infer()` now records `id(expr) → ty` when the side-table is
+      set, with all metas zonked at the new `typecheck_with_types(...)`
+      entry. New `bootstrap/ide.py` module exposes
+      `type_at_position(program, expr_types, line, col, filename=None)`
+      and the convenience `type_at_offset(source, module, ...)`. Position
+      semantics are documented in `ide.py`: `Loc` carries only start
+      positions, so the innermost expression is approximated as the
+      latest start-`Loc` ≤ cursor on the same file. Eight tests in
+      `tests/bootstrap/test_ide.py` cover literals, innermost-wins,
+      bounds, filename filter, end-to-end pipeline, and the opt-in
+      contract. (PR: #72)
+
+- [x] **D3. Source `Loc` and contract clauses silently dropped at Glass
+      IR rendering.** Every AST node carried `Loc(file, line, col)`, and
+      `DeclLet.contracts` preserved `pre`/`post`/`inv`/`law` clauses
+      (with `Proven` / `Deferred(NoSolver)` / etc. status) — but the
+      renderer ignored both. An IDE consuming Glass IR text could not
+      map back to source, and contract proof status disappeared from any
+      hover view. Now `render_decl(DeclLet)` prepends a `-- @ Loc`
+      comment and one `-- {kind} {status} ({pred})` comment per
+      contract before the `let` header. Comment form (rather than a
+      structured `| pre ...` line) keeps the IR parseable by the
+      existing surface parser. Predicate text is recovered from the
+      parser's token-list via `_render_pred_tokens` — lossy on
+      whitespace but adequate for display. Three tests in
+      `tests/bootstrap/test_glass_ir.py::TestLocAndContractRendering`
+      pin the loc-precedes-let, contract-rendering, and
+      no-contracts-only-loc shapes. (PR: #73)
+
+- [x] **D4. `DeclType` constructor `arg_types` emitted Python AST repr.**
+      `render_decl` for type declarations did `' '.join(str(f) for f in
+      ctor.arg_types)` — but `arg_types` is a list of AST type nodes
+      (`TyVar`, `TyCon`, `TyApp`, `TyArr`, ...), not strings, so `str()`
+      produced Python dataclass repr like `TyApp(fun=TyCon(name=...))`
+      in the IR. Surfaced the moment the new MCP server's
+      `compile_snippet` tool processed any parameterized type. Fixed
+      with a new `render_ast_type(ty)` for type-position AST nodes
+      (distinct from `typecheck.pp_type`, which renders the
+      typechecker's internal monotype representation), used in
+      `render_decl` and wrapped via `_wrap_atom` so multi-token args
+      stay readable. Falls back to `<type:Name>` for unknown shapes —
+      visibly ugly rather than silently emitting Python repr. The
+      Gnome's earlier audit pass had flagged this as an unverified
+      suspicion; the MCP work confirmed it. Note: the inner type-name
+      references inside constructor arg types (`Tree` in `Node a (Tree
+      a)`) stay unqualified — `scope.py:501` returns `DeclType` as-is
+      without rewriting type-position names. FQ-qualifying constructor
+      arg type refs is a separate resolver fix; this PR only stops the
+      renderer from emitting Python repr. Two tests under
+      `TestRenderTypeDecl` in `tests/bootstrap/test_glass_ir.py` cover
+      the parameterized and arrow-arg shapes. (PR: #75)
+
+D1–D4 above were the IDE-tooling prerequisites that landed
+back-to-back in support of the new `bootstrap/mcp_server.py` (PR #74) —
+a stdio MCP server exposing `compile_snippet`, `infer_type`,
+`explain_effect_row`, and `render_fragment` to LLM consumers, with the
+Core prelude built once at startup and threaded as priors into every
+per-call snippet build. The server stops at Glass IR + pin hashes; it
+does not depend on Reaver. See `bootstrap/mcp_server.py` for the
+architecture and `tests/bootstrap/test_mcp_server.py` for tool
+contracts. The arrival of an LLM-facing consumer is what made D1–D4
+visible: each was a silent gap that didn't matter until something
+external started reading IR text.
+
 ## What is good (preserve, do not refactor away)
 
 - Effect-row discipline: explicit at the type level; prelude keeps `Show`
