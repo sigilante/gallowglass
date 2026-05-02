@@ -215,6 +215,38 @@ def render_pattern(pat) -> str:
 # Declaration rendering
 # ---------------------------------------------------------------------------
 
+def _render_pred_tokens(pred: Any) -> str:
+    """Render a parsed predicate back to a flat token string.
+
+    The bootstrap parser stores predicates as ``('pred_tokens', [Token,...])``
+    — see ``Parser._parse_pred``. We recover a readable form by joining the
+    token text values with spaces. This is lossy (no original whitespace,
+    no operator spacing rules) but good enough for hover / Glass IR display.
+    """
+    if isinstance(pred, tuple) and len(pred) == 2 and pred[0] == 'pred_tokens':
+        toks = pred[1]
+        return ' '.join(str(t.value) for t in toks if t.value is not None)
+    return '<pred>'
+
+
+def _render_contract(clause: Any) -> str:
+    """Render a ContractClause as a Glass IR comment line.
+
+    Format: ``-- {kind} {status} ({pred})`` — e.g.
+    ``-- pre Proven (x > 0)`` or
+    ``-- post Deferred(NoSolver) (result == x + 1)``.
+
+    Comment form (rather than a structured ``| pre ...`` line) keeps Glass
+    IR text parseable by the existing surface parser, which doesn't yet
+    accept contracts in the let-body position. The comment carries the
+    same information for hover / IDE display.
+    """
+    kind = getattr(clause, 'kind', '?')
+    status = getattr(clause, 'status', '?')
+    pred = _render_pred_tokens(getattr(clause, 'pred', None))
+    return f'-- {kind} {status} ({pred})'
+
+
 def _check_type_env_module(type_env: dict | None, module: str) -> None:
     """Guard against the silent footgun where typecheck() was called with one
     module name and a renderer with another. The TypeEnv keys are FQ names
@@ -262,7 +294,13 @@ def render_decl(decl, module: str, pin_ids: dict | None = None,
             from bootstrap.typecheck import pp_scheme
             type_ann = f' : {pp_scheme(type_env[fq])}'
         body = render_expr(decl.body, 1)
-        return f'let {fq}{pin_ann}{type_ann}\n  = {body}'
+        prefix = []
+        if getattr(decl, 'loc', None) is not None:
+            prefix.append(f'-- @ {decl.loc}')
+        for clause in getattr(decl, 'contracts', None) or []:
+            prefix.append(_render_contract(clause))
+        head = ''.join(line + '\n' for line in prefix)
+        return f'{head}let {fq}{pin_ann}{type_ann}\n  = {body}'
 
     if isinstance(decl, ast.DeclType):
         fq = f'{module}.{decl.name}'
