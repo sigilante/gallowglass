@@ -379,7 +379,10 @@ class TestTypeAnnotatedRendering(unittest.TestCase):
         decl = resolved.decls[0]
         frag = render_fragment('Test.foo', decl, pin_id=pin_ids.get('Test.foo'),
                                module='Test')
-        self.assertNotIn(':', frag.split('\n')[4])  # body line, no colon
+        # Find the `let` header line — it must not carry a `:` annotation.
+        let_line = next(line for line in frag.splitlines()
+                        if line.startswith('let '))
+        self.assertNotIn(':', let_line)
 
     def test_nat_arrow_type(self):
         """Function type renders correctly."""
@@ -470,6 +473,46 @@ let neq : Eq a => a -> a -> Bool = λ xx yy ->
                 break
         else:
             self.fail("neq not found")
+
+
+class TestLocAndContractRendering(unittest.TestCase):
+    """Pre-3: Glass IR carries source Loc and contract clauses as comments."""
+
+    def test_let_carries_source_loc(self):
+        """Each let header is preceded by a `-- @ file:line:col` comment."""
+        resolved, _, _ = _compile('let foo = 42')
+        text = render_decl(resolved.decls[0], 'Test')
+        self.assertIn('-- @ <test>:1:', text)
+        # Loc comment precedes the `let` header.
+        loc_idx = text.index('-- @')
+        let_idx = text.index('let Test.foo')
+        self.assertLess(loc_idx, let_idx)
+
+    def test_contracts_rendered_as_comments(self):
+        """Contract clauses appear as `-- <kind> <status> (<pred>)` lines."""
+        src = '''let bumped : Nat -> Nat
+  | pre  Proven (nn > 0)
+  | post Deferred(NoSolver) (result == nn + 1)
+  = λ nn -> nn'''
+        resolved, _, _ = _compile(src)
+        text = render_decl(resolved.decls[0], 'Test')
+        self.assertIn('-- pre Proven', text)
+        self.assertIn('-- post Deferred(NoSolver)', text)
+        # Predicate text is rendered (token join — spacing may differ).
+        self.assertIn('nn', text)
+        # Both contract comments precede the `let` header.
+        let_idx = text.index('let Test.bumped')
+        for needle in ('-- pre Proven', '-- post Deferred(NoSolver)'):
+            self.assertLess(text.index(needle), let_idx)
+
+    def test_no_contracts_no_extra_comments(self):
+        """A let with no contracts has only the loc comment, no contract lines."""
+        resolved, _, _ = _compile('let foo = 42')
+        text = render_decl(resolved.decls[0], 'Test')
+        comment_lines = [l for l in text.splitlines() if l.startswith('-- ')]
+        # Exactly one comment line — the loc.
+        self.assertEqual(len(comment_lines), 1)
+        self.assertTrue(comment_lines[0].startswith('-- @ '))
 
 
 if __name__ == '__main__':
