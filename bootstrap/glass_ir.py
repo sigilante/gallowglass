@@ -34,6 +34,50 @@ def _qual_name(qn: ast.QualName) -> str:
     return '.'.join(qn.parts)
 
 
+def render_ast_type(ty) -> str:
+    """Pretty-print an AST type node as Gallowglass surface syntax.
+
+    Distinct from ``bootstrap.typecheck.pp_type``, which renders the
+    typechecker's internal monotype representation (``TCon``/``TArr``/...).
+    Constructor argument types and other type-position AST nodes use
+    ``TyCon``/``TyArr``/... and need a different renderer.
+
+    Handles the cases that appear in ``Constructor.arg_types`` and other
+    type-position contexts; falls back to ``<type:Name>`` for shapes that
+    don't appear there. If the unknown shape ever does show up, the
+    fallback is visible (and ugly) rather than silently emitting Python
+    repr.
+    """
+    if isinstance(ty, ast.TyVar):
+        return ty.name
+    if isinstance(ty, ast.TyCon):
+        return _qual_name(ty.name)
+    if isinstance(ty, ast.TyApp):
+        f_ = render_ast_type(ty.fun)
+        a_ = render_ast_type(ty.arg)
+        # Parenthesise the arg if it itself is a multi-token type
+        # application or arrow, to keep ``Tree (Tree a)`` readable.
+        if isinstance(ty.arg, (ast.TyApp, ast.TyArr)):
+            a_ = f'({a_})'
+        return f'{f_} {a_}'
+    if isinstance(ty, ast.TyArr):
+        d = render_ast_type(ty.from_)
+        c = render_ast_type(ty.to_)
+        # Right-associative: parenthesise the LHS if it is itself an arrow.
+        if isinstance(ty.from_, ast.TyArr):
+            d = f'({d})'
+        return f'{d} → {c}'
+    if isinstance(ty, ast.TyTuple):
+        return '(' + ', '.join(render_ast_type(e) for e in ty.elems) + ')'
+    if isinstance(ty, ast.TyUnit):
+        return '⊤'
+    if isinstance(ty, ast.TyBottom):
+        return '⊥'
+    if isinstance(ty, ast.TyEmpty):
+        return '∅'
+    return f'<type:{type(ty).__name__}>'
+
+
 # ---------------------------------------------------------------------------
 # Expression rendering
 # ---------------------------------------------------------------------------
@@ -310,7 +354,8 @@ def render_decl(decl, module: str, pin_ids: dict | None = None,
         for ctor in decl.constructors:
             name = f'{module}.{ctor.name}'
             if ctor.arg_types:
-                args = ' '.join(str(f) for f in ctor.arg_types)
+                args = ' '.join(_wrap_atom(render_ast_type(f))
+                                for f in ctor.arg_types)
                 ctors.append(f'  | {name} {args}')
             else:
                 ctors.append(f'  | {name}')
