@@ -262,6 +262,12 @@ class TypeChecker:
         self.type_arity: dict[str, int] = {}
         # Type constructors: type_fq -> [(con_fq, arity)]
         self.type_constructors: dict[str, list[tuple[str, int]]] = {}
+        # Per-subexpression type recording for IDE queries. When this is a
+        # dict, infer() stores id(expr) -> Type for every visited expression
+        # node. Final types must be _zonk'd at query time. Off (None) by
+        # default — the recording adds overhead and is only useful for
+        # tooling that wants type-at-position lookups.
+        self.expr_types: dict[int, Any] | None = None
         self._init_builtins()
 
     # ------------------------------------------------------------------ #
@@ -1009,7 +1015,20 @@ class TypeChecker:
     # ------------------------------------------------------------------ #
 
     def infer(self, lenv: dict[str, Scheme], expr: Any) -> Any:
-        """Infer type of expression in the given local environment."""
+        """Infer type of expression in the given local environment.
+
+        Thin wrapper around ``_infer_impl`` that records every visited
+        expression in ``self.expr_types`` when recording is enabled. The
+        recorded type is the just-inferred form; later unifications may
+        refine its metas, so callers should ``_zonk`` before display.
+        """
+        ty = self._infer_impl(lenv, expr)
+        if self.expr_types is not None:
+            self.expr_types[id(expr)] = ty
+        return ty
+
+    def _infer_impl(self, lenv: dict[str, Scheme], expr: Any) -> Any:
+        """Inference implementation. See ``infer`` for the public entry."""
 
         if isinstance(expr, ExprNat):
             return TCon('Nat')
@@ -1524,3 +1543,31 @@ def typecheck(
         tc.type_constructors.update(prior_type_constructors)
     tc.check(program, scope_env)
     return tc.type_env
+
+
+def typecheck_with_types(
+    program: Program,
+    scope_env: Env,
+    module: str,
+    filename: str = '<stdin>',
+    prior_type_env: TypeEnv | None = None,
+    prior_type_constructors: dict[str, list[tuple[str, int]]] | None = None,
+) -> tuple[TypeEnv, dict[int, Any]]:
+    """Type-check and return both the top-level TypeEnv and a per-expression
+    type map keyed by ``id(expr)``.
+
+    Intended for tooling — IDE hover, MCP ``infer_type``, etc. The map is
+    populated during inference and then fully ``_zonk``'d so metas resolved
+    by later unifications are reflected in the recorded types.
+
+    Raises TypecheckError on the first type error.
+    """
+    tc = TypeChecker(module, filename)
+    if prior_type_env:
+        tc.type_env.update(prior_type_env)
+    if prior_type_constructors:
+        tc.type_constructors.update(prior_type_constructors)
+    tc.expr_types = {}
+    tc.check(program, scope_env)
+    zonked = {k: tc._zonk(v) for k, v in tc.expr_types.items()}
+    return tc.type_env, zonked
