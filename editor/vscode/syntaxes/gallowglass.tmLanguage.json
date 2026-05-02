@@ -1,0 +1,315 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Gallowglass",
+  "scopeName": "source.gallowglass",
+  "fileTypes": ["gls"],
+  "patterns": [
+    { "include": "#comment-block" },
+    { "include": "#comment-line" },
+    { "include": "#contract-clause" },
+    { "include": "#pin-literal" },
+    { "include": "#string-raw" },
+    { "include": "#string-bytes" },
+    { "include": "#string-hex-bytes" },
+    { "include": "#string" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#built-in-types" },
+    { "include": "#constants" },
+    { "include": "#operators" },
+    { "include": "#qualified-name" },
+    { "include": "#type-name" },
+    { "include": "#type-variable" },
+    { "include": "#identifier" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comment-line": {
+      "match": "(--).*$",
+      "name": "comment.line.double-dash.gallowglass",
+      "captures": {
+        "1": { "name": "punctuation.definition.comment.gallowglass" }
+      }
+    },
+    "comment-block": {
+      "begin": "\\{-",
+      "end": "-\\}",
+      "name": "comment.block.gallowglass",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.comment.begin.gallowglass" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.comment.end.gallowglass" }
+      }
+    },
+
+    "contract-clause": {
+      "comment": "Contract clauses on `let` declarations: `| pre Proven (...)` etc.",
+      "match": "(\\|)\\s+(pre|post|inv|law)\\s+(Proven|Refuted|Checked|Violated|Deferred(?:\\s*\\(\\s*[A-Z][A-Za-z0-9_]*\\s*\\))?)",
+      "captures": {
+        "1": { "name": "punctuation.separator.contract.gallowglass" },
+        "2": { "name": "keyword.contract.kind.gallowglass" },
+        "3": { "name": "constant.language.contract-status.gallowglass" }
+      }
+    },
+
+    "pin-literal": {
+      "comment": "Glass IR pin reference: pin#<hex>, optionally inside [..] or after @!",
+      "match": "(@!)?(\\[)?(pin)(#)([0-9a-fA-F]+)(\\])?",
+      "captures": {
+        "1": { "name": "keyword.operator.pin-ref.gallowglass" },
+        "2": { "name": "punctuation.section.brackets.begin.gallowglass" },
+        "3": { "name": "support.constant.pin.gallowglass" },
+        "4": { "name": "punctuation.separator.hash.gallowglass" },
+        "5": { "name": "constant.other.pin-hash.gallowglass" },
+        "6": { "name": "punctuation.section.brackets.end.gallowglass" }
+      }
+    },
+
+    "string": {
+      "name": "string.quoted.double.gallowglass",
+      "begin": "\"",
+      "end": "\"",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.gallowglass" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.gallowglass" }
+      },
+      "patterns": [
+        { "include": "#string-escape" },
+        { "include": "#string-interp" }
+      ]
+    },
+    "string-raw": {
+      "name": "string.quoted.raw.gallowglass",
+      "comment": "r\"...\" — no escapes, no interpolation.",
+      "begin": "r\"",
+      "end": "\"",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.gallowglass" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.gallowglass" }
+      }
+    },
+    "string-bytes": {
+      "name": "string.quoted.bytes.gallowglass",
+      "begin": "b\"",
+      "end": "\"",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.gallowglass" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.gallowglass" }
+      },
+      "patterns": [
+        { "include": "#string-escape" }
+      ]
+    },
+    "string-hex-bytes": {
+      "name": "string.quoted.hex-bytes.gallowglass",
+      "begin": "x\"",
+      "end": "\"",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.gallowglass" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.gallowglass" }
+      },
+      "patterns": [
+        {
+          "match": "[0-9a-fA-F]+",
+          "name": "constant.numeric.hex.gallowglass"
+        }
+      ]
+    },
+    "string-escape": {
+      "match": "\\\\.",
+      "name": "constant.character.escape.gallowglass"
+    },
+    "string-interp": {
+      "comment": "#{expr} interpolation inside double-quoted strings.",
+      "begin": "#\\{",
+      "end": "\\}",
+      "name": "meta.embedded.expression.gallowglass",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.interpolation.begin.gallowglass" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.section.interpolation.end.gallowglass" }
+      },
+      "patterns": [
+        { "include": "$self" }
+      ]
+    },
+
+    "numbers": {
+      "patterns": [
+        {
+          "match": "\\b0x[0-9a-fA-F][0-9a-fA-F_]*\\b",
+          "name": "constant.numeric.hex.gallowglass"
+        },
+        {
+          "match": "\\b[0-9][0-9_]*\\b",
+          "name": "constant.numeric.decimal.gallowglass"
+        }
+      ]
+    },
+
+    "keywords": {
+      "patterns": [
+        {
+          "comment": "Declaration keywords",
+          "match": "\\b(mod|let|type|eff|class|instance|use|external|where|export|depends|modules|version|package|import|from|macro)\\b",
+          "name": "keyword.declaration.gallowglass"
+        },
+        {
+          "comment": "Control-flow keywords",
+          "match": "\\b(if|then|else|match|handle|return|do|in|with|as|at|unqualified)\\b",
+          "name": "keyword.control.gallowglass"
+        },
+        {
+          "comment": "Quantifier and structural keywords",
+          "match": "\\b(forall|exists|fix|once)\\b",
+          "name": "keyword.other.gallowglass"
+        },
+        {
+          "comment": "Contract clause keywords (when not in the styled `| pre Proven (...)` form)",
+          "match": "\\b(pre|post|inv|law)\\b",
+          "name": "keyword.contract.kind.gallowglass"
+        }
+      ]
+    },
+
+    "built-in-types": {
+      "match": "\\b(Nat|Bool|Text|Bytes|Unit|Never)\\b",
+      "name": "support.type.builtin.gallowglass"
+    },
+    "constants": {
+      "patterns": [
+        {
+          "match": "\\b(True|False|Unit|Never)\\b",
+          "name": "constant.language.gallowglass"
+        },
+        {
+          "comment": "Empty / top / bottom symbol constants.",
+          "match": "[⊤⊥∅]",
+          "name": "constant.language.symbol.gallowglass"
+        }
+      ]
+    },
+
+    "operators": {
+      "patterns": [
+        {
+          "comment": "λ — anonymous function head.",
+          "match": "λ",
+          "name": "keyword.operator.lambda.gallowglass"
+        },
+        {
+          "comment": "Quantifiers ∀ ∃.",
+          "match": "[∀∃]",
+          "name": "keyword.operator.quantifier.gallowglass"
+        },
+        {
+          "comment": "Arrows: → ← =>",
+          "match": "(→|←|=>)",
+          "name": "keyword.operator.arrow.gallowglass"
+        },
+        {
+          "comment": "ASCII arrow alternatives normalized at the lexer; highlight raw form too.",
+          "match": "(->|<-)",
+          "name": "keyword.operator.arrow.gallowglass"
+        },
+        {
+          "comment": "Comparison and set membership operators.",
+          "match": "(≠|≤|≥|∈|∉|⊆|/=|<=|>=)",
+          "name": "keyword.operator.comparison.gallowglass"
+        },
+        {
+          "comment": "List cons (::) and Glass IR/binding pipes.",
+          "match": "(::|\\|>|\\+\\+)",
+          "name": "keyword.operator.gallowglass"
+        },
+        {
+          "comment": "Other Unicode operators reserved by the lexer.",
+          "match": "[·⊕⊗÷¬]",
+          "name": "keyword.operator.gallowglass"
+        }
+      ]
+    },
+
+    "qualified-name": {
+      "comment": "Module-qualified reference: Foo.Bar.baz or Foo.Bar.SomeCtor",
+      "patterns": [
+        {
+          "match": "(?:[A-Z][A-Za-z0-9_]*\\.)+([a-z_][A-Za-z0-9_]*)",
+          "name": "variable.other.qualified.gallowglass",
+          "captures": {
+            "0": { "patterns": [
+              { "match": "[A-Z][A-Za-z0-9_]*", "name": "entity.name.namespace.gallowglass" },
+              { "match": "\\.", "name": "punctuation.accessor.gallowglass" }
+            ]}
+          }
+        },
+        {
+          "match": "(?:[A-Z][A-Za-z0-9_]*\\.)+([A-Z][A-Za-z0-9_]*)",
+          "name": "entity.name.type.qualified.gallowglass",
+          "captures": {
+            "0": { "patterns": [
+              { "match": "[A-Z][A-Za-z0-9_]*", "name": "entity.name.namespace.gallowglass" },
+              { "match": "\\.", "name": "punctuation.accessor.gallowglass" }
+            ]}
+          }
+        }
+      ]
+    },
+
+    "type-name": {
+      "comment": "PascalCase identifier — type or constructor.",
+      "match": "\\b[A-Z][A-Za-z0-9_]*\\b",
+      "name": "entity.name.type.gallowglass"
+    },
+    "type-variable": {
+      "comment": "Single-letter type variable. a-q are type vars; r-z are row vars.",
+      "patterns": [
+        {
+          "match": "(?<![A-Za-z0-9_])[a-q](?![A-Za-z0-9_])",
+          "name": "variable.parameter.type.gallowglass"
+        },
+        {
+          "match": "(?<![A-Za-z0-9_])[r-z](?![A-Za-z0-9_])",
+          "name": "variable.parameter.row.gallowglass"
+        }
+      ]
+    },
+    "identifier": {
+      "comment": "snake_case identifier — value, function, or pattern variable.",
+      "match": "\\b[a-z_][A-Za-z0-9_]*\\b",
+      "name": "variable.other.gallowglass"
+    },
+
+    "punctuation": {
+      "patterns": [
+        {
+          "comment": "Programmer pin / dictionary marker.",
+          "match": "@",
+          "name": "keyword.symbol.pin.gallowglass"
+        },
+        {
+          "match": "[(){}\\[\\]]",
+          "name": "punctuation.section.gallowglass"
+        },
+        {
+          "match": "[,;]",
+          "name": "punctuation.separator.gallowglass"
+        },
+        {
+          "match": "[=|:.?!]",
+          "name": "punctuation.gallowglass"
+        }
+      ]
+    }
+  }
+}

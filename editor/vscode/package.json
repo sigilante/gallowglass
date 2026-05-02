@@ -1,0 +1,41 @@
+{
+  "name": "gallowglass",
+  "displayName": "Gallowglass",
+  "description": "Syntax highlighting and language configuration for the Gallowglass programming language.",
+  "version": "0.0.1",
+  "publisher": "gallowglass",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sigilante/gallowglass"
+  },
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "gallowglass",
+        "aliases": [
+          "Gallowglass",
+          "gallowglass",
+          "gls"
+        ],
+        "extensions": [
+          ".gls"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "gallowglass",
+        "scopeName": "source.gallowglass",
+        "path": "./syntaxes/gallowglass.tmLanguage.json"
+      }
+    ]
+  }
+}

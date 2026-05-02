@@ -1,0 +1,226 @@
+-- This file exercises every form the Gallowglass TextMate grammar
+-- recognises, so a maintainer can visually verify the highlighting.
+--
+-- Open it in VSCode after installing the extension. Use the command
+-- `Developer: Inspect Editor Tokens and Scopes` (Ctrl-Shift-P) to see
+-- which scope each token gets — handy when something is miscoloured.
+
+{- Block comments work too.
+   They can span multiple lines.
+   They do not nest. -}
+
+-- =====================================================================
+-- Module imports
+-- =====================================================================
+
+use Core.Nat { add, eq }
+use Core.Text { Show, Debug, text_concat }
+use Core.Option as Opt
+
+-- External modules: VM-boundary primitives.
+external mod Core.PLAN {
+  inc        : Nat → Nat
+  add        : Nat → Nat → Nat
+  print_line : Text → {IO} ⊤
+}
+
+-- =====================================================================
+-- Algebraic types and constructors
+-- =====================================================================
+
+type Color =
+  | Red
+  | Green
+  | Blue
+
+type Tree a =
+  | Leaf
+  | Node a (Tree a) (Tree a)
+
+type Result a b =
+  | Ok  a
+  | Err b
+
+-- Type alias.
+type Age = Nat
+
+-- Record (desugars to a single-constructor ADT).
+type Person = { name : Text, age : Age }
+
+-- =====================================================================
+-- Values, lambdas, application
+-- =====================================================================
+
+-- Nullary value with type annotation.
+let answer : Nat = 42
+
+-- Hex literal.
+let mask : Nat = 0xFF_00_FF
+
+-- Lambda using canonical Unicode.
+let inc : Nat → Nat
+  = λ nn → add nn 1
+
+-- ASCII-equivalent lambda — lexer normalises to →.
+let dec : Nat -> Nat
+  = λ nn -> nn
+
+-- =====================================================================
+-- Contracts
+-- =====================================================================
+
+let bumped : Nat → Nat
+  | pre  Proven                (nn > 0)
+  | post Deferred(NoSolver)    (result == nn + 1)
+  | inv  Checked               (result > 0)
+  | law  Refuted               (result < 0)
+  = λ nn → add nn 1
+
+-- =====================================================================
+-- Pattern matching
+-- =====================================================================
+
+let is_leaf : ∀ a. Tree a → Bool
+  = λ tt → match tt {
+    | Leaf       → True
+    | Node _ _ _ → False
+  }
+
+let depth : Tree Nat → Nat
+  = λ tt → match tt {
+    | Leaf            → 0
+    | Node _ left right → add (depth left) (depth right)
+  }
+
+-- Nested patterns with literal, wildcard, or-pattern, guard.
+let classify : Result Nat Text → Text
+  = λ rr → match rr {
+    | Ok 0           → "zero"
+    | Ok n if n > 10 → "big"
+    | Ok _           → "small"
+    | Err _          → "nope"
+  }
+
+-- =====================================================================
+-- Effects and handlers
+-- =====================================================================
+
+eff State a {
+  get : ⊤ → a
+  put : a → ⊤
+}
+
+let count_up : ∀ r. Nat → {State Nat | r} ⊤
+  = λ nn →
+    do x ← get ⊤
+    put (add x nn)
+
+let run_state : ∀ a r. {State Nat | r} a → Nat → (a, Nat)
+  = λ comp init →
+    handle comp {
+      | return x   → (x, init)
+      | get _    k → k init
+      | put v    k → k ⊤
+    }
+
+-- =====================================================================
+-- Type classes and instances
+-- =====================================================================
+
+class Eq a {
+  eq  : a → a → Bool
+  neq : a → a → Bool
+}
+
+class Eq a => Ord a {
+  lt  : a → a → Bool
+  lte : a → a → Bool
+  gt  : a → a → Bool
+}
+
+instance Eq Color {
+  eq = λ x y → match x {
+    | Red   → match y { | Red → True | _ → False }
+    | Green → match y { | Green → True | _ → False }
+    | Blue  → match y { | Blue → True | _ → False }
+  }
+}
+
+-- Constrained instance.
+instance Eq a => Eq (Option a) {
+  eq = λ x y → match x {
+    | None   → match y { | None → True | Some _ → False }
+    | Some a → match y { | None → False | Some b → eq a b }
+  }
+}
+
+-- =====================================================================
+-- Strings — quoted, raw, interpolated
+-- =====================================================================
+
+let greeting : Text = "hello, world"
+
+let raw_path : Text = r"C:\Users\nobody"
+
+let bytes_lit : Bytes = b"\x00\x01\x02"
+
+let hex_bytes : Bytes = x"DEADBEEF"
+
+let interp : Nat → Text
+  = λ nn → "the answer is #{show nn}, plus or minus #{show (add nn 1)}"
+
+-- =====================================================================
+-- Operators — Unicode and ASCII alternatives
+-- =====================================================================
+
+let arithmetic : Nat → Nat → Nat
+  = λ a b → add (add a 1) (add b ÷ 1)
+
+let compares : Nat → Nat → Bool
+  = λ a b → if a ≤ b then a ≠ b else a ≥ b
+
+let pipes : Nat → Nat
+  = λ nn → nn |> inc |> inc
+
+-- =====================================================================
+-- Programmer pin — DAG node.
+-- =====================================================================
+
+let memo_demo : Nat → Nat
+  = λ nn →
+    @result = add nn nn
+    add result 1
+
+-- =====================================================================
+-- Glass IR forms (these only appear in rendered IR text, not surface
+-- source — but the grammar recognises them anyway, since IDEs may show
+-- IR fragments inline).
+-- =====================================================================
+
+@![pin#deadbeef] Core.Nat.add
+
+let snippet : Nat
+  | pre Proven (xx > 0)
+  = 42 -- normally you'd see a `[pin#cafe1234]` annotation here
+
+-- =====================================================================
+-- Quantifiers and forall syntax
+-- =====================================================================
+
+let identity : ∀ a. a → a
+  = λ x → x
+
+let const_ : ∀ a b. a → b → a
+  = λ x _ → x
+
+-- Existential — exists is reserved but rarely used in surface code.
+-- exists keyword goes here when a real example needs it.
+
+-- =====================================================================
+-- Module footer — fixity, where, etc.
+-- =====================================================================
+
+let helper_using_where : Nat → Nat
+  = λ nn → loop nn 0
+  where
+    loop = λ ii acc → if ii ≤ 0 then acc else loop (add ii (-1)) (add acc ii)
