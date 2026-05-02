@@ -475,6 +475,43 @@ let neq : Eq a => a -> a -> Bool = λ xx yy ->
             self.fail("neq not found")
 
 
+class TestRenderTypeDecl(unittest.TestCase):
+    """type-decl constructor arg rendering uses Gallowglass surface syntax,
+    not Python AST repr."""
+
+    def test_parameterized_constructor_args(self):
+        """A parameterized type's constructor args render readably.
+
+        Note: scope resolution does not rewrite type-position references
+        inside constructor arg types (see ``scope.py:501`` — ``DeclType``
+        is returned as-is). The renderer is honest about what it gets:
+        the inner ``Tree`` reference stays unqualified. FQ-rewriting
+        constructor arg types is a separate scope-resolver fix.
+        """
+        src = 'type Tree a =\n  | Leaf\n  | Node a (Tree a)'
+        resolved, _, _ = _compile(src)
+        text = render_decl(resolved.decls[0], 'Test')
+        self.assertIn('type Test.Tree a', text)
+        self.assertIn('| Test.Leaf', text)
+        self.assertIn('Test.Node', text)
+        # The fix: AST type repr must NOT leak into the IR.
+        self.assertNotIn('TyApp', text)
+        self.assertNotIn('TyVar', text)
+        self.assertNotIn('TyCon', text)
+        # Multi-token type arg gets parenthesised; single-token stays bare.
+        self.assertIn('(Tree a)', text)
+        # Bare `a` arg appears between Node and the parenthesised Tree-of-a.
+        self.assertRegex(text, r'Test\.Node\s+a\s+\(Tree a\)')
+
+    def test_arrow_in_constructor_arg(self):
+        """A constructor whose arg is a function type renders with →."""
+        src = 'type Box a =\n  | MakeBox (a -> a)'
+        resolved, _, _ = _compile(src)
+        text = render_decl(resolved.decls[0], 'Test')
+        self.assertIn('→', text)
+        self.assertNotIn('TyArr', text)
+
+
 class TestLocAndContractRendering(unittest.TestCase):
     """Pre-3: Glass IR carries source Loc and contract clauses as comments."""
 
