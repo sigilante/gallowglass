@@ -65,6 +65,7 @@ def render_demo_glass_ir(demo_path: str, demo_module: str | None = None,
     module_envs: dict = {}
     type_env: dict = {}
     demo_resolved = None
+    demo_typecheck_ok = False
     for mod, source_text in sources:
         filename = f'<{mod}>'
         prog = parse(lex(source_text, filename), filename)
@@ -74,6 +75,8 @@ def render_demo_glass_ir(demo_path: str, demo_module: str | None = None,
             mod_types = typecheck(resolved, env, mod, filename,
                                   prior_type_env=type_env)
             type_env.update(mod_types)
+            if mod == demo_module:
+                demo_typecheck_ok = True
         except Exception:
             # Type-checking is best-effort for Glass IR rendering; if a demo
             # fails to typecheck we still want to emit the IR.
@@ -84,8 +87,10 @@ def render_demo_glass_ir(demo_path: str, demo_module: str | None = None,
     if demo_resolved is None:
         raise RuntimeError(f'demo module {demo_module!r} not found in build')
 
+    # Honor the renderer's contract: only pass type_env if it actually has
+    # entries for this module. Otherwise the renderer raises (Pre-1 guard).
     return render_module(demo_resolved, demo_module, manifest=None,
-                         type_env=type_env)
+                         type_env=type_env if demo_typecheck_ok else None)
 
 
 def main() -> int:

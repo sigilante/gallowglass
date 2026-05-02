@@ -1498,7 +1498,7 @@ class TypeChecker:
 def typecheck(
     program: Program,
     scope_env: Env,
-    module: str = 'Main',
+    module: str,
     filename: str = '<stdin>',
     prior_type_env: TypeEnv | None = None,
     prior_type_constructors: dict[str, list[tuple[str, int]]] | None = None,
@@ -1506,6 +1506,10 @@ def typecheck(
     """Type-check a resolved program; return the final TypeEnv.
 
     Args:
+        module: Module name. Must match the name passed to ``resolve()`` and to
+            any later Glass IR renderer — the returned TypeEnv keys are FQ
+            names of the form ``f'{module}.{decl_name}'``, and a renderer
+            given a different module will silently fail to find them.
         prior_type_env: Pre-existing type environment from other modules.
             Entries are copied into the checker before checking begins.
         prior_type_constructors: Pre-existing type constructor registry from

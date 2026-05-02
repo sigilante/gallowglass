@@ -215,6 +215,33 @@ def render_pattern(pat) -> str:
 # Declaration rendering
 # ---------------------------------------------------------------------------
 
+def _check_type_env_module(type_env: dict | None, module: str) -> None:
+    """Guard against the silent footgun where typecheck() was called with one
+    module name and a renderer with another. The TypeEnv keys are FQ names
+    ``Module.decl``; if none of them share the renderer's module prefix, the
+    annotations would silently disappear. Raise instead.
+    """
+    if not type_env:
+        return
+    prefix = f'{module}.'
+    if any(k.startswith(prefix) for k in type_env):
+        return
+    # No keys for this module. Find the first qualified key (skip the bare
+    # built-ins True/False/Unit etc.) to give a useful diagnostic.
+    observed_prefixes = sorted({
+        k.rsplit('.', 1)[0] for k in type_env if '.' in k
+    })
+    if observed_prefixes:
+        hint = "modules in type_env: " + ', '.join(
+            f"'{p}'" for p in observed_prefixes)
+    else:
+        hint = "type_env has no qualified keys"
+    raise ValueError(
+        f"render: type_env has no keys for module '{module}' ({hint}). "
+        f"Pass the same module name to typecheck() and the renderer."
+    )
+
+
 def render_decl(decl, module: str, pin_ids: dict | None = None,
                 type_env: dict | None = None) -> str:
     """Render a resolved AST declaration as Glass IR.
@@ -307,6 +334,8 @@ def render_fragment(
     Returns:
         Glass IR fragment text.
     """
+    if module:
+        _check_type_env_module(type_env, module)
     lines = []
 
     # Metadata header
@@ -544,6 +573,7 @@ def render_module(
     Returns:
         Glass IR text for the entire module.
     """
+    _check_type_env_module(type_env, module)
     pin_ids = manifest.get('pins', {}) if manifest else {}
     parts = []
     for decl in resolved.decls:

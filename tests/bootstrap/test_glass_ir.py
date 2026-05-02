@@ -416,6 +416,36 @@ class TestTypeAnnotatedRendering(unittest.TestCase):
         self.assertIn(': Nat', text)
         self.assertIn('∀', text)
 
+    def test_module_name_mismatch_raises(self):
+        """Renderer raises if type_env was built for a different module.
+
+        Regression for the silent-footgun where typecheck() and render_*() were
+        given different module names — annotations would silently disappear.
+        """
+        resolved, _, pin_ids, type_env = self._compile_typed(
+            'let foo = 42', module='Real')
+        # Build resolved separately for the wrong module name to keep the
+        # render call internally consistent except for the type_env mismatch.
+        prog = parse(lex('let foo = 42', '<test>'), '<test>')
+        wrong_resolved, _ = resolve(prog, 'Wrong', {}, '<test>')
+        decl = wrong_resolved.decls[0]
+        manifest = {'pins': {}}
+        with self.assertRaises(ValueError) as cm:
+            render_module(wrong_resolved, 'Wrong', manifest, type_env=type_env)
+        self.assertIn("'Wrong'", str(cm.exception))
+        self.assertIn("'Real'", str(cm.exception))
+        with self.assertRaises(ValueError):
+            render_fragment('Wrong.foo', decl, module='Wrong',
+                            type_env=type_env)
+
+    def test_module_name_match_passes(self):
+        """Renderer accepts type_env when the module names line up."""
+        resolved, _, pin_ids, type_env = self._compile_typed(
+            'let foo = 42', module='Real')
+        manifest = {'pins': pin_ids}
+        text = render_module(resolved, 'Real', manifest, type_env=type_env)
+        self.assertIn(': Nat', text)
+
     def test_constrained_type_renders(self):
         """Constrained type with ⇒ renders correctly."""
         src = '''class Eq a {
