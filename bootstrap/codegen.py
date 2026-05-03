@@ -202,8 +202,12 @@ class Compiler:
                  pre_class_methods: dict | None = None,
                  pre_class_defaults: dict | None = None,
                  pre_class_constraints: dict | None = None,
-                 pre_con_info: dict | None = None):
+                 pre_con_info: dict | None = None,
+                 expr_types: dict | None = None):
         self.module = module
+        # id(expr) -> typecheck monotype, populated by typecheck_with_types.
+        # When present, _infer_type_key prefers this over its surface heuristics.
+        self.expr_types: dict | None = expr_types
         # map fq_name → PLAN value (not pinned yet)
         self.compiled: dict[str, Any] = {}
         # constructor info table: fq_name → ConInfo
@@ -1282,13 +1286,47 @@ class Compiler:
             return val
         return P(val)
 
-    def _infer_type_key(self, expr: Any, env: Env) -> str | None:
-        """Heuristically determine the type key of an expression for instance lookup.
+    def _type_to_instance_key(self, ty: Any) -> str | None:
+        """Convert a typecheck monotype to an instance-key string.
 
-        Covers: literal Nats/Text, constructor applications, locals with tracked
-        param types, explicit type annotations, and some global value checks.
-        Returns None if the type cannot be determined.
+        Mirrors `_typearg_key`: for `TApp` use the outer constructor only, and
+        strip module qualification (`Core.List` → `List`) so the key matches
+        the form used at instance registration. Returns None when the type
+        carries no usable head constructor (unresolved meta, type variable,
+        function, tuple, etc.).
         """
+        from bootstrap.typecheck import TCon, TApp, TMeta, TComp
+        # Walk meta chains so we read through resolved unification variables.
+        while isinstance(ty, TMeta) and ty.ref is not None:
+            ty = ty.ref
+        if isinstance(ty, TCon):
+            return ty.name.rsplit('.', 1)[-1]
+        if isinstance(ty, TApp):
+            return self._type_to_instance_key(ty.fun)
+        if isinstance(ty, TComp):
+            # Computation type {row} t — instance lookup uses the value type.
+            return self._type_to_instance_key(ty.ty)
+        return None
+
+    def _infer_type_key(self, expr: Any, env: Env) -> str | None:
+        """Determine the type key of an expression for instance lookup.
+
+        Prefers the typecheck-supplied `expr_types` map (populated by
+        `typecheck_with_types` and threaded in via `Compiler.expr_types`) so
+        non-trivial expressions — constructor results, applied combinators,
+        let-bound intermediates — get their real inferred type. Falls back to
+        a small surface-syntax heuristic for cases the typecheck pass either
+        doesn't see (compile-only callers) or didn't resolve to a concrete
+        head.
+
+        Returns None if no concrete head constructor can be determined.
+        """
+        if self.expr_types is not None:
+            ty = self.expr_types.get(id(expr))
+            if ty is not None:
+                key = self._type_to_instance_key(ty)
+                if key is not None:
+                    return key
         if isinstance(expr, ExprNat):
             return 'Nat'
         if isinstance(expr, ExprText):
@@ -3333,6 +3371,7 @@ def compile_program(
     pre_class_methods: dict | None = None,
     pre_class_defaults: dict | None = None,
     pre_class_constraints: dict | None = None,
+    expr_types: dict | None = None,
 ) -> dict[str, Any]:
     """
     Compile a resolved, type-checked program.
@@ -3360,5 +3399,6 @@ def compile_program(
     compiler = Compiler(module=module, pre_compiled=pre_compiled,
                         pre_class_methods=pre_class_methods,
                         pre_class_defaults=pre_class_defaults,
-                        pre_class_constraints=pre_class_constraints)
+                        pre_class_constraints=pre_class_constraints,
+                        expr_types=expr_types)
     return compiler.compile(program)

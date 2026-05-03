@@ -35,6 +35,7 @@ from bootstrap.codegen import compile_program
 from bootstrap.lexer import lex
 from bootstrap.parser import parse
 from bootstrap.scope import Env, resolve
+from bootstrap.typecheck import TypecheckError, typecheck_with_types
 from dev.harness.plan import P
 
 
@@ -171,6 +172,11 @@ def build_modules(
     module_envs: dict[str, Env] = {}   # module_name → resolved Env
     all_compiled: dict[str, Any] = {}  # accumulated FQ → PLAN value
     module_compilers: dict = {}        # module_name → Compiler (for class metadata)
+    # Accumulated TypeEnv across modules so each typecheck pass sees upstream
+    # definitions; per-module expr_types maps are computed once and discarded
+    # after that module compiles.
+    accumulated_type_env: dict = {}
+    accumulated_type_constructors: dict = {}
 
     for module_name in order:
         prog = parsed[module_name]
@@ -195,6 +201,21 @@ def build_modules(
             pre_class_constraints.update(prev_compiler._class_constraints)
             pre_con_info.update(prev_compiler.con_info)
 
+        # Run typecheck to obtain per-subexpression types for advanced dict
+        # insertion. Failures are non-fatal: the bootstrap historically permits
+        # codegen on programs the type checker rejects, so we fall back to the
+        # surface-syntax heuristic in that case.
+        expr_types: dict | None = None
+        try:
+            new_type_env, expr_types = typecheck_with_types(
+                resolved, env, module_name, filename,
+                prior_type_env=accumulated_type_env,
+                prior_type_constructors=accumulated_type_constructors,
+            )
+            accumulated_type_env = new_type_env
+        except TypecheckError:
+            expr_types = None
+
         # Compile — cross-module globals from all_compiled; class metadata from
         # pre_class_methods enables cross-module instance and constraint resolution;
         # pre_con_info enables cross-module pattern matches on imported ADTs.
@@ -204,7 +225,8 @@ def build_modules(
                             pre_class_methods=pre_class_methods,
                             pre_class_defaults=pre_class_defaults,
                             pre_class_constraints=pre_class_constraints,
-                            pre_con_info=pre_con_info)
+                            pre_con_info=pre_con_info,
+                            expr_types=expr_types)
         compiled = compiler.compile(resolved)
         module_compilers[module_name] = compiler
 

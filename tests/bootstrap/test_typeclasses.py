@@ -726,6 +726,88 @@ def test_prelude_bool_eq_false_false():
 
 
 # ---------------------------------------------------------------------------
+# Type-inferred dict insertion: cases the surface heuristic alone cannot
+# resolve. The compiler now consults `expr_types` (populated by
+# typecheck_with_types) before falling back to the heuristic.
+# ---------------------------------------------------------------------------
+
+def _typed_pipeline(src: str, module: str = 'Test') -> dict:
+    """Like `pipeline` but runs typecheck first and threads expr_types into codegen.
+
+    Mirrors what `bootstrap.build.build_modules` does for a single-file build.
+    """
+    from bootstrap.typecheck import typecheck_with_types
+    prog = parse(lex(src, '<test>'), '<test>')
+    resolved, env = resolve(prog, module, {}, '<test>')
+    _, expr_types = typecheck_with_types(resolved, env, module, '<test>')
+    return compile_program(resolved, module, expr_types=expr_types)
+
+
+_PAIR_ENV = '''\
+type Pair a b = | MkPair a b
+
+let pair_eq_nat_nat : Pair Nat Nat → Pair Nat Nat → Nat
+  = λ p q → match p {
+    | MkPair a b → match q {
+      | MkPair c d → match a {
+        | 0 → match c { | 0 → 1 | _ → 0 }
+        | _ → match c { | 0 → 0 | _ → 1 }
+      }
+    }
+  }
+
+instance Eq Pair {
+  eq = pair_eq_nat_nat
+}
+'''
+
+
+def test_inferred_key_through_let_binding():
+    """A let-bound expression with no surface-syntax type clue flows into a
+    constrained call site. The heuristic returns None on `ExprVar` whose name
+    is a local without a tracked param type. Inference resolves it to `Pair`
+    so dict lookup picks `inst_Eq_Pair`."""
+    src = _EQ_DECL + _PAIR_ENV + '''\
+let same : ∀ a. Eq a => a → a → Nat = λ x y → eq x y
+
+-- p is a let-local — _infer_type_key has no surface evidence for its type.
+let test_val : Nat
+  = let p = MkPair 0 0 in
+    let q = MkPair 0 0 in
+    same p q
+'''
+    compiled = _typed_pipeline(src)
+    assert evaluate(compiled['Test.test_val']) == 1
+
+
+def test_inferred_key_through_function_application():
+    """`identity (MkPair x y)` returns a `Pair` — but the heuristic only
+    inspects the head `ExprApp` chain for a constructor, and `identity`
+    isn't a constructor. Inference resolves the call's result type."""
+    src = _EQ_DECL + _PAIR_ENV + '''\
+let same : ∀ a. Eq a => a → a → Nat = λ x y → eq x y
+
+let identity : ∀ a. a → a = λ x → x
+
+let test_val : Nat = same (identity (MkPair 0 0)) (MkPair 0 0)
+'''
+    compiled = _typed_pipeline(src)
+    assert evaluate(compiled['Test.test_val']) == 1
+
+
+def test_heuristic_fallback_when_no_expr_types():
+    """`compile_program` without `expr_types` still resolves shapes the
+    surface heuristic can see (literal Nat at the call site).  Guards
+    against regressions in callers that don't run typecheck."""
+    src = _EQ_DECL + _NAT_EQ_IMPL + _EQ_NAT_INST + '''\
+let same : ∀ a. Eq a => a → a → Nat = λ x y → eq x y
+let test_val : Nat = same 3 3
+'''
+    compiled = pipeline(src)  # no expr_types
+    assert evaluate(compiled['Test.test_val']) == 1
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
