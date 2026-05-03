@@ -1,9 +1,5 @@
 # Gallowglass Language Guide
 
-**Version:** 0.3 (alpha)
-**Date:** 2026-04-08
-**Status:** M18 complete. 1149 tests passing, 145 skipped. All 8 prelude modules typecheck.
-
 Gallowglass is a statically typed functional programming language targeting the
 PLAN virtual machine. It is designed for LLMs to write correctly and reason about
 accurately: high local constraint, explicit effects, pure by default, canonical
@@ -360,7 +356,7 @@ constructors and five opcodes:
 
 Hash algorithm: BLAKE3-256 everywhere. No exceptions.
 
-### Pin-Based Module Loading (M16)
+### Pin-Based Module Loading
 
 Each compiled definition gets a PinId — the BLAKE3-256 hash of its seed
 serialization. The prelude is published as a pinned DAG: 111 pins across
@@ -371,7 +367,7 @@ prelude/manifest/prelude.json    -- combined manifest: FQ name -> PinId
 prelude/manifest/Core.Nat.json   -- per-module manifest
 ```
 
-### Glass IR (M17 + M18)
+### Glass IR
 
 Glass IR is the human/LLM-readable intermediate representation. Every compiler
 decision is visible: fully-qualified names, explicit dictionaries, pin hashes,
@@ -475,9 +471,9 @@ These are explicitly deferred, not bugs.
 | Quotation / metaprogramming| spec/06 SS6.11    | Parsed, not evaluated           |
 | Macros                     | spec/06           | Not implemented                 |
 | Package declarations       | spec/06           | Reserved keywords only          |
-| Export lists               | spec/06           | ✅ Enforced (M20.3)             |
-| Where clauses              | spec/06           | ✅ Desugared to let (M20.1)     |
-| Operator sections          | spec/06           | ✅ Desugared to lambdas (M20.2) |
+| Export lists               | spec/06           | ✅ Enforced                      |
+| Where clauses              | spec/06           | ✅ Desugared to let              |
+| Operator sections          | spec/06           | ✅ Desugared to lambdas          |
 | Nested list patterns       | spec/06           | `[a, b]` pattern deferred; `h :: t` and `[]` work |
 | Deriving                   | spec/06           | Not implemented                 |
 
@@ -485,10 +481,10 @@ These are explicitly deferred, not bugs.
 
 | Feature                    | Status                                       |
 |----------------------------|----------------------------------------------|
-| Rust VM                    | Post-1.0                                     |
-| Debugger                   | Post-1.0 (requires Rust VM)                  |
-| Jet registry / optimizer   | Post-1.0                                     |
-| Contract solver tiers      | Post-1.0 (parser ready)                      |
+| Rust VM                    | Forward work                                 |
+| Debugger                   | Forward work (requires Rust VM)              |
+| Jet registry / optimizer   | Forward work                                 |
+| Contract solver tiers      | Forward work (parser ready)                  |
 | VM I/O integration         | Pending upstream stabilization               |
 | Glass IR text round-trip   | AST round-trip works; text parse deferred     |
 | Trace / Pending in Glass IR| Requires debugger + runtime                  |
@@ -509,7 +505,7 @@ These are explicitly deferred, not bugs.
 - Or-patterns and guards in match arms
 - Pin-based module loading with BLAKE3-256 content addressing
 - Glass IR emission with type annotations
-- Self-hosting compiler (restricted dialect) validated through M8.8 Path B
+- Self-hosting compiler (restricted dialect) validated via the BPLAN harness
 
 ---
 

@@ -42,13 +42,6 @@ Law bodies use de Bruijn-style argument indices: index 0 is the law itself (self
 
 **BPLAN named primitives.** Inc, Force, arithmetic (`Add`, `Sub`, `Mul`, …), introspection (`Type`, `IsPin`, `IsLaw`, `IsApp`, `IsNat`, `Hd`, `Sz`, `Unpin`, `Arity`, `Name`, `Body`), bytes/bits ops, comparison, and `Trace` are recognised as Pin'd Laws by name+arity and dispatched by the runtime's `op 66` cases in `Plan.hs`. They are not opcode pins. See `bootstrap/bplan_deps.py` for gallowglass's complete list.
 
-**Migration note (2026-04-30):** the bootstrap codegen and the Python harness still emit/dispatch the legacy xocore-tech/PLAN 5-opcode ABI (Pin/MkLaw/Inc/Case_/Force at 0–4). Phase B/C of the Reaver migration replaces:
-- `<2>` (xocore Inc) → reference to BPLAN `Inc` Pin'd Law (arity 1)
-- `<3>` (xocore Case_) → `<2>` (canonical Elim)
-- `<4>` (xocore Force) → reference to BPLAN `Force` Pin'd Law (arity 1)
-
-Examples in this document still use the xocore numbering until the migration lands; they will be revised in lockstep with Phase B/C.
-
 ---
 
 ## 1. Function Compilation

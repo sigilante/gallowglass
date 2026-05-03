@@ -589,9 +589,9 @@ directly (from `nat_to_decimal`).
 
 ### 13.5 Mapping from PlanVal to Plan Assembler
 
-The M8.6 emitter (`emit_program` in `compiler/src/Compiler.gls`) converts
-`List (Pair Nat PlanVal)` (output of `compile_program`) to `Bytes` (UTF-8 Plan
-Assembler text).
+The Plan Assembler emitter (`emit_program` in `compiler/src/Compiler.gls`)
+converts `List (Pair Nat PlanVal)` (output of `compile_program`) to `Bytes`
+(UTF-8 Plan Assembler text).
 
 | PlanVal at top level | Plan Assembler output |
 |---|---|

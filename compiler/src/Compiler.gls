@@ -1,6 +1,6 @@
 -- Compiler: Self-hosting Gallowglass compiler
 --
--- Milestone 8: Compiles restricted Gallowglass to PLAN seeds.
+-- Compiles restricted Gallowglass to PLAN seeds / Plan Assembler text.
 -- Single monolithic file (no cross-module imports in restricted dialect).
 --
 -- Phases: Utilities → Lexer → Parser → Scope → Codegen → Emit → Main
@@ -446,7 +446,7 @@ let name_to_nat : Nat → Nat
 -- Section 9: Compiler-specific Types (for later phases)
 -- =====================================================================
 
--- Type alias (erased — validates M15.7a type alias parsing)
+-- Type alias (erased)
 type Byte = Nat
 
 -- Token type (lexer output)
@@ -544,7 +544,7 @@ type CEnv =
   | MkCEnv (Pair (List (Pair Nat PlanVal)) (List (Pair Nat Nat))) (Pair Nat (Option Nat))
 
 -- =====================================================================
--- End of M8.1: Core Utilities
+-- End of Core Utilities
 -- =====================================================================
 
 -- =====================================================================
@@ -1284,7 +1284,7 @@ let lex : Pair Nat Nat → Nat → Nat → Nat → List Token
       }
 
 -- =====================================================================
--- End of M8.2: Lexer
+-- End of Lexer
 -- =====================================================================
 
 
@@ -3038,11 +3038,11 @@ let parse_program : List (Pair Nat (List Nat)) → List Token → List Decl
       }
 
 -- =====================================================================
--- End of M8.3: Parser
+-- End of Parser
 -- =====================================================================
 
 -- =====================================================================
--- Section 24: M8.5 Codegen
+-- Section 24: Codegen
 -- =====================================================================
 --
 -- Compiles AST (Decl list) to PLAN values.
@@ -4897,7 +4897,7 @@ let cg_compile_pin : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat �
 
 -- =====================================================================
 -- CPS Effect Constants (must precede handler codegen)
--- Open-continuation protocol (M13.3): continuations are 2-arg (dispatch, value).
+-- Open-continuation protocol: continuations are 2-arg (dispatch, value).
 -- =====================================================================
 
 -- _id_law: L(1, 0, N(1)) — identity function (retained for non-CPS use)
@@ -5001,7 +5001,7 @@ let cg_build_handle_dispatch
       }
 
 -- cg_compile_dispatch_fn: build dispatch law for handle expression
--- Open-continuation protocol (M13.3): k_open is 2-arg (dispatch, value).
+-- Open-continuation protocol: k_open is 2-arg (dispatch, value).
 -- Dispatch law: L(n_cap+4, name, body)
 -- Slots: [cap_1..cap_n] [dispatch_parent] [op_tag] [op_arg] [k_open]
 -- Deep handler: resume = k_open(dispatch_current).
@@ -5081,7 +5081,7 @@ let cg_compile_return_fn
 
 -- cg_compile_handle: compile EHandle expression
 -- handle comp { | return x → body_r | op arg k → body_op }
--- Open-continuation protocol (M13.3):
+-- Open-continuation protocol:
 -- Produces: λ(dp, ko_open) → comp(dispatch(dp), compose_open(ko_open, ret_fn))
 let cg_compile_handle
       : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
@@ -5132,7 +5132,7 @@ let cg_compile_handle
       }
 
 -- cg_compile_do: compile EDo (x ← rhs in body)
--- Open-continuation protocol (M13.3):
+-- Open-continuation protocol:
 -- Outer law: arity = n_cap+2 [caps, dispatch, k_open_outer]
 -- Inner cont law: arity = n_cap+3 [caps, k_open_outer, dispatch, x]
 --   Reordered: k_open_outer BEFORE dispatch so partial application
@@ -5620,11 +5620,11 @@ let compile_program : List Decl → Nat → List (Pair Nat PlanVal)
       }
 
 -- =====================================================================
--- End of M8.5: Codegen
+-- End of Codegen
 -- =====================================================================
 
 -- =====================================================================
--- Section 24b: M8.4 Scope Resolver
+-- Section 24b: Scope Resolver
 -- =====================================================================
 --
 -- resolve_program : List Decl → Nat → List Decl
@@ -6024,11 +6024,11 @@ let resolve_program : List Decl → Nat → List Decl
       sr_resolve_decls decls gtab
 
 -- =====================================================================
--- End of M8.4: Scope Resolver
+-- End of Scope Resolver
 -- =====================================================================
 
 -- =====================================================================
--- Section 25: M8.6 Plan Assembler Emitter
+-- Section 25: Plan Assembler Emitter
 -- =====================================================================
 --
 -- Converts List (Pair Nat PlanVal) (output of compile_program) to Bytes
@@ -6358,7 +6358,7 @@ let emit_bind : Nat → PlanVal → Bytes
               (bytes_concat (bytes_singleton 0x29) (bytes_singleton 0x0A)))))
 
 -- ---------------------------------------------------------------------------
--- emit_program: main entry point for M8.6.
+-- emit_program: Plan Assembler emitter entry point.
 -- Input:  List (Pair Nat PlanVal) — output of compile_program
 -- Output: Bytes — UTF-8 Plan Assembler text, one (#bind ...) per definition
 -- ---------------------------------------------------------------------------
@@ -6374,17 +6374,17 @@ let emit_program : List (Pair Nat PlanVal) → Bytes
         defs
 
 -- =====================================================================
--- End of M8.6: Plan Assembler Emitter
+-- End of Plan Assembler Emitter
 -- =====================================================================
 
 -- =====================================================================
--- Section 26: M8.7 Driver
+-- Section 26: Driver
 -- =====================================================================
 -- main: top-level entry point.
 -- Input:  Bytes  — UTF-8 source text of a single .gls file
 -- Output: Bytes  — Plan Assembler text (one (#bind ...) per definition)
 --
--- Module name is hardcoded to "Compiler" for M8.8 self-hosting validation.
+-- Module name is hardcoded to "Compiler" for self-hosting validation.
 -- "Compiler" as a little-endian nat:
 --   int.from_bytes(b'Compiler', 'little') = 8243113893085146947
 --   hex: 0x72656c69706d6f43
@@ -6401,11 +6401,11 @@ let main : Bytes → Bytes
       emit_program compiled
 
 -- =====================================================================
--- End of M8.7: Driver
+-- End of Driver
 -- =====================================================================
 
 -- =====================================================================
--- Section 27: M8.8 Path A — planvm CLI entry point
+-- Section 27: planvm CLI entry point
 -- =====================================================================
 --
 -- run_main: entry point for planvm CLI execution.
@@ -6449,5 +6449,5 @@ let run_main : Nat → Nat
       write_fd 1 out_nat out_len
 
 -- =====================================================================
--- End of M8.8: Path A CLI entry point
+-- End of CLI entry point
 -- =====================================================================

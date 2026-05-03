@@ -3,7 +3,7 @@
 Bootstrap compiler structural tests.
 
 Verifies that the Python bootstrap compiler modules are present and that
-BOOTSTRAP.md documents the current milestone status.
+no archive/Sire stubs have been re-introduced.
 
 Run: python3 tests/bootstrap/test_bootstrap.py
 """
@@ -41,43 +41,11 @@ def test_bootstrap_python_modules_present():
 
 
 def test_no_sire_stubs_in_tree():
-    """Sire stubs were deleted in AUDIT.md C3 — they have no consumers and
-    git history preserves them.  This test guards against accidental
-    re-introduction."""
+    """Sire stubs have no consumers and git history preserves them.
+    This test guards against accidental re-introduction."""
     archive_dir = os.path.join(BOOTSTRAP_DIR, 'archive')
     assert not os.path.exists(archive_dir), \
-        f"bootstrap/archive/ resurfaced at {archive_dir}; see AUDIT.md C3"
-
-
-def test_bootstrap_md_exists():
-    """bootstrap/BOOTSTRAP.md exists."""
-    path = os.path.join(BOOTSTRAP_DIR, 'BOOTSTRAP.md')
-    assert os.path.isfile(path), "bootstrap/BOOTSTRAP.md not found"
-
-
-def test_bootstrap_md_has_milestones():
-    """BOOTSTRAP.md documents milestones and the Python-first approach."""
-    path = os.path.join(BOOTSTRAP_DIR, 'BOOTSTRAP.md')
-    with open(path) as f:
-        content = f.read()
-    assert 'Milestone' in content, "BOOTSTRAP.md missing Milestone section"
-    assert 'Restricted Dialect' in content or 'restricted dialect' in content.lower(), \
-        "BOOTSTRAP.md missing restricted dialect section"
-    assert 'Python' in content, \
-        "BOOTSTRAP.md should document the Python-first bootstrap approach"
-
-
-def test_bootstrap_md_milestones_complete():
-    """BOOTSTRAP.md marks Milestones 1–5 as complete."""
-    path = os.path.join(BOOTSTRAP_DIR, 'BOOTSTRAP.md')
-    with open(path) as f:
-        content = f.read()
-    for i in range(1, 6):
-        assert f'Milestone {i}' in content, \
-            f"BOOTSTRAP.md missing Milestone {i}"
-    # Milestones 1–5 should be marked complete
-    assert '✅' in content, \
-        "BOOTSTRAP.md should mark completed milestones with ✅"
+        f"bootstrap/archive/ resurfaced at {archive_dir}"
 
 
 # ============================================================

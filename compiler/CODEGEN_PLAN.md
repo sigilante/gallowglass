@@ -1,6 +1,6 @@
-# M8.5 Codegen Implementation Plan
+# Codegen Implementation Plan
 
-**File:** `compiler/src/Compiler.gls` — append as Section 24 after the existing ~1730 lines.
+**File:** `compiler/src/Compiler.gls` — codegen section.
 **Reference:** `bootstrap/codegen.py` — every function here maps to a Python method.
 **Goal:** Produce PLAN values byte-identical to the Python bootstrap for the same input.
 
@@ -513,7 +513,7 @@ Write in this order to satisfy the no-forward-reference constraint:
 | Program passes | ~12 | ~150 |
 | **Total** | **~134** | **~1580** |
 
-Current file: ~1730 lines. After M8.5: ~3310 lines.
+Pre-codegen file: ~1730 lines. With codegen: ~3310 lines.
 
 ---
 
@@ -532,4 +532,4 @@ Gallowglass codegen. Key correctness assertions:
 8. `compile_program` output list has same names and same count as Python
 
 Start with simple definitions (nullary constructors, `pred`, `is_zero`) and add complexity
-incrementally. Self-hosting validation (M8.8) is the ultimate end-to-end test.
+incrementally. Self-hosting validation is the ultimate end-to-end test.

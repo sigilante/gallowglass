@@ -1,6 +1,6 @@
 # Gallowglass
 
-An LLM-first programming language targeting the [PLAN virtual machine](https://github.com/xocore-tech/PLAN).
+An LLM-first programming language targeting the PLAN virtual machine.
 
 ![](./img/hero.jpeg)
 
@@ -52,14 +52,14 @@ Naming is compiler-enforced: `snake_case` for values, `PascalCase` for types, si
 ```
 gallowglass/
   SPEC.md                -- Full language specification
-  ROADMAP.md             -- Delivery plan with milestones
+  ROADMAP.md             -- Delivery plan and forward work
   DECISIONS.md           -- Design rationale for non-obvious choices
 
   spec/                  -- Component specifications
   bootstrap/             -- Python bootstrap compiler (lexer -> parser -> scope -> typecheck -> codegen -> emit)
   prelude/src/Core/      -- Core prelude in Gallowglass (8 modules, 112 definitions)
   compiler/src/          -- Self-hosting compiler in Gallowglass
-  tests/                 -- 1210 tests (bootstrap, prelude, compiler)
+  tests/                 -- Test suite (bootstrap, prelude, compiler)
   doc/                   -- Language guide and references
 ```
 
@@ -86,7 +86,7 @@ sys.stdout.buffer.write(emit(compiled, 'Module.main'))
 " input.gls > output.seed
 ```
 
-Tests: 1210 passing, 145 skipped. Skipped tests are planvm-gated (require the PLAN VM binary) or deep-recursion stress tests that exceed Python's stack.
+Skipped tests are planvm-gated (the legacy xocore VM, no longer a deployment target) or deep-recursion stress tests that exceed Python's stack. Run `python3 -m pytest tests/ -q` for current pass/skip totals.
 
 ## Design principles
 
@@ -98,7 +98,7 @@ Tests: 1210 passing, 145 skipped. Skipped tests are planvm-gated (require the PL
 
 ## Status
 
-**Alpha (0.999).** The bootstrap compiler, core prelude, and self-hosting compiler are complete through M20. The language is usable for writing programs that compile to PLAN.
+The bootstrap compiler, core prelude, and self-hosting compiler are in place. The language is usable for writing programs that compile to PLAN.
 
 What works:
 - Full surface syntax: let bindings, lambdas, pattern matching (with exhaustiveness checking), algebraic types, records, type aliases, list syntax
@@ -108,25 +108,7 @@ What works:
 - Glass IR: type-annotated intermediate representation with round-trip verification
 - Self-hosting: compiler written in Gallowglass processes its own source and produces correct Plan Assembler output
 
-What remains for 1.0: deriving, contract solver tiers, nested list patterns. Post-1.0: Rust VM, debugger, jet optimizer.
-
-## Change history
-
-| Date | Milestone | Summary |
-|------|-----------|---------|
-| 2026-03-19 | M0 | Initial commit: spec, design docs |
-| 2026-03-21 | M1--M7 | Bootstrap compiler (lexer, parser, scope, codegen, emit), core prelude (5 modules, 24 defs) |
-| 2026-03-22 | M7.5--M8.3 | Predecessor binding, field extraction, self-hosting compiler through parser |
-| 2026-03-24 | M8.4--M8.8 | Self-hosting scope, codegen, emitter, driver; Path B validation complete |
-| 2026-04-03 | M9 | Fix expressions, tuples, mutual recursion (SCC compilation) |
-| 2026-04-04 | M10--M11 | CPS effect handlers, do-notation, typeclasses (DeclClass, DeclInst, dictionary insertion) |
-| 2026-04-05 | M12 | Module system: use imports, build driver, cross-module instances |
-| 2026-04-06 | M12.2--M12.5 | GLS compiler parity (DEff/EHandle/EDo/DeclUse), Data.Csv integration tests |
-| 2026-04-07 | M13--M14 | Default methods, compound instances, shallow handlers, Eq/Ord/Show/Debug, pipe/fixpoint |
-| 2026-04-07 | M15 | Records, type aliases, list/cons syntax, or-patterns, guards, string interpolation |
-| 2026-04-08 | M16--M18 | Pin-based module loading (110-pin DAG), Glass IR emission, type-annotated Glass IR |
-| 2026-04-08 | M19 | Pattern match exhaustiveness checking (Maranget algorithm) |
-| 2026-04-08 | M20 | 0.999 syntax: where clauses, operator sections, export list enforcement |
+Forward work — including deriving, contract solver tiers, nested list patterns, the Rust VM, the debugger, and the jet optimizer — is tracked in `ROADMAP.md`.
 
 ## License
 

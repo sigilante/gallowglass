@@ -5,7 +5,7 @@
 -- Structural recursion (match on n) uses opcode 3 (Case_) via the bootstrap
 -- pattern-match compiler, which now correctly binds the predecessor.
 --
--- Typeclass declarations (module-local until M12 cross-module imports):
+-- Typeclass declarations:
 --   Eq, Ord, Add — with Nat instances.
 
 external mod Core.PLAN {
