@@ -180,8 +180,20 @@ keyword nats, `lex_classify_ident` keyword dispatch, `parse_class_decl`/`parse_i
 predicates (wildcard-arm-drop bug: now use exhaustive 5-arm matches). 20 new tests in
 `tests/compiler/test_m11.py`. 734 tests passing.
 
-**Remaining M11 scope:**
-- Advanced type inference for dict insertion (non-Nat types, polymorphic call sites)
+**M11.6 — Type-inferred dict insertion at call sites:** ✅
+`Compiler` now accepts an `expr_types: dict[id(expr) → Type]` map populated
+by `typecheck_with_types`. `_infer_type_key` consults it before falling back
+to the surface-syntax heuristic, with `_type_to_instance_key` walking
+`TCon`/`TApp`/`TComp`/`TMeta`-resolved chains and stripping module
+qualification to match `_typearg_key`'s output. `bootstrap/build.py`
+typechecks each module in dependency order and threads the resulting
+`expr_types` into the per-module `Compiler` (typecheck failures are
+non-fatal; codegen falls back to the heuristic). This unblocks constrained
+calls where the first arg is a let-bound intermediate, the result of a
+non-constructor function application, or any other shape the surface
+heuristic can't pattern-match. Three new tests in
+`tests/bootstrap/test_typeclasses.py` cover the new path plus the
+no-typecheck fallback.
 
 **Unblocked by M11:** `Show`, `Eq`, `Ord`, `Add`, `Serialize` instances. The
 standard prelude becomes expressible without explicit dictionary passing.
