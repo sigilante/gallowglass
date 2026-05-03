@@ -1,8 +1,6 @@
 # Gallowglass Language Specification
 
-**Version:** 0.3 (alpha)
-**Status:** Specification complete; bootstrap compiler and core prelude complete; self-hosting compiler M8.8 Path B complete — alpha release candidate
-**VM Target:** PLAN (xocore-tech/PLAN) — runtime: Reaver (`sol-plunder/reaver`)
+**VM Target:** PLAN — runtime: Reaver (`sol-plunder/reaver`)
 **Output Format:** Plan Assembler (textual) — binary seed format deprecated upstream
 **Hash Algorithm:** BLAKE3-256
 
@@ -17,33 +15,17 @@ Gallowglass is a statically typed functional programming language designed with 
 
 It targets the PLAN virtual machine — a minimal graph-reduction system with four constructors (Pin, Law, App, Nat) and three opcodes (Pin/Law/Elim). All Gallowglass types are erased at compile time. The PLAN output is untyped. Type errors are purely a compile-time concern.
 
-The current implementation status:
+The implementation comprises:
 
-```
-Phase 0: Foundation documents          ✅ complete
-Phase 1: Python bootstrap compiler     ✅ complete (Milestones 1–7.5, M9–M18)
-         → compiles restricted Gallowglass dialect to Plan Assembler
-         → Core prelude: 112 definitions across 8 modules, planvm-valid
-         → M16: pin-based module loading (111 pins, BLAKE3-256)
-         → M17: Glass IR emission with round-trip verification
-         → M18: type-annotated Glass IR (all modules typecheck)
-Phase 2: (merged into Phase 1)
-Phase 3: Self-hosting compiler         ✅ ALPHA CANDIDATE (Milestone 8)
-         → restricted Gallowglass compiler written in restricted Gallowglass
-         → output format: Plan Assembler (textual), not binary seeds
-         → M8.1 utilities ✅  M8.2 lexer ✅  M8.3 parser ✅  M8.4 scope ✅
-         → M8.5 codegen ✅  M8.6 emitter ✅  M8.7 driver ✅
-         → M8.8 self-hosting validation: Path B (harness) ✅
-           GLS emit_program processes full Compiler.gls → Plan Assembler
-           Path A (planvm byte-identical): deferred pending cog wrapping
-Phase 4: Rust VM                       post-1.0
-Phase 5: Debugger                      post-1.0
-Phase 6: Hardening and ecosystem
-```
+- A **Python bootstrap compiler** (`bootstrap/*.py`) that compiles the restricted Gallowglass dialect to Plan Assembler.
+- A **core prelude** (`prelude/src/Core/`) of 112 definitions across 8 modules, with pin-based module loading (BLAKE3-256), round-trip-verified Glass IR emission, and type-annotated Glass IR.
+- A **self-hosting compiler** (`compiler/src/Compiler.gls`) written in restricted Gallowglass, emitting Plan Assembler. Validated end-to-end via the BPLAN harness: GLS `emit_program` processes the full `Compiler.gls` module and produces correct Plan Assembler output.
+
+Forward work (Rust VM, debugger, hardening, RPLAN self-host validation on Reaver) is tracked in `ROADMAP.md`.
 
 **Bootstrap language:** Python (not Sire). The bootstrap compiler lives in `bootstrap/*.py`.
-Sire stubs were sketched but never executed; they were removed from the tree in
-AUDIT.md C3 (git history preserves them).
+Sire stubs were sketched but never executed; they were removed from the tree
+(git history preserves them).
 See `bootstrap/BOOTSTRAP.md` and `DECISIONS.md §"Why Python for the bootstrap compiler?"` for rationale.
 
 ---
@@ -77,10 +59,10 @@ Each is accessed as `P(N(k))` — a Pin wrapping the opcode nat:
 | `2`    | Elim    | 6     | `(p l a z m o)` — dispatch on constructor of `o`: pin→`p i`, law→`l a m b`, app→`a f x`, nat-zero→`z`, nat-succ→`m (o-1)` |
 
 `Elim` (canonical opcode 2) was historically called `Case_` and lived at opcode 3
-in xocore-tech/PLAN's older 5-opcode ABI (Pin/MkLaw/Inc/Case_/Force at 0–4). The
-canonical Reaver ABI drops Inc and Force as opcodes — they become BPLAN named
-primitives — and renumbers Case_ to opcode 2 under the name Elim. See
-`DECISIONS.md §"Why Reaver's Haskell sources are the canonical base truth"`.
+in an older 5-opcode ABI (Pin/MkLaw/Inc/Case_/Force at 0–4). The canonical
+Reaver ABI drops Inc and Force as opcodes — they become BPLAN named primitives —
+and renumbers Case_ to opcode 2 under the name Elim. See `DECISIONS.md §"Why
+Reaver's Haskell sources are the canonical base truth"`.
 
 **BPLAN named primitives.** Beyond the three core opcodes, the runtime
 recognises certain Pin'd Laws by name and arity and dispatches them to native
@@ -91,12 +73,6 @@ introspection (`Type`, `IsPin`, `IsLaw`, `IsApp`, `IsNat`, `Hd`, `Sz`, `Unpin`,
 `Elim` dispatch helpers. Gallowglass's BPLAN dependencies are listed in
 `bootstrap/bplan_deps.py` and verified against `Plan.hs` by
 `tests/sanity/test_bplan_deps.py`.
-
-> **Migration note (2026-04-30):** the bootstrap codegen and Python harness
-> currently emit/dispatch the legacy xocore 5-opcode ABI. Phase B/C of the
-> Reaver migration switches both to the canonical 3-opcode ABI with
-> BPLAN-named primitives. This document describes the target ABI; the
-> implementation lags during the migration window.
 
 All other computation is expressed as laws applied to arguments. Jets accelerate
 specific pinned laws by matching their BLAKE3 hash against a registry of native
@@ -154,7 +130,7 @@ type Int : builtin    -- integers (sign-magnitude pair)
 
 -- Text and binary data
 -- Encoding: structural pair (byte_length, content_nat).
--- Target encoding (post-alpha): use a high bit of content_nat to encode length,
+-- Future encoding: use a high bit of content_nat to encode length,
 -- eliminating the separate length field for small strings. See ROADMAP §Post-1.0.
 type Text  : builtin  -- UTF-8 validated
 type Bytes : builtin  -- raw binary
@@ -874,11 +850,11 @@ Combinators: id, const, flip, fix, ·, |>, fst, snd, absurd
 | Type system spec | ✅ Complete | `spec/05-type-system.md` |
 | Surface syntax spec | ✅ Complete | `spec/06-surface-syntax.md` |
 | Seed format spec | ✅ Complete | `spec/07-seed-format.md` |
-| Python bootstrap compiler | ✅ Complete (M1–M7.5) | `bootstrap/` |
-| Core prelude (112 definitions across 8 modules, as of M14.6) | ✅ Complete (M7–M14.6) | `prelude/src/Core/` |
-| Self-hosting compiler | ✅ Alpha candidate (M8 complete; M8.8 Path B) | `compiler/src/` |
-| Rust VM | 🔲 Post-1.0 | `vm/src/` |
-| Debugger | 🔲 Post-1.0 | — |
+| Python bootstrap compiler | ✅ Complete | `bootstrap/` |
+| Core prelude (112 definitions across 8 modules) | ✅ Complete | `prelude/src/Core/` |
+| Self-hosting compiler | ✅ Validated via BPLAN harness | `compiler/src/` |
+| Rust VM | 🔲 Forward work | `vm/src/` |
+| Debugger | 🔲 Forward work | — |
 
 ### CI Test Coverage
 
@@ -889,11 +865,11 @@ Combinators: id, const, flip, fix, ·, |>, fst, snd, absurd
 | Reaver differential | Bytewise comparison vs Reaver reference | `tests/reaver/test_differential.py` |
 | ~~planvm seed loading~~ | Archived — xocore is no longer a deployment target (DECISIONS.md) | — |
 
-M8.8 Path B partially closes this gap: GLS `emit_program` is verified against the
-full Compiler.gls module via the BPLAN harness. M8.8 Path A (running `compiler.seed`
-via planvm on its own source and comparing output) will close it fully.
-Reaver (`sol-plunder/reaver`) is the planned CLI eval solution for full
-evaluation-based CI once available.
+The BPLAN harness partially closes this gap: GLS `emit_program` is verified
+against the full `Compiler.gls` module. RPLAN self-host validation on Reaver
+(running the compiler under Reaver on its own source and comparing output) is
+forward work; see `ROADMAP.md`. Reaver (`sol-plunder/reaver`) is the CLI eval
+solution for full evaluation-based CI.
 15. Key References
 DECISIONS.md — design rationale for all non-obvious choices
 spec/00-primitives.md — Core.Primitives complete declarations

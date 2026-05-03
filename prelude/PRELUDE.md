@@ -1,9 +1,8 @@
 # Core Prelude
 
-**Phase:** M18 complete (type-annotated Glass IR)
 **Dialect:** Restricted Gallowglass (see `bootstrap/BOOTSTRAP.md §2`)
 **Compiler:** Python bootstrap (`bootstrap/`)
-**VM:** xocore-tech/PLAN (`x/plan` / `planvm`)
+**VM:** PLAN (Reaver runtime; `vendor/reaver/src/hs/Plan.hs`)
 
 The Core prelude is the first layer of the Gallowglass standard library written
 in Gallowglass itself. It provides the foundational types, classes, and functions
@@ -13,7 +12,7 @@ that all Gallowglass programs build on.
 
 ## Design Constraints
 
-### 1. Cross-module imports (M12)
+### 1. Cross-module imports
 
 The bootstrap compiler supports multi-file compilation via `use` imports.
 Modules are compiled in dependency order by the build driver (`bootstrap/build.py`).
@@ -36,13 +35,13 @@ The bootstrap codegen maps the known `Core.PLAN` operations directly:
 | `Core.PLAN.reflect : ...`     | `P(N(3))`   | opcode 3 (Case_) |
 | `Core.PLAN.force : a → a`     | `P(N(4))`   | opcode 4 (Force) |
 
-### 3. Pin-based module loading (M16)
+### 3. Pin-based module loading
 
 The prelude is published as a pinned DAG: 111 pins across 8 modules. Each
 definition gets a PinId (BLAKE3-256 hash of its seed serialization). Manifests
 map FQ names to PinIds.
 
-### 4. Glass IR emission (M17 + M18)
+### 4. Glass IR emission
 
 Every `let` definition is emitted as a Glass IR fragment with FQ names, pin
 hashes, and inferred type annotations. All 8 modules typecheck.

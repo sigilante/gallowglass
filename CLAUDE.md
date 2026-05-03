@@ -1,6 +1,6 @@
 # Gallowglass
 
-Gallowglass is a programming language designed for LLMs to write and reason about, targeting the PLAN virtual machine (xocore-tech/PLAN). This repo contains the language specification, Python bootstrap compiler, core prelude (Gallowglass), and self-hosting compiler (Gallowglass). **Alpha milestone: self-hosting validation (M8.8) complete.**
+Gallowglass is a programming language designed for LLMs to write and reason about, targeting the PLAN virtual machine. This repo contains the language specification, Python bootstrap compiler, core prelude (Gallowglass), and self-hosting compiler (Gallowglass).
 
 ## Design Principles (Gospel)
 
@@ -20,7 +20,7 @@ gallowglass/
   CLAUDE.md              ← you are here
   DECISIONS.md           ← design rationale for non-obvious choices
   SPEC.md                ← full architecture overview (read this first)
-  ROADMAP.md             ← delivery plan: milestones M9–1.0 and post-1.0
+  ROADMAP.md             ← delivery plan and forward work
 
   spec/
     00-primitives.md     ← Core.Primitives: ~101 operations, 11 modules
@@ -33,7 +33,7 @@ gallowglass/
     07-seed-format.md    ← Seed serialization format
 
   bootstrap/
-    BOOTSTRAP.md         ← Bootstrap compiler overview and milestones
+    BOOTSTRAP.md         ← Bootstrap compiler overview
     *.py                 ← Python bootstrap compiler (lexer, parser, scope, codegen, emit)
 
   prelude/
@@ -134,55 +134,13 @@ name+arity in `Plan.hs:op 66`; see `bootstrap/bplan_deps.py`. Output format:
 Plan Assembler text (`vendor/reaver/src/hs/PlanAssembler.hs`). Hash algorithm:
 BLAKE3-256.
 
-The bootstrap codegen and Python harness are mid-migration to this ABI as of
-the Reaver migration arc; legacy xocore-tech/PLAN 5-opcode output (Pin/MkLaw/
-Inc/Case_/Force at 0–4) is the current interim. See `DECISIONS.md §"Why
-Reaver's Haskell sources are the canonical base truth"` and the migration
-status under `## Current Phase` below.
-
 All Gallowglass types are erased at compile time. The PLAN output is untyped. Type errors are purely a Gallowglass-layer concern.
 
-## Current Phase
+## Current Capability
 
-**Alpha.** All Milestone 8 phases complete. M9–M20 complete. 112 prelude definitions (65 source-level lets + instance methods) across 8 modules. Eq/Ord/Show/Debug typeclasses with constrained instances. Test count is live — run `python3 -m pytest tests/ -q` for the current passing/skipped totals rather than trusting an inline number here.
+The Python bootstrap compiler, the core prelude, and the self-hosting compiler are all in place. The end-to-end pipeline is gallowglass source → `bootstrap.emit_pla` → Reaver runtime, gated in CI. The core prelude is 112 definitions (65 source-level lets plus instance methods) across 8 modules, with Eq/Ord/Show/Debug typeclasses and constrained instances. Pattern-match exhaustiveness, pin-based module loading (BLAKE3-256), Glass IR emission (round-trip verified), and type-annotated Glass IR are all live. Test count is live — run `python3 -m pytest tests/ -q` for the current passing/skipped totals rather than trusting an inline number.
 
-- Phase 0 (spec): complete.
-- Phase 1 (Python bootstrap compiler): complete. Milestones 1–7.5 done. Core prelude: 112 definitions (65 lets + instance methods), planvm-valid.
-- Phase 3 (self-hosting compiler, M8): complete through M8.8 Path B.
-  - M8.1 utilities, M8.2 lexer, M8.3 parser, M8.4 scope resolver, M8.5 codegen, M8.6 emitter, M8.7 driver: all done.
-  - M8.8 self-hosting validation: Path B (harness) complete — GLS `emit_program` processes the full Compiler.gls module and produces correct Plan Assembler output. Path A (VM-executed) deferred pending upstream side-effects + virtualization API stabilization (see `IO.md`).
-- M9: fix expressions, tuples, mutual recursion (SCC), type checker SCCs — all complete.
-- M10: CPS effect handlers, pure builtin, do-notation, tag namespacing, integration test battery, GLS EFix — all complete.
-- M11: Typeclasses (DeclClass, DeclInst, constrained lets, dictionary insertion) — all complete.
-- M12: Module system (use imports, build driver, cross-module instances) — all complete.
-- M12.2: GLS compiler DEff/EHandle/EDo support — complete.
-- M12.3: Superclass constraint flat expansion — complete.
-- M12.4: GLS compiler DeclUse support — complete.
-- M12.5: Data.Csv end-to-end integration tests — complete.
-- M13.1: Default methods — complete.
-- M13.2: Compound type instances, constrained instances — complete.
-- M13.3: Shallow handlers (once) via open-continuation CPS protocol — complete.
-- M13.4: GLS compiler parity for M13.1–M13.3 (open-continuation CPS, forward_k, virtual resume substitution) — complete.
-- M14.1: Complete Eq (neq default) and Ord (gt, gte, min, max defaults), move arithmetic to Core.Nat — complete.
-- M14.2: Pair and Result types — complete.
-- M14.3: Collection instances (Eq + Show for Option, List, Result) — complete.
-- M14.4: pipe and fixpoint combinators — complete.
-- M14.5: Debug class with instances for Nat, Bool, Option, List — complete.
-- M15.2: Type aliases — complete (no codegen needed, types fully erased).
-- M15.3: List/Cons expressions and patterns — complete (scope-level desugaring to constructor forms).
-- M15.4: Or patterns — complete (scope-level arm duplication).
-- M15.5: Guards in match arms — complete (scope-level desugaring to if-else + re-match).
-- M15.6: String interpolation — complete (parser-level desugaring to text_concat/show chain).
-- M15.1: Records — complete (scope-level desugaring: DeclRecord→DeclType, ExprRecord→constructor apps, ExprRecordUpdate→match+rebuild, PatRecord→PatCon).
-- M15.7: GLS compiler parity — complete (7a–7f: type aliases, list/cons syntax, or-patterns, guards, string interpolation, records).
-- M14.6: Cross-module prelude refactor — complete (all 8 modules use `use` imports, full-prelude integration test).
-- M16: Pin-based module loading — complete (PinId via BLAKE3-256, pin-wrapped compilation, prelude as 110-pin DAG, pin store, full-cycle integration tests).
-- M17: Glass IR emission — complete (AST-based renderer, FQ names, pin hashes, SCC groups, dependency rendering, round-trip verification, prelude Glass IR emission).
-- M18: Type-annotated Glass IR — complete (standalone type serializer pp_type/pp_scheme, constraint preservation in Scheme, TypeEnv wired into Glass IR renderer, cross-module typechecking via prior_type_env, all 8 prelude modules typecheck).
-- M19: Pattern match exhaustiveness checking — complete (Maranget usefulness algorithm, constructor registry, nested/tuple/literal pattern support, redundancy warnings, integrated at typecheck time).
-- M20: 0.999 syntax — complete (where clauses as parser desugaring, operator sections with backtracking detection, export list enforcement in scope resolver).
-- **Reaver migration arc — complete (v0.99999-beta).** Phases 0/A/B+C/D/E/F (PRs #47–#53) retargeted gallowglass to the canonical 3-opcode + BPLAN-named ABI. End-to-end pipeline: gallowglass source → `bootstrap.emit_pla` → Reaver runtime, gated in CI.
-- **Phase G — RPLAN self-host validation on Reaver: scoped, not started.** Successor to the original M8.8 Path A gate. Re-shape `Compiler.main` to RPLAN's `runReplFn` ABI (`Input`/`Output`/etc. named ops at `vendor/reaver/src/hs/Plan.hs op 82`); compile gallowglass with itself under Reaver and assert byte-identical output vs the BPLAN harness. Full scope in `ROADMAP.md §"Phase G"`; rationale in `DECISIONS.md §"Why Phase G is a separate arc"`.
+The self-hosting compiler is validated via the BPLAN harness: GLS `emit_program` processes the full `Compiler.gls` module and produces correct Plan Assembler output. RPLAN self-host validation on Reaver (gallowglass compiling itself under Reaver, byte-identical to the BPLAN harness) is scoped as forward work — see `ROADMAP.md` and `DECISIONS.md §"Why Phase G is a separate arc"` for rationale.
 
 The bootstrap compiler compiles the **restricted dialect** of Gallowglass only.
 See `bootstrap/BOOTSTRAP.md` for what the restricted dialect permits.
@@ -270,7 +228,7 @@ through to `_compile_adt_dispatch`; if it is not, all constructors (being
 PLAN Apps) match the single arm and the wildcard body is silently unreachable.
 Pattern: `| Con x → body | _ → default`. Symptom: `f(OtherConstructor)`
 returns the same result as `f(Con ...)`. Fix: pass `wild_arm` explicitly.
-This bit us during M8.6 for `planval_is_nat`, `planval_is_app`, etc.
+This first surfaced for `planval_is_nat`, `planval_is_app`, etc.
 
 **Mixed-arity binary path (`_build_field_arm_law`).** When a type has both
 unary (arity=1) and binary (arity=2) field-bearing constructors, the binary

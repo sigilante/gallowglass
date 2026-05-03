@@ -1,9 +1,8 @@
 # Test Strategy
 
-**Last updated:** 2026-04-08 — M20 0.999 syntax (1210 tests: 1210 pass, 145 skip)
-
 This document describes the test architecture, what each layer verifies,
-and the known gap between what is tested and what is not.
+and the known gap between what is tested and what is not. Run
+`python3 -m pytest tests/ -q` for current pass/skip totals.
 
 ---
 
@@ -28,9 +27,9 @@ lifting, etc.
 - `tests/sanity/test_seed.py` — seed format round-trip
 - `tests/bootstrap/test_*.py` — lexer, parser, scope, typecheck, codegen (462 tests)
 - `tests/bootstrap/test_programs.py` — integration battery: Fibonacci (self-recursive + fix), Ackermann, Sudan, even/odd (20 tests)
-- `tests/bootstrap/test_typeclasses.py` — M11 typeclass: DeclClass/DeclInst compilation, constrained let arity, call-site dict insertion, multi-method, prelude Eq/Ord/Add instance evaluation (27 tests)
-- `tests/bootstrap/test_data_csv.py` — M12.5 Data.Csv effect handler integration (9 tests)
-- `tests/bootstrap/test_modules.py` — M12 multi-module build, cross-module instances (18 tests)
+- `tests/bootstrap/test_typeclasses.py` — typeclass: DeclClass/DeclInst compilation, constrained let arity, call-site dict insertion, multi-method, prelude Eq/Ord/Add instance evaluation (27 tests)
+- `tests/bootstrap/test_data_csv.py` — Data.Csv effect handler integration (9 tests)
+- `tests/bootstrap/test_modules.py` — multi-module build, cross-module instances (18 tests)
 
 **Limitation:** The harness is our own implementation of PLAN semantics. If the
 harness and the real planvm disagree on semantics (evaluation order, edge cases),
@@ -59,12 +58,12 @@ run in O(1), eliminating the Python recursion-depth limit that previously blocke
 Registered via `register_prelude_jets(compiled_dict)` in prelude test suites.
 
 **Coverage:**
-- `tests/compiler/test_emit.py` — all 39 M8.6 emitter tests (was: 15 active, 24 skipped)
+- `tests/compiler/test_emit.py` — Plan Assembler emitter tests
 
 **Relation to real BPLAN:** The jet registry is indexed by Python object identity
 (`id(L_object)`) rather than content hash. This is equivalent to BPLAN semantics
 for testing purposes because jet functions are provably correct (simple Python
-arithmetic). Correctness is still gated by M8.8 self-hosting validation.
+arithmetic). Correctness is still gated by self-hosting validation.
 
 ---
 
@@ -131,13 +130,12 @@ python3 -m pytest tests/ -q  # all tests (planvm-gated tests skip permanently)
 make test-selfhost-docker    # self-hosting tests in Docker
 ```
 
-> **Note (2026-04-30):** `tests/planvm/` is archived; xocore-tech/PLAN's xplan
-> VM is no longer a Gallowglass deployment target after the migration to the
-> canonical 3-opcode + BPLAN-named ABI. Every test under `tests/planvm/`
+> **Note:** `tests/planvm/` is archived; xocore-tech/PLAN's xplan VM is no
+> longer a Gallowglass deployment target. Every test under `tests/planvm/`
 > skips unconditionally via the `requires_planvm` decorator, which now wraps
 > `unittest.skip(...)` rather than `unittest.skipUnless(...)`. The runtime
-> validation gate is being rebuilt against Reaver in `tests/reaver/`
-> (Phase F). See `DECISIONS.md §"Why XPLAN compatibility is being abandoned"`.
+> validation gate runs against Reaver in `tests/reaver/`. See `DECISIONS.md
+> §"Why XPLAN compatibility is being abandoned"`.
 
 ---
 
@@ -160,12 +158,12 @@ tests/
     test_codegen.py            ← codegen PLAN value output (44 tests)
     test_bootstrap.py          ← integration: source → seed
     test_programs.py           ← Fibonacci, Ackermann, Sudan (20 tests)
-    test_typeclasses.py        ← M11 typeclasses (27 tests)
+    test_typeclasses.py        ← typeclasses (27 tests)
     test_coverage_gaps.py      ← edge cases, superclass constraints
-    test_modules.py            ← M12 multi-module build (18 tests)
-    test_data_csv.py           ← M12.5 Data.Csv E2E effects (9 tests)
-    test_exhaustiveness.py     ← M19 pattern match exhaustiveness (41 tests)
-  planvm/                      ← ARCHIVED 2026-04-30 (xocore xplan no longer a target)
+    test_modules.py            ← multi-module build (18 tests)
+    test_data_csv.py           ← Data.Csv E2E effects (9 tests)
+    test_exhaustiveness.py     ← pattern match exhaustiveness (41 tests)
+  planvm/                      ← ARCHIVED (xocore xplan no longer a target)
     __init__.py
     test_seed_planvm.py        ← skip-stub providing requires_planvm + seed_loads
     test_eval_planvm.py        ← skip-stub for legacy planvm evaluation tests
@@ -179,14 +177,14 @@ tests/
     test_core_text.py          ← 44 harness (bplan jets) + 15 planvm seed tests
   compiler/
     __init__.py
-    test_utils.py              ← M8.1 utilities; 45 tests + planvm seeds
-    test_lexer.py              ← M8.2 GLS lexer tests
-    test_scope.py              ← M8.4 GLS scope tests
-    test_emit.py               ← M8.6 Plan Assembler emitter; 39 active (BPLAN)
-    test_driver.py             ← M8.7 driver; 3 active + 3 skipped
-    test_selfhost.py           ← M8.8 self-hosting; 17 active + 5 planvm-gated
-    test_m11.py                ← M11.5 GLS DeclClass/DeclInst (20 tests)
-    test_m12_effects.py        ← M12.2/M12.4/M13.4 GLS effects + DeclUse + open-CPS (30 tests)
+    test_utils.py              ← GLS compiler utilities
+    test_lexer.py              ← GLS lexer tests
+    test_scope.py              ← GLS scope tests
+    test_emit.py               ← GLS Plan Assembler emitter (BPLAN)
+    test_driver.py             ← GLS driver
+    test_selfhost.py           ← self-hosting validation
+    test_m11.py                ← GLS DeclClass/DeclInst (20 tests)
+    test_m12_effects.py        ← GLS effects + DeclUse + open-CPS (30 tests)
   demos/
     __init__.py
     test_calculator.py         ← Calculator demo: compile + arithmetic eval (9 tests)
@@ -211,6 +209,7 @@ remained valid. Now, 21 eval tests verify actual computation on planvm.
 eval wrapper (compile value, convert to decimal, write to stdout) would extend
 coverage to arbitrary Nats. This is tracked for future work.
 
-**Mitigation:** M8.8 self-hosting (Path A) validates byte-identical compiler output
-between Python bootstrap and planvm execution. This is a comprehensive functional
-equivalence check for the full compiler workload.
+**Mitigation:** RPLAN self-host validation on Reaver (forward work; see
+`ROADMAP.md`) will validate byte-identical compiler output between the Python
+bootstrap and Reaver execution. This is a comprehensive functional equivalence
+check for the full compiler workload.

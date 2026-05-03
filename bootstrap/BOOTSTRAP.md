@@ -4,12 +4,12 @@
 **Target:** PLAN seed files (`*.seed`)
 **Input:** Restricted Gallowglass dialect
 
-This document describes the scope, restricted dialect, and milestone status of the
+This document describes the scope and restricted dialect of the
 Gallowglass bootstrap compiler.
 
-The bootstrap compiler is the Phase 1 deliverable. Its sole purpose is to compile
-enough Gallowglass to write the core prelude (Phase 2) and, eventually, the
-self-hosting compiler (Phase 3). It is thrown away after Phase 3.
+The bootstrap compiler's sole purpose is to compile enough Gallowglass to write
+the core prelude and, eventually, the self-hosting compiler. It is thrown away
+once the self-hosting compiler is operational.
 
 ---
 
@@ -38,12 +38,13 @@ language). Python was used instead because:
 
 - The Python compiler was built first as a prototype, and is fully functional.
 - It produces valid seed bytes loadable by `x/plan`.
-- It serves as the cross-compiler for Phase 2/3: compile Gallowglass in Gallowglass,
-  emit the seed, run natively on `x/plan`.
+- It serves as the cross-compiler for the prelude and the self-hosting
+  compiler: compile Gallowglass in Gallowglass, emit the seed, run natively
+  on `x/plan`.
 - Sire is harder to write and the bootstrap is thrown away anyway.
 
-The Sire outlines have been removed from the tree (AUDIT.md C3); git history
-preserves them for anyone curious about the never-executed stubs.
+The Sire outlines have been removed from the tree; git history preserves them
+for anyone curious about the never-executed stubs.
 
 ### 1.2 The Bootstrap Path
 
@@ -52,10 +53,10 @@ produces seed files that run on the PLAN VM. The self-hosting path is:
 
 ```
 1. Python compiler compiles restricted Gallowglass → seed bytes
-2. Validate seeds run correctly on x/plan (Milestone 6)
+2. Validate seeds run correctly on the PLAN runtime
 3. Write the self-hosting Gallowglass compiler in restricted Gallowglass
 4. Python compiler compiles it → compiler.seed
-5. x/plan runs compiler.seed — native Gallowglass compiler on PLAN
+5. The runtime executes compiler.seed — native Gallowglass compiler on PLAN
 6. compiler.seed compiles itself → true self-hosting
 ```
 
@@ -94,7 +95,7 @@ syntax (spec/06-surface-syntax.md).
 
 | Feature | Reason |
 |---|---|
-| Effect rows in types | Parsed, never unified; checked post-Phase-3 |
+| Effect rows in types | Parsed, never unified |
 | Contracts (`\| pre`, `\| post`) | No solver in bootstrap |
 | `module` / `import` | Multi-file compilation deferred |
 | Typeclasses | Deferred |
@@ -104,7 +105,7 @@ syntax (spec/06-surface-syntax.md).
 
 The bootstrap type checker ignores effect rows. Functions may include effect
 annotations (the parser accepts them), but the type checker treats all types as if
-the annotation were absent. This is sound for Phase 1.
+the annotation were absent. This is sound for the bootstrap dialect.
 
 ### 2.4 Restricted-dialect idioms
 
@@ -271,9 +272,9 @@ the bootstrap with `module_env={}`, so even though the prelude
 modules compile, they aren't in scope. Each demo redefines
 `add`/`mul`/`map`/`foldl`/etc. inline at the top.
 
-This is a fixable shortcoming of the demo harness (M12 module support
-is in place; the demo runner just doesn't thread a prebuilt
-`module_env` through). For now: copy the utilities you need from
+This is a fixable shortcoming of the demo harness (the multi-module
+build driver is in place; the demo runner just doesn't thread a
+prebuilt `module_env` through). For now: copy the utilities you need from
 `Compiler.gls`'s prelude inlining at lines 25–205, or from the
 relevant `Core/*.gls` source. Keeping demo source self-contained also
 makes each demo readable as a single file without cross-references.
@@ -320,208 +321,43 @@ PLAN values (dict[fq_name → PLAN value])
     ▼  bootstrap/emit_seed.py        (spec/07-seed-format.md)
 Seed bytes
     │
-    ▼  x/plan seed_file         (xocore-tech/PLAN VM)
+    ▼  PLAN runtime
 Result
 ```
 
 The Python dev harness (`dev/harness/`) provides a pure-Python PLAN evaluator for
-unit testing without requiring `x/plan`. Seeds must also validate against `x/plan`
-directly (see Milestone 6).
+unit testing without requiring an external runtime. Seeds also validate against
+the Reaver runtime in `tests/reaver/`.
 
 ---
 
-## 4. Milestones
+## 4. Capabilities
 
-### ✅ Milestone 1: Lexer
-Tokenizes all restricted dialect source. Tests: `tests/bootstrap/test_lexer.py`.
+The bootstrap compiler implements the full pipeline lex → parse → scope →
+typecheck → codegen → emit, plus Glass IR rendering. Test suites live in
+`tests/bootstrap/` and `tests/compiler/`.
 
-### ✅ Milestone 2: Parser
-Produces AST for all restricted dialect constructs. Tests: `tests/bootstrap/test_parser.py`.
+- **Lexer / parser / scope resolver:** the restricted dialect. Scope resolver
+  qualifies all `EVar` references to FQ `Module.name` nats.
+- **Type checker:** Hindley-Milner with let-generalization, SCC-ordered
+  checking via Tarjan, mutual recursion handled before generalization.
+  Effect rows are parsed but unified.
+- **Codegen:** restricted dialect → PLAN values, including pattern matching
+  on Nat / nullary / unary / binary constructors and tuples, mutual
+  recursion via shared-pin SCCs, `fix` expressions, effect handler CPS
+  transform (3-arg dispatch laws, do-notation, `pure`, per-effect tag
+  namespacing), open-continuation shallow handlers, typeclass dictionary
+  insertion, default methods, constrained instances, multi-module builds
+  with cross-module instances.
+- **Emit:** PLAN values → seed bytes (binary, legacy) and → Plan Assembler
+  text (`bootstrap.emit_pla`, the production Reaver path).
+- **Glass IR:** type-annotated AST renderer with FQ names, pin hashes, SCC
+  groups, and round-trip verification.
 
-### ✅ Milestone 3: Scope resolver
-Qualified names, module namespacing. Tests: `tests/bootstrap/test_scope.py`.
-
-### ✅ Milestone 4: Type checker
-Restricted HM unification. Tests: `tests/bootstrap/test_typecheck.py`.
-
-### ✅ Milestone 5: Codegen + Emit + Glass IR
-Compiles Gallowglass → valid PLAN seeds. 44 tests pass in Python harness.
-Tests: `tests/bootstrap/test_codegen.py`.
-
-### ✅ Milestone 6: planvm seed validation
-Seeds produced by the Python compiler load and evaluate correctly under `x/plan`.
-Tests: `tests/planvm/test_seed_planvm.py`. 7/7 pass.
-CI: `make test-ci` (Docker). Local: `make test`.
-
-### ✅ Milestone 7: Core prelude (initial)
-Write `prelude/src/Core/` in the restricted Gallowglass dialect; compile and
-validate each module with the Python compiler + `x/plan`.
-Modules: `Core.Combinators` (5), `Core.Bool` (6), `Core.Nat` (3),
-`Core.Option` (5), `Core.List` (5) — 24 definitions, all planvm-valid.
-CI: `make test-prelude-docker`. Local: `make test-prelude`.
-Bootstrap limitation noted: wildcard match arms cannot bind the predecessor,
-so Nat arithmetic and field extraction from multi-constructor types were
-deferred to Milestone 7.5.
-
-### ✅ Milestone 7.5: Bootstrap compiler upgrade — predecessor binding
-Three changes to `bootstrap/codegen.py`; prelude upgraded to full implementations.
-
-**Changes made:**
-1. **Self-recursion via N(0)**: `self_ref_name` field in `Env`; inside a law
-   body, a function referencing its own FQ name compiles to `N(0)` (law self-ref).
-2. **PatVar predecessor binding**: `_make_pred_succ_law` in `_build_nat_dispatch`
-   lambda-lifts captured locals and binds the wild variable to the predecessor
-   passed by Case_. Enables `| k → use_k` where `k` is the predecessor.
-3. **Multi-constructor field extraction**: `_compile_adt_dispatch` uses
-   Case_ (opcode 3) App handler to extract fields. For unary `| Some x → f x`,
-   the App branch receives `(fun=tag, arg=field)` and binds `x = arg`.
-4. **Bool global quoting**: nat globals (`True=1`, `False=0`, nullary constructors)
-   inside law bodies now use the quote form `A(N(0), N(k))` instead of being
-   pinned, so they return bare nats that work correctly with Case_ dispatch.
-5. **Core.PLAN opcode mapping**: `external mod Core.PLAN { inc : Nat → Nat }`
-   compiles `Core.PLAN.inc` to `P(N(2))` (the real Inc opcode), enabling
-   arithmetic functions (`add`, `mul`).
-
-**Unblocked (now in prelude):**
-- `Core.Nat`: `pred`, `add`, `mul` + corrected `nat_eq`, `nat_lt` (7 total)
-- `Core.Option`: `map_option`, `bind_option` + proper `with_default` (7 total)
-- `Core.List`: `head`, `tail`, `map`, `filter`, `foldl`, `foldr` (11 total)
-
-Tests: `tests/bootstrap/test_codegen.py` (44 pass), `tests/prelude/` (24 planvm tests).
-
-### ✅ Milestone 9.1–9.3: Restricted dialect extensions
-
-Three codegen additions enabling the prelude and self-hosting compiler to use richer idioms.
-
-**M9.1 — `fix` expressions:**
-`fix (λ self args → body)` compiles correctly: `params[0]` becomes `self_ref_name`
-(maps to N(0) law self-reference), `params[1:]` are user params, law arity =
-`len(user_params)`. `_collect_all_names` and `_collect_free` updated to traverse ExprFix.
-
-**M9.2 — Tuples:**
-Binary tuple construction `(a, b)` encodes as `A(tag_0, a, b)` using the quote form
-`A(N(0), N(0))` for tag 0 inside law bodies (not Pin). Tuple match `(x, y)` dispatches
-via `_compile_adt_dispatch` with synthetic ConInfo(tag=0, arity=2).
-
-**M9.3 — Mutual recursion (SCC compilation):**
-Tarjan's SCC detection added to `compile()` pass 3. Single-element SCCs compile as before.
-Multi-element SCCs use the shared-pin row encoding from spec/02-mutual-recursion.md:
-selector law `L(n+1, 0, dispatch_body)` applied to n lambda-lifted member laws forms
-a Pin row; `(shared_pin i) shared_pin` extracts and fully applies member i. Each member
-law gets an extra first param `__shared__` (index 1). Wrapper laws for external callers
-embed the shared pin as a non-bapp App literal in the law body.
-Canonical SCC ordering: lexicographic by FQ name (consistent with PinId stability).
-
-Tests: `tests/bootstrap/test_codegen.py` (53 pass — 9 new tests for fix, tuples, mutual recursion).
-
-### ✅ Milestone 9.4: Type checker extensions
-
-Three additions to `bootstrap/typecheck.py`:
-
-**ExprFix:** was incorrectly returning the lambda type. Now: fresh `t`, unify lambda
-type with `TArr(t, t)`, return `t`. Correct for `fix λ self args → body : T` where
-the lambda has type `T → T`.
-
-**SCC-ordered checking:** `_check_decls` uses `_build_dep_graph` + `_tarjan_scc` to
-process `DeclLet` groups in topological order. Multi-element SCCs use `_check_mutual_scc`:
-instantiate all provisional types, check all bodies, then generalize unannotated members
-together — preventing premature generalization from disconnecting mutual unification variables.
-
-**`_collect_expr_refs`:** full ExprVar walker over all expression forms, used for
-building the dependency graph.
-
-Tests: `tests/bootstrap/test_typecheck.py` (79 pass — 8 new tests covering fix inference,
-annotated fix, self-ref unification, fix type errors, mutual recursion annotated/unannotated,
-forward references, and mutual type error propagation).
-
-### ✅ Milestone 10.1: Effect row types in type checker
-
-See M10.1 entry in ROADMAP.md.
-
-### ✅ Milestone 10.2: Effect handler codegen (CPS transform)
-
-CPS compilation of `eff` declarations, `handle` expressions, and do-notation (`x ← rhs in body`)
-added to `bootstrap/codegen.py` and `bootstrap/scope.py`.
-
-**Changes made:**
-1. **`scope.py` effect op binding**: `_collect_decl` for `DeclEff` now registers each op as a
-   `BindingValue` so callers can reference it by name (e.g. `inc` resolves to `Module.Eff.inc`).
-2. **`_register_eff`**: Each op compiles to a 3-arg law `L(3, name, dispatch(tag, op_arg, k))` —
-   calling `E.op arg` produces a 2-arg partial application that is the CPS computation value.
-3. **`_compile_handle`**: Assembles `A(A(comp_val, dispatch_fn), return_fn)` (top level) or
-   `bapp(bapp(...))` (law body). Dispatch fn and return fn are lambda-lifted from outer locals.
-4. **`_compile_dispatch_fn`**: Builds `L(n_cap+3, name, nat_dispatch_body)` — N(1)=op_tag,
-   N(2)=op_arg, N(3)=resume; dispatches on op_tag via `_build_tag_chain`.
-5. **`_compile_return_fn`**: Builds `L(n_cap+1, name, body)` — N(last)=return value.
-6. **`_compile_do`**: CPS bind `x ← rhs in body` compiles to an `(n_cap+2)`-arg law; the inner
-   continuation `λ x → body_comp dispatch k_outer` is lambda-lifted as an `(n_cap+3)`-arg law.
-
-Tests: `tests/bootstrap/test_codegen.py` (63 pass — 10 new tests for eff op compilation,
-single-op handle, two-op dispatch, do-notation sequencing, and outer local capture).
-
-### ✅ Milestone 10.3: `pure` for do-notation
-
-`pure v` registered as a builtin CPS law `L(3, "pure", bapp(N(3), N(1)))` in codegen and as
-a `BindingValue` in the scope resolver. `pure v` compiles to `A(pure_law, v_compiled)` — a
-2-arg partial application (CPS computation) that, when applied to any dispatch_fn and k,
-simply calls `k v`. Enables do chains to terminate with a pure computed value.
-
-Tests: `tests/bootstrap/test_codegen.py` — 3 new tests (pure standalone, pure terminating
-a do chain, pure with return arm transform). 4 new tests including M10.4 state-threading
-validation below. 67 tests total.
-
-### ✅ Milestone 10.5: Per-effect tag namespacing
-
-`_resolve_handler_arm` in `scope.py` now resolves each `HandlerOp.op_name` to its FQ form
-(e.g. `"inc"` → `"Test.Counter.inc"`) before storing it in the AST. The codegen's
-`_lookup_op_tag` then does a direct FQ lookup in `effect_op_tags`, which is keyed on FQ names
-from `_register_eff`. Two effects with the same short op name are caught as an ambiguous
-reference at scope resolution, not silently mis-tagged.
-
-Tests: 1 new test (two effects with distinct op names each handled correctly). 462 bootstrap
-tests pass.
-
-### ✅ Milestone 10.4: State-threading handler validation
-
-Multi-op do chain (`ss ← get_st () in pp ← put_st ss in pure ss`) with two-op effect
-dispatches correctly through nested lambda-lifted continuation laws. Confirms that
-captured variables (`ss`) survive lambda lifting across nested do-binds. 461 bootstrap
-tests pass.
-
-### ✅ Milestone 8: Self-hosting compiler — **ALPHA CANDIDATE**
-
-Write the Gallowglass self-hosting compiler in the restricted dialect; compile it
-with the Python compiler; validate self-hosting output.
-
-Output format: **Plan Assembler** (textual, Reaver format), not binary seed.
-See DECISIONS.md: "Why target Plan Assembler output instead of binary seed format?"
-and `spec/07-seed-format.md` §13 for the grammar.
-
-Sub-milestones:
-- **M8.1 Utilities** ✅ — string/bytes ops, nat arithmetic helpers
-- **M8.2 Lexer** ✅ — tokenises restricted Gallowglass source to token list
-- **M8.3 Parser** ✅ — token list → `Decl` AST nodes
-- **M8.4 Scope resolver** ✅ — qualifies all `EVar` references to FQ `Module.name` nats.
-  Three bootstrap codegen bugs fixed to get here: (1) `let`-binding De Bruijn shift in
-  lambda-lifted match arms, (2) broken `expr_tag` dispatch for ENat bypassed with
-  structural `planval_is_nat`/`planval_is_app` predicates, (3) same shift in
-  `sr_resolve_decls`. Tests: `tests/compiler/test_scope.py` — 15 pass.
-- **M8.5 Codegen** ✅ — three-pass `compile_program`: DType/DExt/DLet → `PlanVal`
-- **M8.6 Plan Assembler emitter** ✅ — `emit_program`: `List (Pair Nat PlanVal)` → `Bytes`
-  Tests: `tests/compiler/test_emit.py` — 38 pass, 1 skipped (planvm-gated
-  `TestSeedLoading`; all evaluation tests now active via BPLAN jets).
-  Two bootstrap codegen bugs fixed: wildcard-arm drop in `_compile_single_arm_field_bind`
-  and unary tag=0 z_body in the binary path of `_build_field_arm_law`. See DECISIONS.md.
-- **M8.7 Driver** ✅ — `main : Bytes → Bytes` chains lex→parse→scope→codegen→emit.
-  Module name hardcoded to "Compiler" (nn = 8243113893085146947).
-  Tests: `tests/compiler/test_driver.py` — 3 pass, 3 skipped (planvm-gated).
-- **M8.8 Self-hosting validation** ✅ (Path B) / pending (Path A)
-  - Path B (harness): Python bootstrap → `plan2pv` bridge → GLS `emit_program` processes
-    full Compiler.gls module (all definitions) and produces correct Plan Assembler output.
-    Tests: `tests/compiler/test_selfhost.py` — 17 pass, 2 planvm-gated skipped.
-  - Path A (planvm byte-identical): deferred pending cog wrapping (`main : Bytes → Bytes`
-    must be wrapped as a planvm cog to read stdin and write stdout). This is the final
-    alpha gate.
+The self-hosting compiler in `compiler/src/Compiler.gls` is validated via
+the BPLAN harness: the Python bootstrap compiles `Compiler.gls`, the
+resulting GLS `emit_program` processes the full module, and the output
+matches the Python emitter byte-for-byte.
 
 ---
 
