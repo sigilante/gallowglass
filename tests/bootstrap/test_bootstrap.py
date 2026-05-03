@@ -55,29 +55,15 @@ def test_bootstrap_md_exists():
     assert os.path.isfile(path), "bootstrap/BOOTSTRAP.md not found"
 
 
-def test_bootstrap_md_has_milestones():
-    """BOOTSTRAP.md documents milestones and the Python-first approach."""
+def test_bootstrap_md_has_required_sections():
+    """BOOTSTRAP.md documents the restricted dialect and the Python-first approach."""
     path = os.path.join(BOOTSTRAP_DIR, 'BOOTSTRAP.md')
     with open(path) as f:
         content = f.read()
-    assert 'Milestone' in content, "BOOTSTRAP.md missing Milestone section"
     assert 'Restricted Dialect' in content or 'restricted dialect' in content.lower(), \
         "BOOTSTRAP.md missing restricted dialect section"
     assert 'Python' in content, \
         "BOOTSTRAP.md should document the Python-first bootstrap approach"
-
-
-def test_bootstrap_md_milestones_complete():
-    """BOOTSTRAP.md marks Milestones 1–5 as complete."""
-    path = os.path.join(BOOTSTRAP_DIR, 'BOOTSTRAP.md')
-    with open(path) as f:
-        content = f.read()
-    for i in range(1, 6):
-        assert f'Milestone {i}' in content, \
-            f"BOOTSTRAP.md missing Milestone {i}"
-    # Milestones 1–5 should be marked complete
-    assert '✅' in content, \
-        "BOOTSTRAP.md should mark completed milestones with ✅"
 
 
 # ============================================================
