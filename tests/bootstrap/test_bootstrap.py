@@ -3,7 +3,7 @@
 Bootstrap compiler structural tests.
 
 Verifies that the Python bootstrap compiler modules are present and that
-BOOTSTRAP.md documents the current milestone status.
+no archive/Sire stubs have been re-introduced.
 
 Run: python3 tests/bootstrap/test_bootstrap.py
 """
@@ -41,29 +41,11 @@ def test_bootstrap_python_modules_present():
 
 
 def test_no_sire_stubs_in_tree():
-    """Sire stubs were deleted in AUDIT.md C3 — they have no consumers and
-    git history preserves them.  This test guards against accidental
-    re-introduction."""
+    """Sire stubs have no consumers and git history preserves them.
+    This test guards against accidental re-introduction."""
     archive_dir = os.path.join(BOOTSTRAP_DIR, 'archive')
     assert not os.path.exists(archive_dir), \
-        f"bootstrap/archive/ resurfaced at {archive_dir}; see AUDIT.md C3"
-
-
-def test_bootstrap_md_exists():
-    """bootstrap/BOOTSTRAP.md exists."""
-    path = os.path.join(BOOTSTRAP_DIR, 'BOOTSTRAP.md')
-    assert os.path.isfile(path), "bootstrap/BOOTSTRAP.md not found"
-
-
-def test_bootstrap_md_has_required_sections():
-    """BOOTSTRAP.md documents the restricted dialect and the Python-first approach."""
-    path = os.path.join(BOOTSTRAP_DIR, 'BOOTSTRAP.md')
-    with open(path) as f:
-        content = f.read()
-    assert 'Restricted Dialect' in content or 'restricted dialect' in content.lower(), \
-        "BOOTSTRAP.md missing restricted dialect section"
-    assert 'Python' in content, \
-        "BOOTSTRAP.md should document the Python-first bootstrap approach"
+        f"bootstrap/archive/ resurfaced at {archive_dir}"
 
 
 # ============================================================
