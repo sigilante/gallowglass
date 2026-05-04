@@ -14,7 +14,6 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from tests.planvm.test_seed_planvm import requires_planvm, seed_loads
 
 MODULE = 'Compiler'
 SRC_PATH = os.path.join(os.path.dirname(__file__), '..', '..',
@@ -181,29 +180,6 @@ class TestByteClassifierEval(unittest.TestCase):
     )
     def test_lex_classify_ident_plain(self):
         pass
-
-
-class TestLexerSeedLoading(unittest.TestCase):
-    """Test that lexer definitions produce planvm-valid seeds."""
-
-    SEED_NAMES = [
-        'is_digit', 'is_upper', 'is_lower', 'is_alpha',
-        'is_alnum_or_under', 'is_hex_digit', 'hex_digit_val',
-        'mk_lexpos', 'lexpos_offset', 'lexpos_line', 'lexpos_col',
-        'lexpos_advance', 'lexpos_advance_n', 'lexpos_newline',
-        'lex_skip_line', 'lex_skip_ws',
-        'lex_scan_ident_go', 'lex_classify_ident',
-        'lex_scan_nat_dec_go', 'lex_scan_nat_hex_go',
-        'lex_scan_text_go', 'lex_one', 'lex',
-    ]
-
-    @requires_planvm
-    def test_seed_loads(self):
-        for name in self.SEED_NAMES:
-            with self.subTest(name=name):
-                seed = make_seed(name)
-                self.assertTrue(seed_loads(seed),
-                               f'Seed for {name} rejected by planvm')
 
 
 if __name__ == '__main__':

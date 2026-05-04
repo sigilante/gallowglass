@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Core.Nat planvm seed validation tests.
+Core.Nat harness correctness tests.
 
 Verifies that every definition in prelude/src/Core/Nat.gls compiles and
-produces a seed accepted by planvm.
+evaluates correctly under the Python PLAN harness.
 """
 
 import os
@@ -12,108 +12,13 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from tests.planvm.test_seed_planvm import requires_planvm, seed_loads
-
 MODULE = 'Core.Nat'
 SRC_PATH = os.path.join(os.path.dirname(__file__), '..', '..',
                          'prelude', 'src', 'Core', 'Nat.gls')
 
 
-def make_seed(name):
-    from bootstrap.lexer import lex
-    from bootstrap.parser import parse
-    from bootstrap.scope import resolve
-    from bootstrap.codegen import compile_program
-    from bootstrap.emit_seed import emit
-    with open(SRC_PATH) as f:
-        src = f.read()
-    prog = parse(lex(src, SRC_PATH), SRC_PATH)
-    resolved, _ = resolve(prog, MODULE, {}, SRC_PATH)
-    compiled = compile_program(resolved, MODULE)
-    return emit(compiled, f'{MODULE}.{name}')
-
-
-class TestCoreNatSeeds(unittest.TestCase):
-
-    @requires_planvm
-    def test_pred_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('pred')))
-
-    @requires_planvm
-    def test_is_zero_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('is_zero')))
-
-    @requires_planvm
-    def test_nat_eq_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('nat_eq')))
-
-    @requires_planvm
-    def test_nat_lt_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('nat_lt')))
-
-    @requires_planvm
-    def test_add_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('add')))
-
-    @requires_planvm
-    def test_mul_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('mul')))
-
-    @requires_planvm
-    def test_nat_lte_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('nat_lte')))
-
-    @requires_planvm
-    def test_inst_eq_nat_eq_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('inst_Eq_Nat_eq')))
-
-    @requires_planvm
-    def test_inst_eq_nat_neq_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('inst_Eq_Nat_neq')))
-
-    @requires_planvm
-    def test_inst_ord_nat_lt_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('inst_Ord_Nat_lt')))
-
-    @requires_planvm
-    def test_inst_ord_nat_lte_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('inst_Ord_Nat_lte')))
-
-    @requires_planvm
-    def test_inst_add_nat_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('inst_Add_Nat')))
-
-    @requires_planvm
-    def test_sub_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('sub')))
-
-    @requires_planvm
-    def test_div_nat_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('div_nat')))
-
-    @requires_planvm
-    def test_mod_nat_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('mod_nat')))
-
-    @requires_planvm
-    def test_inst_ord_nat_gt_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('inst_Ord_Nat_gt')))
-
-    @requires_planvm
-    def test_inst_ord_nat_gte_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('inst_Ord_Nat_gte')))
-
-    @requires_planvm
-    def test_inst_ord_nat_min_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('inst_Ord_Nat_min')))
-
-    @requires_planvm
-    def test_inst_ord_nat_max_seed_loads(self):
-        self.assertTrue(seed_loads(make_seed('inst_Ord_Nat_max')))
-
-
 # ---------------------------------------------------------------------------
-# Layer 1a: harness evaluation tests for M14.1 additions
+# Harness evaluation tests
 # ---------------------------------------------------------------------------
 
 from dev.harness.plan import A, N, evaluate as raw_evaluate

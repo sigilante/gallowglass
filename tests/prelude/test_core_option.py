@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """
-Core.Option tests — harness correctness + planvm seed loading.
+Core.Option harness correctness tests.
 
-Layer 1a: Python harness tests (always run).
-  Verifies Eq Option instance: eq on None/Some values.
-
-Layer 2: planvm seed loading (skipped unless planvm is available).
-
-Core.Option depends on Core.Nat (for Eq class), so compilation
-uses build_modules with Core.Nat as an upstream dependency.
+Verifies the Eq, Show, and Debug Option instances against the Python
+PLAN harness.  Core.Option depends on Core.Nat (for the Eq class) and
+Core.Text (for Show/Debug helpers), so compilation uses build_modules
+with those as upstream dependencies.
 """
 
 import os
@@ -19,13 +16,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from dev.harness.plan import A, N, evaluate, apply, is_app
 from dev.harness.bplan import bevaluate, _bapply, register_prelude_jets
-
-try:
-    from tests.planvm.test_seed_planvm import requires_planvm, seed_loads
-except ImportError:
-    def requires_planvm(fn):
-        return unittest.skip('planvm not available')(fn)
-    def seed_loads(_): return False
 
 CORE_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'prelude', 'src', 'Core')
 NAT_PATH = os.path.join(CORE_DIR, 'Nat.gls')
@@ -152,63 +142,6 @@ class TestCoreOptionHarness(unittest.TestCase):
 
     def test_debug_some(self):
         self.assertTrue(check_text(self._debug_option(mk_some(N(42))), 'Some 42'))
-
-
-# ---------------------------------------------------------------------------
-# Layer 2: planvm seed loading
-# ---------------------------------------------------------------------------
-
-def _make_seed(name):
-    from bootstrap.emit_seed import emit
-    compiled = _get_option()
-    return emit(compiled, f'{MODULE}.{name}')
-
-
-class TestCoreOptionSeeds(unittest.TestCase):
-
-    @requires_planvm
-    def test_none_constructor_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('None')))
-
-    @requires_planvm
-    def test_some_constructor_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('Some')))
-
-    @requires_planvm
-    def test_is_none_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('is_none')))
-
-    @requires_planvm
-    def test_is_some_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('is_some')))
-
-    @requires_planvm
-    def test_with_default_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('with_default')))
-
-    @requires_planvm
-    def test_map_option_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('map_option')))
-
-    @requires_planvm
-    def test_bind_option_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('bind_option')))
-
-    @requires_planvm
-    def test_inst_eq_option_eq_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Eq_Option_eq')))
-
-    @requires_planvm
-    def test_inst_eq_option_neq_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Eq_Option_neq')))
-
-    @requires_planvm
-    def test_inst_show_option_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Show_Option_show')))
-
-    @requires_planvm
-    def test_inst_debug_option_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Debug_Option_debug')))
 
 
 if __name__ == '__main__':

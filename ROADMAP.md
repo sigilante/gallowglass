@@ -749,6 +749,20 @@ treats that name as the entry point and applies it to the rest of the args:
    the test fails.
 4. **CI gate.** Add the self-host test to the existing `reaver` job in
    `.github/workflows/ci.yml` (or a separate job if its runtime is large).
+5. **Closes the recursion-heavy `Compiler.gls` GLS skips.** Seven tests in
+   `tests/compiler/test_{utils,lexer,driver}.py` `pytest.skip` with reasons
+   like "lex_classify_ident calls nat_eq on keyword nats — too slow for
+   Python harness" and "bytes_concat uses bit_or/shift_left (recursive) —
+   too slow." These exercise byte_at / bytes_at / bytes_concat /
+   lex_classify_ident / `main` — paths that work fine on a real runtime but
+   would take minutes per assertion under the pure-Python `dev/harness/plan.py`.
+   They cannot be mirrored as standalone Reaver tests today: emitting just
+   one of these functions via `bootstrap.emit_pla` from the full
+   `Compiler.gls` blows up to ~1.7 GB of Plan Asm because the un-pinned
+   codegen inlines every dependency into every body. Phase G's full
+   self-host run exercises all of these paths as a side-effect of compiling
+   `Compiler.gls` with itself; the explicit skips can be removed (or
+   re-pointed at `tests/reaver/test_selfhost.py`) once that gate lands.
 
 ### Risk surface
 

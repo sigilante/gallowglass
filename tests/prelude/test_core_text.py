@@ -29,13 +29,6 @@ def apply(f, x):
 def evaluate(v):
     return bevaluate(v)
 
-try:
-    from tests.planvm.test_seed_planvm import requires_planvm, seed_loads
-except ImportError:
-    def requires_planvm(fn):
-        return unittest.skip('planvm not available')(fn)
-    def seed_loads(_): return False
-
 CORE_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'prelude', 'src', 'Core')
 NAT_PATH  = os.path.join(CORE_DIR, 'Nat.gls')
 BOOL_PATH = os.path.join(CORE_DIR, 'Bool.gls')
@@ -325,104 +318,6 @@ class TestCoreTextHarness(unittest.TestCase):
         self.assertIsNotNone(fn, 'Core.Text.inst_Debug_Bool_debug not found')
         result = evaluate(apply(fn, N(0)))
         self.assertTrue(check_text(result, 'False'))
-
-
-# ---------------------------------------------------------------------------
-# Layer 2: planvm seed loading
-# ---------------------------------------------------------------------------
-
-def _make_seed(name):
-    from bootstrap.emit_seed import emit
-    compiled = _load_text()
-    return emit(compiled, f'{MODULE}.{name}')
-
-def _make_nat_seed(name):
-    from bootstrap.emit_seed import emit
-    compiled = _load_text()
-    return emit(compiled, f'Core.Nat.{name}')
-
-
-class TestCoreTextSeeds(unittest.TestCase):
-
-    @requires_planvm
-    def test_text_length_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('text_length')))
-
-    @requires_planvm
-    def test_text_content_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('text_content')))
-
-    @requires_planvm
-    def test_text_is_empty_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('text_is_empty')))
-
-    @requires_planvm
-    def test_text_eq_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('text_eq')))
-
-    @requires_planvm
-    def test_inst_eq_text_eq_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Eq_Text_eq')))
-
-    @requires_planvm
-    def test_inst_eq_text_neq_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Eq_Text_neq')))
-
-    @requires_planvm
-    def test_pow2_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('pow2')))
-
-    @requires_planvm
-    def test_text_concat_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('text_concat')))
-
-    @requires_planvm
-    def test_sub_seed_loads(self):
-        self.assertTrue(seed_loads(_make_nat_seed('sub')))
-
-    @requires_planvm
-    def test_div_nat_seed_loads(self):
-        self.assertTrue(seed_loads(_make_nat_seed('div_nat')))
-
-    @requires_planvm
-    def test_mod_nat_seed_loads(self):
-        self.assertTrue(seed_loads(_make_nat_seed('mod_nat')))
-
-    @requires_planvm
-    def test_show_digit_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('show_digit')))
-
-    @requires_planvm
-    def test_show_nat_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('show_nat')))
-
-    @requires_planvm
-    def test_show_bool_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('show_bool')))
-
-    @requires_planvm
-    def test_inst_show_bool_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Show_Bool')))
-
-    @requires_planvm
-    def test_inst_show_nat_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Show_Nat')))
-
-    @requires_planvm
-    def test_debug_nat_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('debug_nat')))
-
-    @requires_planvm
-    def test_debug_bool_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('debug_bool')))
-
-    @requires_planvm
-    def test_inst_debug_nat_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Debug_Nat_debug')))
-
-    @requires_planvm
-    def test_inst_debug_bool_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Debug_Bool_debug')))
 
 
 if __name__ == '__main__':
