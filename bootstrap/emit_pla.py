@@ -51,8 +51,33 @@ def _fq_to_symbol(fq: str) -> str:
 # Top-level emission (outside law bodies)
 # ---------------------------------------------------------------------------
 
+# Module-level mutable cell for the binding table the current emit_program
+# call is using. Threaded through emit_top / _emit_body / _emit_law without
+# changing their public signatures (they're imported by other modules and
+# called by tests). `None` means "no binding-aware dedup" — every recursion
+# inlines, the original behaviour. Set by `emit_program`, cleared after.
+_bind_symbols: dict[int, str] | None = None
+_bind_skip_id: int | None = None
+
+
+def _maybe_symbol(v: Any) -> str | None:
+    """Return the bind symbol for `v` if its identity matches a top-level
+    binding *and* is not the binding currently being emitted (which would
+    self-reference). Otherwise `None` and the caller emits the value
+    structurally."""
+    if _bind_symbols is None:
+        return None
+    sym = _bind_symbols.get(id(v))
+    if sym is None or id(v) == _bind_skip_id:
+        return None
+    return sym
+
+
 def emit_top(v: Any) -> str:
     """Emit a single PLAN value at top level (not inside a law body)."""
+    sym = _maybe_symbol(v)
+    if sym is not None:
+        return sym
     if is_nat(v):
         return str(int(v))
     if is_pin(v):
@@ -71,6 +96,14 @@ def emit_top(v: Any) -> str:
         # Phase B/C, 2026-04-30)" for the full story.
         if is_nat(v.val) and v.val == 2:
             return 'Elim'
+        # If the pinned value itself is a top-level binding, emit
+        # `(#pin <symbol>)` rather than re-emitting the inner law body.
+        # gallowglass codegen wraps cross-binding references in fresh Pins,
+        # so the Pin object's identity won't match — but its inner Law
+        # will.
+        inner_sym = _maybe_symbol(v.val)
+        if inner_sym is not None:
+            return f'(#pin {inner_sym})'
         return f'(#pin {emit_top(v.val)})'
     if is_law(v):
         return _emit_law(v)
@@ -104,6 +137,9 @@ def _emit_body(v: Any, depth: int) -> str:
     Reaver parses as `(1 nat)` atom-embed — i.e. the constant), with a
     comment-free fallback to keep the emitter total.
     """
+    sym = _maybe_symbol(v)
+    if sym is not None:
+        return sym
     if is_nat(v):
         i = int(v)
         if i <= depth:
@@ -117,6 +153,9 @@ def _emit_body(v: Any, depth: int) -> str:
         # See `emit_top` for the canonical forward-going shape note.
         if is_nat(v.val) and v.val == 2:
             return 'Elim'
+        inner_sym = _maybe_symbol(v.val)
+        if inner_sym is not None:
+            return f'(#pin {inner_sym})'
         return f'(#pin {emit_top(v.val)})'
     if is_law(v):
         # Nested laws are top-level constructs; emit as such. (kal returns
@@ -170,13 +209,52 @@ def emit_program(compiled: dict[str, Any], *,
     `trailer` is appended verbatim after the last `(#bind ...)` line. Tests
     use it to inject `(Trace Module_main 0)` for end-to-end runs.
     """
-    lines: list[str] = []
-    if prelude:
-        lines.append(prelude)
+    # Build an identity → symbol table so cross-binding references in each
+    # body emit as the bare symbol of the referenced binding instead of
+    # inlining its full PLAN tree. Without this dedup, a function whose
+    # body calls `bit_and` would inline `bit_and`'s full body — which in
+    # turn inlines `mod_nat` / `div_nat` / `mul` / etc. — exploding the
+    # output to gigabytes for non-trivial modules. The lookup uses Python
+    # `id()` because `bootstrap.codegen._compile_global_ref` returns the
+    # same Python object for every reference to a given top-level value,
+    # so identity-equality is sufficient and avoids structural equality's
+    # exponential cost.
+    #
+    # Only Laws are eligible: they are unique dataclass instances per
+    # binding, so identity matches mean genuine reference. Plain `Nat` and
+    # `App` top-level values would alias spuriously — small-int Nats are
+    # interned by Python (e.g. constructor tag `Demo.Red = 0` shares
+    # identity with every `N(0)` slot reference), and quote-form Apps
+    # aren't unique per binding either. Pins wrapping a top-level Law are
+    # handled in `emit_top` / `_emit_body` separately via the `inner_sym`
+    # check.
+    #
+    # First-wins on identity collisions: when two FQ names point to the
+    # same Law (e.g. `Module.add` and the single-method dict shortcut
+    # `Module.inst_Add_Module`), the *earlier* FQ wins. Subsequent bind
+    # bodies referencing this Law emit the earlier symbol, which Reaver
+    # has already seen — avoiding forward-reference errors.
+    bind_table: dict[int, str] = {}
     for fq, val in compiled.items():
-        sym = _fq_to_symbol(fq)
-        lines.append(f'(#bind {sym} {emit_top(val)})')
-    out = '\n'.join(lines) + '\n'
+        if is_law(val) and id(val) not in bind_table:
+            bind_table[id(val)] = _fq_to_symbol(fq)
+
+    global _bind_symbols, _bind_skip_id
+    saved_symbols, saved_skip = _bind_symbols, _bind_skip_id
+    _bind_symbols = bind_table
+    try:
+        lines: list[str] = []
+        if prelude:
+            lines.append(prelude)
+        for fq, val in compiled.items():
+            sym = _fq_to_symbol(fq)
+            # Skip the dedup for the value we're emitting so its own (#bind)
+            # body doesn't collapse to its name.
+            _bind_skip_id = id(val)
+            lines.append(f'(#bind {sym} {emit_top(val)})')
+        out = '\n'.join(lines) + '\n'
+    finally:
+        _bind_symbols, _bind_skip_id = saved_symbols, saved_skip
     if trailer is not None:
         if not trailer.startswith('\n'):
             out += '\n'
