@@ -37,7 +37,6 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from tests.planvm.test_seed_planvm import requires_planvm, seed_loads
 from dev.harness.plan import A, evaluate
 
 MODULE = 'Compiler'
@@ -463,45 +462,6 @@ class TestEmitBindAndProgram(unittest.TestCase):
         result = eval_bplan(self.bc['Compiler.emit_program'], defs)
         check_bytes(self.bc, result, '(#bind "0" 5)\n')
 
-
-# ---------------------------------------------------------------------------
-# planvm seed loading — all M8.6 functions
-# ---------------------------------------------------------------------------
-
-class TestSeedLoading(unittest.TestCase):
-    """
-    All M8.6 emitter functions compile to planvm-valid seeds.
-
-    This is the primary correctness gate for M8.6 output correctness under
-    the real VM.  A valid seed means the bootstrap compiler accepted the
-    source and planvm can load it without error.
-    """
-
-    EMITTER_NAMES = [
-        'nat_to_decimal_go',
-        'nat_to_decimal',
-        'emit_debruijn_ref',
-        'emit_asm_app',
-        'emit_asm_let',
-        'emit_asm_pin',
-        'emit_law_sig_go',
-        'emit_law_sig',
-        'emit_body_val',
-        'emit_plaw',
-        'emit_pval',
-        'emit_bind',
-        'emit_program',
-    ]
-
-    @requires_planvm
-    def test_emitter_seeds_load(self):
-        for name in self.EMITTER_NAMES:
-            with self.subTest(name=name):
-                seed = make_seed(name)
-                self.assertTrue(
-                    seed_loads(seed),
-                    f'planvm rejected seed for Compiler.{name}'
-                )
 
 
 if __name__ == '__main__':

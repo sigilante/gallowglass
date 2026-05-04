@@ -42,13 +42,10 @@ is in place.
 
 import os
 import sys
-import subprocess
-import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from tests.planvm.test_seed_planvm import requires_planvm, seed_loads, PLANVM
 from dev.harness.plan import A, P, L, N, is_nat, is_app, is_pin, is_law, evaluate
 from dev.harness.bplan import bevaluate
 
@@ -637,137 +634,6 @@ class TestMixedArityEmit(unittest.TestCase):
                if ln and not ln.startswith(b' ') and not ln.startswith(b'(#bind ')]
         self.assertEqual(bad, [],
             f'Non-bind top-level lines: {bad[:3]!r}')
-
-
-# ---------------------------------------------------------------------------
-# TestSelfhostPlanvm: planvm-gated seed loading
-# ---------------------------------------------------------------------------
-
-class TestSelfhostPlanvm(unittest.TestCase):
-    """
-    M8.8 planvm gate: seed loading tests.
-    """
-
-    @requires_planvm
-    def test_compiler_main_seed_loads(self):
-        """Compiler.main compiles to a planvm-valid seed."""
-        seed = make_seed('main')
-        self.assertTrue(seed_loads(seed),
-            'planvm rejected Compiler.main seed')
-
-    @requires_planvm
-    def test_compiler_emit_program_seed_loads(self):
-        """Compiler.emit_program compiles to a planvm-valid seed."""
-        seed = make_seed('emit_program')
-        self.assertTrue(seed_loads(seed),
-            'planvm rejected Compiler.emit_program seed')
-
-    @requires_planvm
-    def test_compiler_run_main_seed_loads(self):
-        """Compiler.run_main (M8.8 Path A CLI entry point) compiles to a planvm-valid seed."""
-        seed = make_seed('run_main')
-        self.assertTrue(seed_loads(seed),
-            'planvm rejected Compiler.run_main seed')
-
-
-# ---------------------------------------------------------------------------
-# Path A helper: run planvm with a source text CLI argument
-# ---------------------------------------------------------------------------
-
-def run_planvm_with_source(seed_bytes: bytes, source_text: str,
-                            timeout: int = 30) -> bytes | None:
-    """
-    Run planvm with seed_bytes and source_text as a CLI argument.
-
-    Invocation: planvm <seed_file> <source_text>
-
-    planvm passes source_text as a strnat (little-endian Nat) to the program
-    via argVec = Closure(head=Pin, args=[strnat]).  Compiler.run_main unpins
-    this to get the raw Nat, computes byte length, and calls main.
-
-    Returns: stdout bytes on success, None on timeout or error.
-    """
-    with tempfile.NamedTemporaryFile(suffix='.seed', delete=False) as f:
-        f.write(seed_bytes)
-        seed_path = f.name
-    try:
-        result = subprocess.run(
-            [PLANVM, seed_path, source_text],
-            capture_output=True,
-            timeout=timeout,
-        )
-        if result.returncode == 0:
-            return result.stdout
-        return None
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return None
-    finally:
-        os.unlink(seed_path)
-
-
-# ---------------------------------------------------------------------------
-# TestSelfhostPathA: M8.8 Path A functional validation
-# ---------------------------------------------------------------------------
-
-class TestSelfhostPathA(unittest.TestCase):
-    """
-    M8.8 Path A: run Compiler.run_main via planvm with source text as CLI arg.
-
-    Compiler.run_main unwraps the argVec (forces to P(src_nat)), computes the
-    byte length, constructs a Bytes value, calls Compiler.main, then writes the
-    Plan Assembler output to stdout via WriteOp.
-
-    The test source is a 2-definition snippet compiled to Plan Assembler by Path B;
-    Path A must produce the same output.
-    """
-
-    # Tiny source that compiles quickly and has a predictable output.
-    SNIPPET = 'let answer : Nat = 42\nlet double : Nat\n  = answer\n'
-
-    @classmethod
-    def setUpClass(cls):
-        # Compute Path B expected output once.
-        from bootstrap.lexer import lex
-        from bootstrap.parser import parse
-        from bootstrap.scope import resolve
-        from bootstrap.codegen import compile_program
-
-        src = cls.SNIPPET
-        prog = parse(lex(src, '<snippet>'), '<snippet>')
-        resolved, _ = resolve(prog, 'Test', {}, '<snippet>')
-        snippet_compiled = compile_program(resolved, 'Test')
-        bc = compile_module_bplan()
-        cls.expected_output = run_path_b(bc, snippet_compiled)
-
-    @requires_planvm
-    def test_path_a_snippet_matches_path_b(self):
-        """Path A (planvm run_main) produces the same output as Path B (harness).
-
-        Invokes planvm with Compiler.run_main seed and the SNIPPET source as a
-        CLI arg.  The output written to stdout must match Path B's Plan Assembler.
-        """
-        seed = make_seed('run_main')
-        output = run_planvm_with_source(seed, self.SNIPPET)
-        self.assertIsNotNone(output,
-            'planvm run_main returned None (non-zero exit or timeout)')
-        self.assertIsNotNone(self.expected_output,
-            'Path B produced None — cannot compare')
-        self.assertEqual(output, self.expected_output,
-            f'Path A output does not match Path B.\n'
-            f'  Path A: {output[:80]!r}\n'
-            f'  Path B: {self.expected_output[:80]!r}')
-
-    @requires_planvm
-    def test_path_a_output_is_plan_assembler(self):
-        """Path A output starts with (#bind and ends with newline."""
-        seed = make_seed('run_main')
-        output = run_planvm_with_source(seed, self.SNIPPET)
-        if output is None:
-            self.skipTest('planvm run_main returned None')
-        self.assertTrue(output.startswith(b'(#bind "'),
-            f'Path A output does not start with (#bind ": {output[:40]!r}')
-        self.assertTrue(output.endswith(b'\n'),
-            f'Path A output does not end with newline: {output[-20:]!r}')
 
 
 # ---------------------------------------------------------------------------

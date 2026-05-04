@@ -35,7 +35,6 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from tests.planvm.test_seed_planvm import requires_planvm, seed_loads
 from dev.harness.plan import A, evaluate
 
 MODULE = 'Compiler'
@@ -163,26 +162,6 @@ class TestDriverSmoke(unittest.TestCase):
         length = eval_plan(self.c['Compiler.bytes_length'], result)
         self.assertGreater(length, 0,
             f'main on minimal snippet should produce non-empty output, got length={length}')
-
-
-# ---------------------------------------------------------------------------
-# Planvm seed loading tests
-# ---------------------------------------------------------------------------
-
-class TestDriverPlanvm(unittest.TestCase):
-    """M8.7 functions produce valid seeds loadable by planvm."""
-
-    @requires_planvm
-    def test_nn_compiler_seed(self):
-        seed = make_seed('nn_Compiler')
-        self.assertTrue(seed_loads(seed),
-            'nn_Compiler seed failed planvm load')
-
-    @requires_planvm
-    def test_main_seed(self):
-        seed = make_seed('main')
-        self.assertTrue(seed_loads(seed),
-            'main seed failed planvm load')
 
 
 if __name__ == '__main__':

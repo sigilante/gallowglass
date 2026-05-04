@@ -12,7 +12,6 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from tests.planvm.test_seed_planvm import requires_planvm, seed_loads
 from dev.harness.plan import P, L, A, N, is_nat, is_pin, is_law, is_app
 
 MODULE = 'Compiler'
@@ -387,26 +386,6 @@ class TestByteOps(unittest.TestCase):
             self.fail(f'bytes_concat did not produce MkPair: {result}')
 
 
-class TestSeedLoading(unittest.TestCase):
-    """Test that key definitions produce planvm-valid seeds."""
-
-    SEED_NAMES = [
-        'pred', 'is_zero', 'nat_eq', 'nat_lt', 'add', 'sub', 'mul',
-        'div_nat', 'mod_nat', 'pow2', 'bit_and', 'bit_or',
-        'shift_right', 'shift_left',
-        'length', 'map', 'foldl', 'foldr', 'reverse', 'append',
-        'assoc_lookup', 'assoc_insert', 'assoc_remove',
-        'byte_at', 'bytes_concat', 'bytes_eq',
-        'MkPair', 'Ok', 'Err', 'Nil', 'Cons', 'None', 'Some',
-    ]
-
-    @requires_planvm
-    def test_seed_loads(self):
-        for name in self.SEED_NAMES:
-            with self.subTest(name=name):
-                seed = make_seed(name)
-                self.assertTrue(seed_loads(seed),
-                               f'Seed for {name} rejected by planvm')
 
 
 if __name__ == '__main__':

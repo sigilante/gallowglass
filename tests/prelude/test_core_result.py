@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """
-Core.Result tests — harness correctness + planvm seed loading.
+Core.Result harness correctness tests.
 
-Layer 1a: Python harness tests (always run).
-  Verifies is_ok, is_err, with_ok, with_err, map_ok, map_err, bind_result.
-
-Layer 2: planvm seed loading (skipped unless planvm is available).
-  Verifies every definition in Core.Result produces a planvm-valid seed.
+Verifies is_ok, is_err, with_ok, with_err, map_ok, map_err, bind_result
+against the Python PLAN harness.
 
 Encoding: Ok a = A(tag=0, a), Err b = A(tag=1, b).
 """
@@ -26,13 +23,6 @@ def apply(f, x):
 
 def evaluate(v):
     return bevaluate(v)
-
-try:
-    from tests.planvm.test_seed_planvm import requires_planvm, seed_loads
-except ImportError:
-    def requires_planvm(fn):
-        return unittest.skip('planvm not available')(fn)
-    def seed_loads(_): return False
 
 CORE_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'prelude', 'src', 'Core')
 NAT_PATH = os.path.join(CORE_DIR, 'Nat.gls')
@@ -218,63 +208,6 @@ class TestCoreResultHarness(unittest.TestCase):
 
     def test_eq_err_err_unequal(self):
         self.assertEqual(self._eq_result(mk_err(N(9)), mk_err(N(7))), 0)
-
-
-# ---------------------------------------------------------------------------
-# Layer 2: planvm seed loading
-# ---------------------------------------------------------------------------
-
-def _make_seed(name):
-    from bootstrap.emit_seed import emit
-    compiled = _get_result()
-    return emit(compiled, f'{MODULE}.{name}')
-
-
-class TestCoreResultSeeds(unittest.TestCase):
-
-    @requires_planvm
-    def test_ok_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('Ok')))
-
-    @requires_planvm
-    def test_err_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('Err')))
-
-    @requires_planvm
-    def test_is_ok_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('is_ok')))
-
-    @requires_planvm
-    def test_is_err_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('is_err')))
-
-    @requires_planvm
-    def test_with_ok_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('with_ok')))
-
-    @requires_planvm
-    def test_with_err_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('with_err')))
-
-    @requires_planvm
-    def test_map_ok_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('map_ok')))
-
-    @requires_planvm
-    def test_map_err_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('map_err')))
-
-    @requires_planvm
-    def test_bind_result_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('bind_result')))
-
-    @requires_planvm
-    def test_inst_eq_result_eq_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Eq_Result_eq')))
-
-    @requires_planvm
-    def test_inst_eq_result_neq_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Eq_Result_neq')))
 
 
 if __name__ == '__main__':

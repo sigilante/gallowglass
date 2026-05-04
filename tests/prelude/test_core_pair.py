@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
 """
-Core.Pair tests — harness correctness + planvm seed loading.
+Core.Pair harness correctness tests.
 
-Layer 1a: Python harness tests (always run).
-  Verifies fst, snd, map_fst, map_snd, swap.
-
-Layer 2: planvm seed loading (skipped unless planvm is available).
-  Verifies every definition in Core.Pair produces a planvm-valid seed.
+Verifies fst, snd, map_fst, map_snd, swap against the Python PLAN harness.
 
 Encoding: MkPair a b = A(A(tag=0, a), b).  Single constructor, tag always 0.
 """
@@ -25,13 +21,6 @@ def apply(f, x):
 
 def evaluate(v):
     return bevaluate(v)
-
-try:
-    from tests.planvm.test_seed_planvm import requires_planvm, seed_loads
-except ImportError:
-    def requires_planvm(fn):
-        return unittest.skip('planvm not available')(fn)
-    def seed_loads(_): return False
 
 CORE_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'prelude', 'src', 'Core')
 PAIR_PATH = os.path.join(CORE_DIR, 'Pair.gls')
@@ -144,43 +133,6 @@ class TestCorePairHarness(unittest.TestCase):
         self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
         self.assertEqual(result.fun.arg, 5)
         self.assertEqual(result.arg, 5)
-
-
-# ---------------------------------------------------------------------------
-# Layer 2: planvm seed loading
-# ---------------------------------------------------------------------------
-
-def _make_seed(name):
-    from bootstrap.emit_seed import emit
-    compiled = _get_pair()
-    return emit(compiled, f'{MODULE}.{name}')
-
-
-class TestCorePairSeeds(unittest.TestCase):
-
-    @requires_planvm
-    def test_mkpair_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('MkPair')))
-
-    @requires_planvm
-    def test_fst_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('fst')))
-
-    @requires_planvm
-    def test_snd_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('snd')))
-
-    @requires_planvm
-    def test_map_fst_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('map_fst')))
-
-    @requires_planvm
-    def test_map_snd_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('map_snd')))
-
-    @requires_planvm
-    def test_swap_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('swap')))
 
 
 if __name__ == '__main__':

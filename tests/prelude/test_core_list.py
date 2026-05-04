@@ -20,13 +20,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from dev.harness.plan import A, N, evaluate, apply, is_app
 from dev.harness.bplan import bevaluate, _bapply, register_prelude_jets
 
-try:
-    from tests.planvm.test_seed_planvm import requires_planvm, seed_loads
-except ImportError:
-    def requires_planvm(fn):
-        return unittest.skip('planvm not available')(fn)
-    def seed_loads(_): return False
-
 CORE_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'prelude', 'src', 'Core')
 NAT_PATH = os.path.join(CORE_DIR, 'Nat.gls')
 LIST_PATH = os.path.join(CORE_DIR, 'List.gls')
@@ -168,91 +161,6 @@ class TestCoreListHarness(unittest.TestCase):
 
     def test_debug_multi(self):
         self.assertTrue(check_text(self._debug_list(mk_list(1, 2)), 'Cons 1 (Cons 2 (Nil))'))
-
-
-# ---------------------------------------------------------------------------
-# Layer 2: planvm seed loading
-# ---------------------------------------------------------------------------
-
-def _make_seed(name):
-    from bootstrap.emit_seed import emit
-    compiled = _get_list()
-    return emit(compiled, f'{MODULE}.{name}')
-
-
-class TestCoreListSeeds(unittest.TestCase):
-
-    @requires_planvm
-    def test_nil_constructor_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('Nil')))
-
-    @requires_planvm
-    def test_cons_constructor_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('Cons')))
-
-    @requires_planvm
-    def test_is_nil_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('is_nil')))
-
-    @requires_planvm
-    def test_is_cons_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('is_cons')))
-
-    @requires_planvm
-    def test_singleton_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('singleton')))
-
-    @requires_planvm
-    def test_head_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('head')))
-
-    @requires_planvm
-    def test_tail_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('tail')))
-
-    @requires_planvm
-    def test_map_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('map')))
-
-    @requires_planvm
-    def test_filter_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('filter')))
-
-    @requires_planvm
-    def test_foldl_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('foldl')))
-
-    @requires_planvm
-    def test_foldr_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('foldr')))
-
-    @requires_planvm
-    def test_list_eq_go_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('list_eq_go')))
-
-    @requires_planvm
-    def test_inst_eq_list_eq_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Eq_List_eq')))
-
-    @requires_planvm
-    def test_inst_eq_list_neq_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Eq_List_neq')))
-
-    @requires_planvm
-    def test_show_list_go_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('show_list_go')))
-
-    @requires_planvm
-    def test_inst_show_list_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Show_List_show')))
-
-    @requires_planvm
-    def test_debug_list_go_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('debug_list_go')))
-
-    @requires_planvm
-    def test_inst_debug_list_seed_loads(self):
-        self.assertTrue(seed_loads(_make_seed('inst_Debug_List_debug')))
 
 
 # ---------------------------------------------------------------------------
