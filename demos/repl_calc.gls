@@ -395,6 +395,24 @@ let render : EvalResult → Nat
       | EvErr  → render_err
     }
 
+-- prompt: bytes for the input prompt "Ᵹ» " (UTF-8: EA 9D BD C2 BB 20)
+-- with the bytesBar marker bit set at byte 6.  Layout:
+--   byte 0 0xEA  - "Ᵹ" U+A77D (LATIN CAPITAL LETTER INSULAR G), UTF-8 byte 0
+--   byte 1 0x9D  - "Ᵹ" UTF-8 byte 1
+--   byte 2 0xBD  - "Ᵹ" UTF-8 byte 2
+--   byte 3 0xC2  - "»" U+00BB (RIGHT-POINTING DOUBLE ANGLE QUOTATION MARK), UTF-8 byte 0
+--   byte 4 0xBB  - "»" UTF-8 byte 1
+--   byte 5 0x20  - ' '
+--   marker @ 48
+let prompt : Nat
+  = BPLAN.add (BPLAN.lsh 1 48)                      -- marker bit
+      (BPLAN.add 234                                 -- 0xEA
+        (BPLAN.add (BPLAN.lsh 157 8)                 -- 0x9D
+          (BPLAN.add (BPLAN.lsh 189 16)              -- 0xBD
+            (BPLAN.add (BPLAN.lsh 194 24)            -- 0xC2
+              (BPLAN.add (BPLAN.lsh 187 32)          -- 0xBB
+                         (BPLAN.lsh 32  40))))))     -- ' '
+
 -- ---------------------------------------------------------------------------
 -- REPL loop: read input → tokenize → drain expressions → recurse.
 -- An input length of 0 means EOF; the loop terminates by returning 0.
@@ -448,11 +466,15 @@ let repl_step
                       (self 0)
     }
 
+-- Print the system prompt before each `Input` read.  The trailing prompt
+-- printed at EOF is harmless (the process exits immediately after).  The
+-- `BPLAN.seq` keeps the prompt's side-effect from being elided.
 let repl : Nat → Nat
   = fix λ self _ →
-      match (decode_input (RPLAN.input 1024)) {
-        | MkPair len content → repl_step self len content
-      }
+      BPLAN.seq (RPLAN.output prompt)
+        (match (decode_input (RPLAN.input 1024)) {
+          | MkPair len content → repl_step self len content
+        })
 
 -- main : Nat → Nat — Reaver applies main to the strNat-encoded CLI args
 -- (we ignore them) and forces the result. The return value is unused.
