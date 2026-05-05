@@ -34,4 +34,9 @@ external mod Reaver.BPLAN {
   lsh  : Nat → Nat → Nat   -- left shift: lsh n k = n * 2^k
   rsh  : Nat → Nat → Nat   -- right shift: rsh n k = floor (n / 2^k)
   bex  : Nat → Nat         -- bit exponent: bex n = 2^n
+
+  -- Sequencing: force evaluation of `a`, return `b`. Critical for
+  -- threading I/O side effects under lazy evaluation; without it the
+  -- BPLAN/RPLAN harness eliminates discarded computations as dead code.
+  seq  : Nat → Nat → Nat
 }

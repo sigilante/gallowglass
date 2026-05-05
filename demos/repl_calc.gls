@@ -29,6 +29,7 @@ external mod Reaver.BPLAN {
   lsh  : Nat → Nat → Nat
   rsh  : Nat → Nat → Nat
   bex  : Nat → Nat
+  seq  : Nat → Nat → Nat   -- force a, return b: needed to thread I/O effects
 }
 
 -- ---------------------------------------------------------------------------
@@ -391,13 +392,18 @@ let render : EvalResult → Nat
 -- repl_step: process one input line.  Pass-self pattern threads the
 -- recursion target as `self` so we can avoid body-let forms (which
 -- Reaver's Plan-Asm parser doesn't recognise).
+--
+-- The `BPLAN.seq` is load-bearing: with a plain `match … { | _ → self 0 }`
+-- shape the codegen elides the scrutinee evaluation as dead code (single
+-- wildcard arm = the value isn't observed), which kills the `output`
+-- side effect.  `seq` forces evaluation explicitly, producing a use-site
+-- the optimisation can't drop.
 let repl_step
       : (Nat → Nat) → Nat → Nat → Nat
   = λ self len content → match len {
       | 0 → 0   -- EOF
-      | _ → match (RPLAN.output (render (eval (parse (tokenize content len))))) {
-          | _ → self 0
-        }
+      | _ → BPLAN.seq (RPLAN.output (render (eval (parse (tokenize content len)))))
+                      (self 0)
     }
 
 let repl : Nat → Nat
