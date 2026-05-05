@@ -83,29 +83,23 @@ worry about it.
 ## Running a demo as a Reaver process
 
 `repl_calc.gls` runs as a real Reaver process — it reads stdin, writes
-stdout, and loops until EOF. The end-to-end test in
-`tests/demos/test_repl_calc.py` shows the pattern; manually:
+stdout, and loops until EOF. `demos/run_repl.sh` handles the compile +
+tempdir setup + Reaver invocation in one shot; pipe input or run
+interactively:
 
 ```bash
-python3 -c "
-import sys; sys.path.insert(0, '.'); sys.setrecursionlimit(50000)
-from bootstrap.lexer import lex
-from bootstrap.parser import parse
-from bootstrap.scope import resolve
-from bootstrap.codegen import compile_program
-from bootstrap.emit_pla import emit_program
-src = open('demos/repl_calc.gls').read()
-prog = parse(lex(src, 'repl_calc.gls'), 'repl_calc.gls')
-resolved, _ = resolve(prog, 'Main', {}, 'repl_calc.gls')
-print(emit_program(compile_program(resolved, 'Main')))
-" > /tmp/demo/demo.plan
-cp vendor/reaver/src/plan/boot.plan /tmp/demo/
-echo "1+2*3" | (cd vendor/reaver && nix develop --command \
-    cabal run -v0 plan-assembler -- /tmp/demo demo Main_main 0)
+echo "1+2*3" | demos/run_repl.sh        # one-shot
+demos/run_repl.sh                        # interactive — Ctrl-D to exit
 ```
 
-For programs that don't need a loop, see `tests/reaver/test_smoke.py`
-for the simpler `Trace` driver pattern.
+Requires `vendor/reaver/` populated (run `tools/vendor.sh`) and `nix`
+on PATH. First invocation will GHC-build `plan-assembler` (~30 s);
+subsequent runs reuse the warm Nix store.
+
+The end-to-end test at `tests/reaver/test_repl_calc.py` covers basic
+arithmetic, precedence, parens, and division-by-zero recovery. For
+programs that don't need a loop, see `tests/reaver/test_smoke.py` for
+the simpler `Trace` driver pattern.
 
 ## What demos cannot yet do
 
