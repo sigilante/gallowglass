@@ -86,19 +86,19 @@ class TestReplCalc(unittest.TestCase):
         """Two simple lines: addition and multiplication."""
         stdout, stderr = _run_repl(b'1+2\n3*4\n')
         self.assertEqual(stdout, b'3\n12\n',
-            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-300:]!r}')
+            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-2000:]!r}')
 
     def test_precedence_and_parens(self):
         """Operator precedence and parenthesised sub-expressions."""
         stdout, stderr = _run_repl(b'2+3*4\n(2+3)*4\n')
         self.assertEqual(stdout, b'14\n20\n',
-            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-300:]!r}')
+            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-2000:]!r}')
 
     def test_division_by_zero_recovers(self):
         """Errors print "err" and the loop continues with the next line."""
         stdout, stderr = _run_repl(b'10/0\n6/2\n')
         self.assertEqual(stdout, b'err\n3\n',
-            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-300:]!r}')
+            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-2000:]!r}')
 
 
 if __name__ == '__main__':
