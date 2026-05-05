@@ -89,14 +89,16 @@ let bit_size : Nat → Nat
 --   content = n - 2^(len*8)
 -- For an empty stdin (EOF), input returns `bytesBar "" = 1`, so
 -- bit_size = 1 → len = 0 → content = 0. Length 0 is the EOF signal.
+-- decode_len: bytesBar length-marker position → byte length.
+let decode_len : Nat → Nat
+  = λ n → BPLAN.div (BPLAN.sub (bit_size n) 1) 8
+
 let decode_input : Nat → Pair Nat Nat
   = λ n → match n {
       | 0 → MkPair 0 0
       | _ →
-          let bs = bit_size n in
-          let len = BPLAN.div (BPLAN.sub bs 1) 8 in
-          let content = BPLAN.sub n (BPLAN.bex (BPLAN.mul len 8)) in
-          MkPair len content
+          MkPair (decode_len n)
+                 (BPLAN.sub n (BPLAN.bex (BPLAN.mul (decode_len n) 8)))
     }
 
 -- byte_at content i: extract byte at index i.
@@ -120,16 +122,13 @@ let is_space : Nat → Nat
     }
 
 let is_digit : Nat → Nat
-  = λ b →
-      let ge0 = BPLAN.sub b 47 in   -- ge0 > 0 iff b >= 48 ('0')
-      let le9 = BPLAN.sub 58 b in   -- le9 > 0 iff b <= 57 ('9')
-      match ge0 {
-        | 0 → 0
-        | _ → match le9 {
-            | 0 → 0
-            | _ → 1
-          }
-      }
+  = λ b → match (BPLAN.sub b 47) {     -- > 0 iff b >= 48 ('0')
+      | 0 → 0
+      | _ → match (BPLAN.sub 58 b) {    -- > 0 iff b <= 57 ('9')
+          | 0 → 0
+          | _ → 1
+        }
+    }
 
 -- ---------------------------------------------------------------------------
 -- Lexer: walk byte-by-byte, emit a List of tokens (head = first token).
@@ -141,14 +140,12 @@ let is_digit : Nat → Nat
 -- (accumulated_value, next_offset).
 let lex_num : Nat → Nat → Nat → Nat → Pair Nat Nat
   = fix λ self content len i acc → match (BPLAN.eq i len) {
-      | 0 →
-          let b = byte_at content i in
-          match (is_digit b) {
-            | 0 → MkPair acc i
-            | _ →
-                let d = BPLAN.sub b 48 in
-                self content len (BPLAN.add i 1) (BPLAN.add (BPLAN.mul acc 10) d)
-          }
+      | 0 → match (is_digit (byte_at content i)) {
+          | 0 → MkPair acc i
+          | _ → self content len
+                     (BPLAN.add i 1)
+                     (BPLAN.add (BPLAN.mul acc 10) (BPLAN.sub (byte_at content i) 48))
+        }
       | _ → MkPair acc i
     }
 
@@ -186,26 +183,30 @@ let single_char_token : Nat → Token
       | _ → TkPlus
     }
 
--- tokenize_go: build the token list in reverse, then reverse.
+-- tokenize_at: tokenize starting at offset i_ws (already past whitespace).
+-- Pass-self pattern: takes the recursion target as `self` to break the
+-- pseudo-mutual link with tokenize_go below.
+let tokenize_at
+      : (Nat → Nat → Nat → List Token → List Token)
+      → Nat → Nat → Nat → List Token → List Token
+  = λ self content len i_ws acc → match (BPLAN.eq i_ws len) {
+      | 0 → match (is_digit (byte_at content i_ws)) {
+          | 0 → self content len (BPLAN.add i_ws 1)
+                     (Cons (single_char_token (byte_at content i_ws)) acc)
+          | _ → match (lex_num content len i_ws 0) {
+              | MkPair v j → self content len j (Cons (TkNum v) acc)
+            }
+        }
+      | _ → acc
+    }
+
+-- tokenize_go: skip whitespace then dispatch via tokenize_at. Recursive
+-- via fix; each iteration consumes one token.
 let tokenize_go : Nat → Nat → Nat → List Token → List Token
   = fix λ self content len i acc →
-      let i_ws = skip_ws content len i in
-      match (BPLAN.eq i_ws len) {
-        | 0 →
-            let b = byte_at content i_ws in
-            match (is_digit b) {
-              | 0 →
-                  let tok = single_char_token b in
-                  self content len (BPLAN.add i_ws 1) (Cons tok acc)
-              | _ →
-                  match (lex_num content len i_ws 0) {
-                    | MkPair v j → self content len j (Cons (TkNum v) acc)
-                  }
-            }
-        | _ → acc
-      }
+      tokenize_at self content len (skip_ws content len i) acc
 
--- list_reverse: needed to flip the accumulator from tokenize_go.
+-- list_reverse_go: needed to flip the accumulator from tokenize_go.
 let list_reverse_go : List Token → List Token → List Token
   = fix λ self xs acc → match xs {
       | Nil → acc
@@ -213,9 +214,7 @@ let list_reverse_go : List Token → List Token → List Token
     }
 
 let tokenize : Nat → Nat → List Token
-  = λ content len →
-      let rev = tokenize_go content len 0 Nil in
-      list_reverse_go rev Nil
+  = λ content len → list_reverse_go (tokenize_go content len 0 Nil) Nil
 
 -- ---------------------------------------------------------------------------
 -- Parser: precedence-climbing recursive descent over List Token.
@@ -359,11 +358,8 @@ let eval : Expr → EvalResult
 let nat_render_go : Nat → Nat → Nat
   = fix λ self n acc → match n {
       | 0 → acc
-      | _ →
-          let d = nat_mod n 10 in
-          let r = BPLAN.div n 10 in
-          let byte = BPLAN.add 48 d in   -- '0' = 48
-          self r (BPLAN.add (BPLAN.lsh acc 8) byte)
+      | _ → self (BPLAN.div n 10)
+                 (BPLAN.add (BPLAN.lsh acc 8) (BPLAN.add 48 (nat_mod n 10)))
     }
 
 -- render_ok n: bytes representing decimal-rendered n followed by '\n'.
@@ -392,19 +388,22 @@ let render : EvalResult → Nat
 -- An input length of 0 means EOF; the loop terminates by returning 0.
 -- ---------------------------------------------------------------------------
 
+-- repl_step: process one input line.  Pass-self pattern threads the
+-- recursion target as `self` so we can avoid body-let forms (which
+-- Reaver's Plan-Asm parser doesn't recognise).
+let repl_step
+      : (Nat → Nat) → Nat → Nat → Nat
+  = λ self len content → match len {
+      | 0 → 0   -- EOF
+      | _ → match (RPLAN.output (render (eval (parse (tokenize content len))))) {
+          | _ → self 0
+        }
+    }
+
 let repl : Nat → Nat
   = fix λ self _ →
-      let raw = RPLAN.input 1024 in
-      match (decode_input raw) {
-        | MkPair len content → match len {
-            | 0 → 0   -- EOF
-            | _ →
-                let toks = tokenize content len in
-                let e = parse toks in
-                let r = eval e in
-                let _ = RPLAN.output (render r) in
-                self 0
-          }
+      match (decode_input (RPLAN.input 1024)) {
+        | MkPair len content → repl_step self len content
       }
 
 -- main : Nat → Nat — Reaver applies main to the strNat-encoded CLI args

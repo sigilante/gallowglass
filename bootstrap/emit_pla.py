@@ -112,13 +112,63 @@ def emit_top(v: Any) -> str:
     raise TypeError(f'emit_top: unknown PLAN ctor {type(v).__name__}')
 
 
+def _strip_body_lets(body: Any, arity: int) -> tuple[list[tuple[int, Any]], Any]:
+    """Walk a leading `(1 rhs body)` chain at the head of a law body, peeling
+    each one off as a `(slot_idx, rhs)` pair.
+
+    Returns `(binds, inner_body)` where `binds` are the let-binding pairs in
+    source order and `inner_body` is whatever sits below the chain.
+
+    The runtime PLAN representation of `let x = rhs in body` is
+    `A(A(N(1), rhs), body)` — see `bootstrap/codegen.py:_compile_let`. Reaver's
+    Plan-Asm parser does *not* recognise this nested form as a let; it parses
+    it as application syntax, which then fails to resolve the slot symbol.
+    Reaver's only let-binding form is sibling `(#bind name rhs)` forms before
+    the law body; this helper extracts the chain so `_emit_law` can emit them
+    as siblings.
+
+    `arity` is the law's arity (number of args after self). The first stripped
+    let binds slot index `arity + 1`, the next `arity + 2`, and so on.
+    """
+    binds: list[tuple[int, Any]] = []
+    next_slot = arity + 1
+    cur = body
+    while (is_app(cur) and is_app(cur.fun)
+           and is_nat(cur.fun.fun) and cur.fun.fun == 1):
+        rhs = cur.fun.arg
+        rest = cur.arg
+        binds.append((next_slot, rhs))
+        next_slot += 1
+        cur = rest
+    return binds, cur
+
+
 def _emit_law(law: L) -> str:
-    """Emit `(#law "name_decimal" sig body)`."""
+    """Emit `(#law "name_decimal" sig (#bind _N rhs)... body)`.
+
+    Body let-chains at the head of the body are lifted to sibling `(#bind ...)`
+    forms; see `_strip_body_lets`. Lets nested deeper inside the body (inside
+    match arms, etc.) stay as `(1 rhs body)` runtime form — they would fail
+    Reaver parsing too, but in practice gallowglass codegen lifts non-trivial
+    arms to sub-laws whose bodies start with the let chain, so this shallow
+    lifting reaches them.
+    """
     name_dec = str(int(law.name))
     arity = int(law.arity)
     sig = '(' + ' '.join(f'_{i}' for i in range(arity + 1)) + ')'
-    body = _emit_body(law.body, arity)
-    return f'(#law "{name_dec}" {sig} {body})'
+    binds, inner_body = _strip_body_lets(law.body, arity)
+    bind_strs: list[str] = []
+    for slot_idx, rhs in binds:
+        # rhs is compiled at the depth that existed *before* this bind was
+        # introduced — i.e. the slot the bind takes minus one. Earlier
+        # binds in the chain are visible to later rhs's because Reaver
+        # populates locals with all binds before compiling any of them.
+        rhs_str = _emit_body(rhs, slot_idx - 1)
+        bind_strs.append(f'(#bind _{slot_idx} {rhs_str})')
+    final_depth = arity + len(binds)
+    body_str = _emit_body(inner_body, final_depth)
+    parts = [f'"{name_dec}"', sig] + bind_strs + [body_str]
+    return f'(#law {" ".join(parts)})'
 
 
 # ---------------------------------------------------------------------------
