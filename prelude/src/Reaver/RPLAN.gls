@@ -1,0 +1,38 @@
+-- Reaver.RPLAN
+-- Bindings to Reaver's RPLAN named-op surface
+-- (`vendor/reaver/src/hs/Plan.hs op 82`, surfaced by the `(rplan ...)`
+-- macro in `vendor/reaver/src/plan/boot.plan`).
+--
+-- These are the canonical declarations. Programs that need Reaver I/O
+-- can either `use Reaver.RPLAN` (when built via `build_modules` with
+-- this module in the build) or redeclare the relevant subset inline as
+-- their own `external mod Reaver.RPLAN { ... }`.
+--
+-- *RPLAN is tentative.* Per Sol (2026-04-30), names, arities, and the
+-- calling shape may change in future Reaver versions. The canary at
+-- `tests/sanity/test_rplan_deps.py` greps the pinned Plan.hs and fires
+-- on `vendor.lock` bumps that drift the surface; bump the declarations
+-- here in lockstep.
+--
+-- Encoding notes:
+--   - `input n` returns the bytes read as a single Nat, encoded via
+--     Plan.hs's `bytesBar` (little-endian content + a high-bit length
+--     marker at position `len*8`). Callers wanting gallowglass's
+--     `Bytes = MkPair len content` representation must decode the
+--     high-bit form.
+--   - `output` writes the raw byte representation of its argument via
+--     `natBytes`. Pass a content nat (e.g. `bytes_content b`), not a
+--     `MkPair`.
+--   - `read_file`, `print`, `stamp` take a strnat-encoded path or
+--     value as their argument.
+--   - `now` ignores its argument and returns POSIX seconds.
+
+external mod Reaver.RPLAN {
+  input     : Nat → Nat
+  output    : Nat → Nat
+  warn      : Nat → Nat
+  read_file : Nat → Nat
+  print     : Nat → Nat
+  stamp     : Nat → Nat
+  now       : Nat → Nat
+}
