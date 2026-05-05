@@ -461,38 +461,76 @@ class Compiler:
         'Core.IO.Prim.write_op': P(N(9)),
     }
 
+    # Reaver.RPLAN named ops: each Reaver.RPLAN.<source_name> external
+    # item maps to an RPLAN named primitive — a Pin'd Law that delegates
+    # to the (P("R")) ABI at runtime. Per `vendor/reaver/src/hs/Plan.hs`
+    # op 82 cases, surfaced by the `(rplan ...)` macro in
+    # `vendor/reaver/src/plan/boot.plan`.
+    #
+    # Source-side names are lower-snake_case per gallowglass naming
+    # convention; runtime names are the PascalCase RPLAN ops as
+    # enumerated by Plan.hs:rplan. The arity column matches the
+    # case-pattern shape there exactly; drift is caught by
+    # `tests/sanity/test_rplan_deps.py`.
+    #
+    # Per Sol (2026-04-30) RPLAN is *tentative*. Bump this table in
+    # lockstep with vendor.lock SHA changes; the canary test will fail
+    # loudly if you forget.
+    _REAVER_RPLAN_PRIMS: dict[str, tuple[str, int]] = {
+        'Reaver.RPLAN.input':     ('Input',    1),
+        'Reaver.RPLAN.output':    ('Output',   1),
+        'Reaver.RPLAN.warn':      ('Warn',     1),
+        'Reaver.RPLAN.read_file': ('ReadFile', 1),
+        'Reaver.RPLAN.print':     ('Print',    1),
+        'Reaver.RPLAN.stamp':     ('Stamp',    1),
+        'Reaver.RPLAN.now':       ('Now',      1),
+    }
+
     # The "B" opcode pin — gateway to BPLAN named-op dispatch (see
     # vendor/reaver/src/hs/Plan.hs op 66). Saturating ((<B>) ("Name" args))
     # triggers dispatch.
     _BPLAN_PIN: Any = P(N(int.from_bytes(b'B', 'little')))
 
+    # The "R" opcode pin — gateway to RPLAN named-op dispatch (see
+    # vendor/reaver/src/hs/Plan.hs op 82). Same shape as BPLAN's
+    # gateway but routes through the RPLAN dispatch table for stdio /
+    # filesystem / clock primitives.
+    _RPLAN_PIN: Any = P(N(int.from_bytes(b'R', 'little')))
+
     @classmethod
-    def _make_bplan_prim(cls, name: str, prim_arity: int) -> Any:
-        """Build the Pin'd Law for a BPLAN named primitive.
+    def _make_bplan_prim(cls, name: str, prim_arity: int,
+                         gateway_pin: Any | None = None) -> Any:
+        """Build the Pin'd Law for a BPLAN- or RPLAN-named primitive.
 
-        Mirrors `vendor/reaver/src/plan/boot.plan`'s `bplan` macro
-        expansion: produces
+        Mirrors `vendor/reaver/src/plan/boot.plan`'s `bplan` / `rplan`
+        macro expansion: produces
 
-            (#pin (#law "Name" (Name a1 ... aN) ((#pin "B") ("Name" a1 ... aN))))
+            (#pin (#law "Name" (Name a1 ... aN) ((#pin G) ("Name" a1 ... aN))))
+
+        where G is "B" for BPLAN ops (default) or "R" for RPLAN ops.
 
         In our PLAN representation:
             P(L(arity, strNat(name),
-                  bapp(P_B, bapp(quoted_name, slot_1, ..., slot_arity))))
+                  bapp(gateway_pin, bapp(quoted_name, slot_1, ..., slot_arity))))
 
         where every literal nat in body context is quote-wrapped (per the
-        always-quote-wrap discipline from PR #48).
+        always-quote-wrap discipline from PR #48). Pass
+        `gateway_pin=cls._RPLAN_PIN` for RPLAN ops; the default is the
+        BPLAN gateway preserved for the existing Core.PLAN call sites.
         """
+        if gateway_pin is None:
+            gateway_pin = cls._BPLAN_PIN
         name_nat = encode_name(name)
         # Quote-wrapped name nat (constant in body context).
         quoted_name = A(N(0), N(name_nat))
         # Inner App: ("Name" arg1 arg2 ... argN). Built via bapp so kal
         # substitutes slot refs at evaluation time; the result after kal
-        # is a flat App spine that the BPLAN dispatcher can unapp.
+        # is a flat App spine that the dispatcher can unapp.
         slots = [N(k) for k in range(1, prim_arity + 1)]
         inner = bapp(quoted_name, *slots)
-        # Outer apply: ((<B>) inner) — saturating <B> with one arg fires
-        # op(strNat("B"), [inner]) → BPLAN dispatch.
-        body = bapp(cls._BPLAN_PIN, inner)
+        # Outer apply: ((<G>) inner) — saturating <G> with one arg fires
+        # op(strNat("B"|"R"), [inner]) → BPLAN/RPLAN dispatch.
+        body = bapp(gateway_pin, inner)
         return P(L(prim_arity, name_nat, body))
 
     @staticmethod
@@ -565,6 +603,13 @@ class Compiler:
                 arity, law_name = self._CORE_PLAN_NAMED_JETS[fq]
                 # Named jet: BPLAN-named Pin'd Law of the given arity.
                 stub = self._make_bplan_prim(law_name, arity)
+            elif fq in self._REAVER_RPLAN_PRIMS:
+                rplan_name, rplan_arity = self._REAVER_RPLAN_PRIMS[fq]
+                # RPLAN named op: same shape as a BPLAN named primitive
+                # but routed through the (P("R")) gateway.
+                stub = self._make_bplan_prim(
+                    rplan_name, rplan_arity, gateway_pin=self._RPLAN_PIN
+                )
             elif fq in self._CORE_IO_PRIMITIVES:
                 stub = self._CORE_IO_PRIMITIVES[fq]
             elif fq in self._get_core_text_primitives():
