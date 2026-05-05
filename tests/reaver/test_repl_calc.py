@@ -78,6 +78,7 @@ def _run_repl(stdin_bytes: bytes, timeout: int = 120) -> tuple[bytes, bytes]:
 
 
 PROMPT = 'Ᵹ» '.encode('utf-8')
+BANNER = b'gallowglass calc -- ops: + - * / ( )\n'
 
 
 @requires_reaver
@@ -97,12 +98,12 @@ class TestReplCalc(unittest.TestCase):
 
     def test_single_expression(self):
         stdout, stderr = _run_repl(b'1+2\n')
-        self.assertEqual(stdout, PROMPT + b'3\n' + PROMPT,
+        self.assertEqual(stdout, BANNER + PROMPT + b'3\n' + PROMPT,
             f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-1500:]!r}')
 
     def test_multiple_expressions(self):
         stdout, stderr = _run_repl(b'1+2\n3*4\n6/2\n')
-        self.assertEqual(stdout, PROMPT + b'3\n12\n3\n' + PROMPT,
+        self.assertEqual(stdout, BANNER + PROMPT + b'3\n12\n3\n' + PROMPT,
             f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-1500:]!r}')
 
     def test_division_by_zero_breaks_loop(self):
@@ -111,12 +112,12 @@ class TestReplCalc(unittest.TestCase):
         # the next `Input` read — which sees EOF — so a trailing prompt
         # is emitted before the process exits.
         stdout, stderr = _run_repl(b'1+2\n6/0\n4*5\n')
-        self.assertEqual(stdout, PROMPT + b'3\nerr\n' + PROMPT,
+        self.assertEqual(stdout, BANNER + PROMPT + b'3\nerr\n' + PROMPT,
             f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-1500:]!r}')
 
     def test_unparseable_input_emits_err(self):
         stdout, stderr = _run_repl(b'hello\n')
-        self.assertEqual(stdout, PROMPT + b'err\n' + PROMPT,
+        self.assertEqual(stdout, BANNER + PROMPT + b'err\n' + PROMPT,
             f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-1500:]!r}')
 
 
