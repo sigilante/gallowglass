@@ -466,6 +466,15 @@ class Compiler:
 
     # Core.IO.Prim: I/O primitives mapped to planvm jet.primtab entries.
     # write_op = P(N(9)) = WriteOp; takes a size-4 closure (fd, buf, count, offset).
+    #
+    # NOTE: `P(N(9))` is an opcode pin for the legacy planvm path. Reaver
+    # has no `op 9` dispatch (only `op 66` BPLAN and `op 82` RPLAN), so
+    # any program that compiles + runs through Reaver and reaches this
+    # value crashes with `no primop 9 ...`. Currently only referenced by
+    # `Compiler.run_main` (the deferred Path A entry point), which isn't
+    # exercised under Reaver — Phase G's `Compiler.main` re-shape will
+    # replace this entirely with `Reaver.RPLAN.output`. Tracked in
+    # ROADMAP.md §"Phase G".
     _CORE_IO_PRIMITIVES: dict[str, Any] = {
         'Core.IO.Prim.write_op': P(N(9)),
     }
@@ -1651,8 +1660,11 @@ class Compiler:
     _ID_LAW = L(1, 0, N(1))
     _CONST2_LAW = L(2, 0, N(1))
     # Null dispatch: 3-arg law that returns 0. Used as dispatch_parent at the
-    # outermost handler level. Should never be reached in a well-typed program.
-    _NULL_DISPATCH = L(3, encode_name('_null_dispatch'), P(N(0)))
+    # outermost handler level. Should never be reached in a well-typed program,
+    # but if it is, the body must be a value Reaver can return safely. Quote
+    # form `A(N(0), N(0))` is the literal Nat 0; `P(N(0))` would be the
+    # un-dispatchable Pin opcode pin (see `body_nat`).
+    _NULL_DISPATCH = L(3, encode_name('_null_dispatch'), A(N(0), N(0)))
     # Compose: L(3, name, f(g(x))) — compose(f, g, x) = f(g(x))
     # Used by handle to build composed return continuations.
     _COMPOSE = L(3, encode_name('_compose'), bapp(N(1), bapp(N(2), N(3))))
@@ -2804,8 +2816,12 @@ class Compiler:
         """Compile a unary operator."""
         operand = self._compile_expr(expr.operand, env)
         if expr.op == '-':
-            # Negation: not defined for Nat; return 0 as placeholder
-            return N(0) if env.arity == 0 else P(N(0))
+            # Negation: not defined for Nat; return 0 as placeholder.
+            # Body context uses the quote form `A(N(0), N(0))` (literal 0)
+            # rather than `P(N(0))` (Pin opcode pin) — the latter triggers
+            # un-dispatchable `op 0` on saturation under Reaver. See
+            # `body_nat`.
+            return N(0) if env.arity == 0 else A(N(0), N(0))
         if expr.op == '¬':
             # Boolean not: if x then False else True
             # Use the same Case_ dispatch helper (opcode 3, 6 args).
@@ -2813,7 +2829,7 @@ class Compiler:
             true_val = N(1) if (env.arity == 0 or 1 > env.arity) else A(N(0), N(1))
             succ_fn = self._make_const_law(N(0), name_hint + '_not_succ') \
                 if env.arity == 0 \
-                else self._make_const_law_body(P(N(0)), env, name_hint + '_not_succ')
+                else self._make_const_law_body(A(N(0), N(0)), env, name_hint + '_not_succ')
             return self._make_op2_dispatch(true_val, succ_fn, operand, env)
         return operand
 
