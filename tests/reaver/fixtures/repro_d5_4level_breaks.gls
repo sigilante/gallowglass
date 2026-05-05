@@ -1,0 +1,43 @@
+type List a = | Nil | Cons a (List a)
+type Token = | TkNum Nat | TkPlus
+type Expr = | EConst Nat | EAdd Expr Expr
+
+external mod Reaver.BPLAN {
+  add : Nat → Nat → Nat
+  lsh : Nat → Nat → Nat
+}
+
+-- Same shape as make_eadd: 4-arg fix loop, deep nested match,
+-- calling self with a freshly-constructed EAdd whose first field
+-- is the current `lhs` (slot 2 of the outer call).
+let loop : Nat → Expr → List Token → Nat → Expr
+  = fix λ self _pe lhs rest _arity → match rest {
+      | Nil → lhs
+      | Cons h t → match h {
+          | TkPlus → match t {
+              | Nil → lhs
+              | Cons h2 t2 → match h2 {
+                  | TkNum n → self _pe (EAdd lhs (EConst n)) t2 0
+                  | _ → lhs
+                }
+            }
+          | _ → lhs
+        }
+    }
+
+-- Probe: get the result of `loop 0 (EConst 5) [TkPlus TkNum 7] 0`.
+-- Expected: EAdd (EConst 5) (EConst 7)
+-- Bug:  EConst 5
+let result : Expr = loop 0 (EConst 5) (Cons TkPlus (Cons (TkNum 7) Nil)) 0
+
+let trace_target : Nat
+  = match result {
+      | EConst n → BPLAN.add 100 n
+      | EAdd a b → match a {
+          | EConst x → match b {
+              | EConst y → BPLAN.add 200 (BPLAN.add x y)
+              | _ → 9999
+            }
+          | _ → 9998
+        }
+    }

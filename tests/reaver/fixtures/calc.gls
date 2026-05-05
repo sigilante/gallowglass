@@ -1,0 +1,417 @@
+-- Calculator REPL — runs as a Reaver process.
+--
+-- Reads arithmetic expressions on stdin (one per line), parses with
+-- precedence-correct recursive descent, evaluates, and writes the
+-- result. Loops until stdin is exhausted.
+--
+-- Supports: multi-digit Nat literals, `+`, `-`, `*`, `/`, parentheses.
+-- Errors (parse failure, division by zero) print "err" and continue.
+--
+-- Run:
+--   echo "1+2" "$'\n'" "3*4" | plan-assembler <dir> <module> Main_main 0
+--
+-- Demonstrates: end-to-end gallowglass-as-a-Reaver-process pipeline,
+-- the new `Reaver.RPLAN` (stdio) and `Reaver.BPLAN` (jetted arithmetic)
+-- bindings, recursive REPL loop via `fix`, lex/parse/eval in restricted
+-- dialect.
+
+external mod Reaver.RPLAN {
+  input  : Nat → Nat
+  output : Nat → Nat
+}
+
+external mod Reaver.BPLAN {
+  add  : Nat → Nat → Nat
+  sub  : Nat → Nat → Nat
+  mul  : Nat → Nat → Nat
+  div  : Nat → Nat → Nat
+  eq   : Nat → Nat → Nat
+  lsh  : Nat → Nat → Nat
+  rsh  : Nat → Nat → Nat
+  bex  : Nat → Nat
+  seq  : Nat → Nat → Nat   -- force a, return b: needed to thread I/O effects
+}
+
+-- ---------------------------------------------------------------------------
+-- Local types — kept inline so the demo has no Core.* dependencies.
+-- ---------------------------------------------------------------------------
+
+type Pair a b = | MkPair a b
+
+type List a =
+  | Nil
+  | Cons a (List a)
+
+type Token =
+  | TkNum Nat
+  | TkPlus
+  | TkMinus
+  | TkStar
+  | TkSlash
+  | TkLParen
+  | TkRParen
+  | TkEOF
+  | TkErr
+
+type Expr =
+  | EConst Nat
+  | EAdd Expr Expr
+  | ESub Expr Expr
+  | EMul Expr Expr
+  | EDiv Expr Expr
+  | EErr
+
+type EvalResult =
+  | EvOk Nat
+  | EvErr
+
+-- ---------------------------------------------------------------------------
+-- Bit-level helpers built on Reaver.BPLAN.
+-- ---------------------------------------------------------------------------
+
+-- nat_mod n d = n - (n / d) * d. Reserved-keyword `mod` rules out a binding
+-- by that name; this is the local replacement.
+let nat_mod : Nat → Nat → Nat
+  = λ n d → BPLAN.sub n (BPLAN.mul (BPLAN.div n d) d)
+
+-- bit_size n = number of bits needed to represent n (highest set bit + 1).
+-- bit_size 0 = 0. Pure-recursive on right-shift; under Reaver each step
+-- is one BPLAN.rsh dispatch, so this is O(log n) reductions.
+let bit_size : Nat → Nat
+  = fix λ self n → match n {
+      | 0 → 0
+      | _ → BPLAN.add 1 (self (BPLAN.rsh n 1))
+    }
+
+-- decode_input: split a `Reaver.RPLAN.input` result into (length, content).
+-- The runtime returns `bytesBar(bs) = body | (1 << len*8)` — the actual
+-- byte content with a high-bit length marker. Recover by:
+--   len     = (bit_size n - 1) / 8
+--   content = n - 2^(len*8)
+-- For an empty stdin (EOF), input returns `bytesBar "" = 1`, so
+-- bit_size = 1 → len = 0 → content = 0. Length 0 is the EOF signal.
+-- decode_len: bytesBar length-marker position → byte length.
+let decode_len : Nat → Nat
+  = λ n → BPLAN.div (BPLAN.sub (bit_size n) 1) 8
+
+let decode_input : Nat → Pair Nat Nat
+  = λ n → match n {
+      | 0 → MkPair 0 0
+      | _ →
+          MkPair (decode_len n)
+                 (BPLAN.sub n (BPLAN.bex (BPLAN.mul (decode_len n) 8)))
+    }
+
+-- byte_at content i: extract byte at index i.
+let byte_at : Nat → Nat → Nat
+  = λ content i → nat_mod (BPLAN.rsh content (BPLAN.mul i 8)) 256
+
+-- ---------------------------------------------------------------------------
+-- Character classification.
+-- ---------------------------------------------------------------------------
+
+let is_space : Nat → Nat
+  = λ b → match (BPLAN.eq b 32) {                -- ' '
+      | 0 → match (BPLAN.eq b 9) {                -- tab
+          | 0 → match (BPLAN.eq b 10) {           -- LF
+              | 0 → BPLAN.eq b 13                 -- CR
+              | _ → 1
+            }
+          | _ → 1
+        }
+      | _ → 1
+    }
+
+let is_digit : Nat → Nat
+  = λ b → match (BPLAN.sub b 47) {     -- > 0 iff b >= 48 ('0')
+      | 0 → 0
+      | _ → match (BPLAN.sub 58 b) {    -- > 0 iff b <= 57 ('9')
+          | 0 → 0
+          | _ → 1
+        }
+    }
+
+-- ---------------------------------------------------------------------------
+-- Lexer: walk byte-by-byte, emit a List of tokens (head = first token).
+-- Returns the list in source order. Skips whitespace; multi-digit numbers
+-- accumulate as a single TkNum.
+-- ---------------------------------------------------------------------------
+
+-- lex_num: starting at offset `i`, scan a run of digits and return
+-- (accumulated_value, next_offset).
+let lex_num : Nat → Nat → Nat → Nat → Pair Nat Nat
+  = fix λ self content len i acc → match (BPLAN.eq i len) {
+      | 0 → match (is_digit (byte_at content i)) {
+          | 0 → MkPair acc i
+          | _ → self content len
+                     (BPLAN.add i 1)
+                     (BPLAN.add (BPLAN.mul acc 10) (BPLAN.sub (byte_at content i) 48))
+        }
+      | _ → MkPair acc i
+    }
+
+-- skip_ws: advance over whitespace bytes, return new offset.
+let skip_ws : Nat → Nat → Nat → Nat
+  = fix λ self content len i → match (BPLAN.eq i len) {
+      | 0 →
+          match (is_space (byte_at content i)) {
+            | 0 → i
+            | _ → self content len (BPLAN.add i 1)
+          }
+      | _ → i
+    }
+
+-- single_char_token: classify a single byte as a punctuation token, or
+-- TkErr if unrecognised.
+let single_char_token : Nat → Token
+  = λ b → match (BPLAN.eq b 43) {           -- '+'
+      | 0 → match (BPLAN.eq b 45) {          -- '-'
+          | 0 → match (BPLAN.eq b 42) {      -- '*'
+              | 0 → match (BPLAN.eq b 47) {  -- '/'
+                  | 0 → match (BPLAN.eq b 40) {   -- '('
+                      | 0 → match (BPLAN.eq b 41) {  -- ')'
+                          | 0 → TkErr
+                          | _ → TkRParen
+                        }
+                      | _ → TkLParen
+                    }
+                  | _ → TkSlash
+                }
+              | _ → TkStar
+            }
+          | _ → TkMinus
+        }
+      | _ → TkPlus
+    }
+
+-- tokenize_at: tokenize starting at offset i_ws (already past whitespace).
+-- Pass-self pattern: takes the recursion target as `self` to break the
+-- pseudo-mutual link with tokenize_go below.
+let tokenize_at
+      : (Nat → Nat → Nat → List Token → List Token)
+      → Nat → Nat → Nat → List Token → List Token
+  = λ self content len i_ws acc → match (BPLAN.eq i_ws len) {
+      | 0 → match (is_digit (byte_at content i_ws)) {
+          | 0 → self content len (BPLAN.add i_ws 1)
+                     (Cons (single_char_token (byte_at content i_ws)) acc)
+          | _ → match (lex_num content len i_ws 0) {
+              | MkPair v j → self content len j (Cons (TkNum v) acc)
+            }
+        }
+      | _ → acc
+    }
+
+-- tokenize_go: skip whitespace then dispatch via tokenize_at. Recursive
+-- via fix; each iteration consumes one token.
+let tokenize_go : Nat → Nat → Nat → List Token → List Token
+  = fix λ self content len i acc →
+      tokenize_at self content len (skip_ws content len i) acc
+
+-- list_reverse_go: needed to flip the accumulator from tokenize_go.
+let list_reverse_go : List Token → List Token → List Token
+  = fix λ self xs acc → match xs {
+      | Nil → acc
+      | Cons h t → self t (Cons h acc)
+    }
+
+let tokenize : Nat → Nat → List Token
+  = λ content len → list_reverse_go (tokenize_go content len 0 Nil) Nil
+
+-- ---------------------------------------------------------------------------
+-- Parser: precedence-climbing recursive descent over List Token.
+-- Each parse_* returns Pair Expr (List Token) — the expression and the
+-- remaining tokens. Errors propagate as EErr.
+-- ---------------------------------------------------------------------------
+
+-- parse_factor: TkNum | '(' expr ')'. Threads `pe` (parse_expr) for the
+-- paren branch to break pseudo-mutual recursion, per the restricted-
+-- dialect pass-self pattern.
+let parse_factor
+      : (List Token → Pair Expr (List Token))
+      → List Token → Pair Expr (List Token)
+  = λ pe toks → match toks {
+      | Nil → MkPair EErr Nil
+      | Cons h t → match h {
+          | TkNum n → MkPair (EConst n) t
+          | TkLParen → match (pe t) {
+              | MkPair e rest → match rest {
+                  | Cons h2 t2 → match h2 {
+                      | TkRParen → MkPair e t2
+                      | _ → MkPair EErr rest
+                    }
+                  | Nil → MkPair EErr Nil
+                }
+            }
+          | _ → MkPair EErr toks
+        }
+    }
+
+-- parse_term_loop: factor (('*' | '/') factor)* loop body. `pe` is the
+-- pass-self for the paren branch — restricted dialect doesn't capture
+-- outer-lambda params through nested `fix`, so we thread it explicitly.
+let parse_term_loop
+      : (List Token → Pair Expr (List Token))
+      → Expr → List Token → Pair Expr (List Token)
+  = fix λ self pe lhs rest → match rest {
+      | Nil → MkPair lhs Nil
+      | Cons h t → match h {
+          | TkStar → match (parse_factor pe t) {
+              | MkPair rhs rest2 → self pe (EMul lhs rhs) rest2
+            }
+          | TkSlash → match (parse_factor pe t) {
+              | MkPair rhs rest2 → self pe (EDiv lhs rhs) rest2
+            }
+          | _ → MkPair lhs rest
+        }
+    }
+
+-- parse_term: factor (('*' | '/') factor)*.
+let parse_term
+      : (List Token → Pair Expr (List Token))
+      → List Token → Pair Expr (List Token)
+  = λ pe toks → match (parse_factor pe toks) {
+      | MkPair lhs rest → parse_term_loop pe lhs rest
+    }
+
+-- parse_expr_loop: term (('+' | '-') term)*. `pe` here is the parse_expr
+-- self-reference, threaded explicitly for the same reason as
+-- parse_term_loop.
+let parse_expr_loop
+      : (List Token → Pair Expr (List Token))
+      → Expr → List Token → Pair Expr (List Token)
+  = fix λ self pe lhs rest → match rest {
+      | Nil → MkPair lhs Nil
+      | Cons h t → match h {
+          | TkPlus → match (parse_term pe t) {
+              | MkPair rhs rest2 → self pe (EAdd lhs rhs) rest2
+            }
+          | TkMinus → match (parse_term pe t) {
+              | MkPair rhs rest2 → self pe (ESub lhs rhs) rest2
+            }
+          | _ → MkPair lhs rest
+        }
+    }
+
+-- parse_expr: top of the precedence chain. `self` (the parse_expr fix
+-- self-reference) flows down as the `pe` arg of parse_factor's paren
+-- branch, closing the recursion.
+let parse_expr : List Token → Pair Expr (List Token)
+  = fix λ self toks → match (parse_term self toks) {
+      | MkPair lhs rest → parse_expr_loop self lhs rest
+    }
+
+-- parse: tokens → Expr. Discards trailing tokens silently — the REPL
+-- treats any remainder as a successful parse of the prefix.
+let parse : List Token → Expr
+  = λ toks → match (parse_expr toks) {
+      | MkPair e _ → e
+    }
+
+-- ---------------------------------------------------------------------------
+-- Evaluator: tree-walking, division-by-zero → EvErr.
+-- ---------------------------------------------------------------------------
+
+let eval : Expr → EvalResult
+  = fix λ self e → match e {
+      | EConst n → EvOk n
+      | EAdd a b → match (self a) {
+          | EvErr → EvErr
+          | EvOk x → match (self b) {
+              | EvErr → EvErr
+              | EvOk y → EvOk (BPLAN.add x y)
+            }
+        }
+      | ESub a b → match (self a) {
+          | EvErr → EvErr
+          | EvOk x → match (self b) {
+              | EvErr → EvErr
+              | EvOk y → EvOk (BPLAN.sub x y)
+            }
+        }
+      | EMul a b → match (self a) {
+          | EvErr → EvErr
+          | EvOk x → match (self b) {
+              | EvErr → EvErr
+              | EvOk y → EvOk (BPLAN.mul x y)
+            }
+        }
+      | EDiv a b → match (self a) {
+          | EvErr → EvErr
+          | EvOk x → match (self b) {
+              | EvErr → EvErr
+              | EvOk y → match y {
+                  | 0 → EvErr
+                  | _ → EvOk (BPLAN.div x y)
+                }
+            }
+        }
+      | EErr → EvErr
+    }
+
+-- ---------------------------------------------------------------------------
+-- Output: render an EvalResult as a nat suitable for `Reaver.RPLAN.output`.
+-- The output nat encodes the bytes little-endian; byte 0 is the first
+-- character to be written. A trailing 0x0A newline keeps `natBytes` from
+-- truncating any trailing zero bytes in the rendered digits.
+-- ---------------------------------------------------------------------------
+
+-- nat_render_go: build the bytes for a positive Nat, byte 0 = first digit.
+let nat_render_go : Nat → Nat → Nat
+  = fix λ self n acc → match n {
+      | 0 → acc
+      | _ → self (BPLAN.div n 10)
+                 (BPLAN.add (BPLAN.lsh acc 8) (BPLAN.add 48 (nat_mod n 10)))
+    }
+
+-- render_ok n: bytes representing decimal-rendered n followed by '\n'.
+-- Special-cases n=0 → "0\n".
+let render_ok : Nat → Nat
+  = λ n → match n {
+      | 0 → BPLAN.add (BPLAN.lsh 10 8) 48          -- "0\n"
+      | _ → nat_render_go n 10                      -- digits ... '\n'
+    }
+
+-- render_err: bytes for "err\n" = 0x0A_72_72_65 little-endian.
+let render_err : Nat
+  = BPLAN.add 101                                   -- 'e'
+      (BPLAN.add (BPLAN.lsh 114 8)                  -- 'r' << 8
+        (BPLAN.add (BPLAN.lsh 114 16)               -- 'r' << 16
+                   (BPLAN.lsh 10  24)))             -- '\n' << 24
+
+let render : EvalResult → Nat
+  = λ r → match r {
+      | EvOk n → render_ok n
+      | EvErr  → render_err
+    }
+
+-- ---------------------------------------------------------------------------
+-- REPL loop: read line → tokenize → parse → eval → render → output → recurse.
+-- An input length of 0 means EOF; the loop terminates by returning 0.
+-- ---------------------------------------------------------------------------
+
+-- repl_step: process one input line.  Pass-self pattern threads the
+-- recursion target as `self` so we can avoid body-let forms (which
+-- Reaver's Plan-Asm parser doesn't recognise).
+--
+-- The `BPLAN.seq` is load-bearing: with a plain `match … { | _ → self 0 }`
+-- shape the codegen elides the scrutinee evaluation as dead code (single
+-- wildcard arm = the value isn't observed), which kills the `output`
+-- side effect.  `seq` forces evaluation explicitly, producing a use-site
+-- the optimisation can't drop.
+let repl_step
+      : (Nat → Nat) → Nat → Nat → Nat
+  = λ self len content → match len {
+      | 0 → 0   -- EOF
+      | _ → BPLAN.seq (RPLAN.output (render (eval (parse (tokenize content len)))))
+                      (self 0)
+    }
+
+let repl : Nat → Nat
+  = fix λ self _ →
+      match (decode_input (RPLAN.input 1024)) {
+        | MkPair len content → repl_step self len content
+      }
+
+-- main : Nat → Nat — Reaver applies main to the strNat-encoded CLI args
+-- (we ignore them) and forces the result. The return value is unused.
+let main : Nat → Nat = λ _ → repl 0
