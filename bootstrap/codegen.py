@@ -1932,8 +1932,73 @@ class Compiler:
                 return self._compile_expr(wild_body, env, name_hint)
             return N(0)
 
-        # Outer level: arm[0] with the original scrutinee
+        # Outer level: arm[0] with the original scrutinee.
         tag0, body0 = arms_sorted[0]
+
+        # When the smallest arm tag is positive, no named arm matches
+        # scrutinee==0, so dispatch must route the wildcard there. Mirror
+        # `_build_tag_chain`'s `first_tag > 0` handling: shift every tag
+        # down by 1, recurse on the shifted arms with the predecessor as
+        # the new scrutinee, and use the recursive result as the
+        # succ-law for the outer op2. Without this, the all_nullary
+        # path silently swaps the named-arm's body with the wildcard
+        # body — the bug surfaced as D5 in AUDIT.md (4-level nested
+        # match dropping outer-bound slot).
+        if tag0 > 0:
+            wild_val = (
+                self._compile_expr(wild_body, env, f'{name_hint}_wild')
+                if wild_body is not None
+                else (A(N(0), N(0)) if env.arity > 0 else N(0))
+            )
+            shifted = [(t - 1, b) for t, b in arms_sorted]
+            if env.arity == 0:
+                pred_env = Env(globals=env.globals, arity=1,
+                               self_ref_name=env.self_ref_name)
+                inner = self._build_nat_dispatch(
+                    shifted, wild_body, wild_var, N(1), pred_env,
+                    f'{name_hint}_shifted',
+                )
+                succ = P(L(1, 0, inner))
+                return self._make_op2_dispatch(wild_val, succ, scrutinee, env)
+            # In-law: lambda-lift outer-local captures and self-ref into
+            # the shifted-dispatch sub-law, parallel to `make_succ_law`.
+            bound_set: set = {wild_var} if wild_var is not None else set()
+            free_set: set = set()
+            for _, b in shifted:
+                self._collect_free(b, bound_set, env, free_set)
+            if wild_body is not None:
+                self._collect_free(wild_body, bound_set, env, free_set)
+            free_locals = [k for k in env.locals if k in free_set]
+            uses_self = bool(env.self_ref_name) and (
+                any(self._body_uses_self_ref(b, env) for _, b in shifted)
+                or (wild_body is not None
+                    and self._body_uses_self_ref(wild_body, env))
+            )
+            lifted_env = Env(globals=env.globals, arity=0)
+            lifted_env.self_ref_name = ''
+            if uses_self:
+                lifted_env.arity += 1
+                si = lifted_env.arity
+                lifted_env.locals[env.self_ref_name] = si
+                short = env.self_ref_name.split('.')[-1]
+                lifted_env.locals[short] = si
+            for fv in free_locals:
+                lifted_env.arity += 1
+                lifted_env.locals[fv] = lifted_env.arity
+            lifted_env.arity += 1
+            pred_idx = lifted_env.arity
+            inner = self._build_nat_dispatch(
+                shifted, wild_body, wild_var, N(pred_idx), lifted_env,
+                f'{name_hint}_shifted',
+            )
+            lifted_law = P(L(lifted_env.arity, 0, inner))
+            succ = lifted_law
+            if uses_self:
+                succ = bapp(succ, N(0))
+            for fv in free_locals:
+                succ = bapp(succ, N(env.locals[fv]))
+            return self._make_op2_dispatch(wild_val, succ, scrutinee, env)
+
         zero_val0 = self._compile_expr(body0, env, f'{name_hint}_{tag0}')
 
         if len(arms_sorted) == 1:
