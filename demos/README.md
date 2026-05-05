@@ -8,6 +8,7 @@ in the Python harness, and asserts expected output.
 |---|---|---|
 | `calculator.gls` | ~85 | algebraic data types, structural recursion, Option |
 | `csv_table.gls`  | ~110 | cross-module prelude `use`, Option, indexed access |
+| `repl_calc.gls`  | ~30 | end-to-end Reaver process — reads stdin, writes stdout via `Reaver.RPLAN`, sequenced through `Reaver.BPLAN.seq` so the I/O side effect fires |
 
 ## Running a single demo
 
@@ -79,11 +80,35 @@ default recursion limit. As a rule of thumb:
 typical pattern: bump `sys.setrecursionlimit` before evaluating, and don't
 worry about it.
 
+## Running a demo as a Reaver process
+
+`repl_calc.gls` runs as a real Reaver process — it reads stdin, writes
+stdout, and loops until EOF. `demos/run_repl.sh` handles the compile +
+tempdir setup + Reaver invocation in one shot; pipe input or run
+interactively:
+
+```bash
+echo "1+2*3" | demos/run_repl.sh        # one-shot
+demos/run_repl.sh                        # interactive — Ctrl-D to exit
+```
+
+Requires `vendor/reaver/` populated (run `tools/vendor.sh`) and `nix`
+on PATH. First invocation will GHC-build `plan-assembler` (~30 s);
+subsequent runs reuse the warm Nix store.
+
+The end-to-end test at `tests/reaver/test_repl_calc.py` covers basic
+arithmetic, precedence, parens, and division-by-zero recovery. For
+programs that don't need a loop, see `tests/reaver/test_smoke.py` for
+the simpler `Trace` driver pattern.
+
 ## What demos cannot yet do
 
-- **String I/O.** Text/Bytes are constructible but no I/O effect is exposed
-  to user code in the harness yet.
-- **Read from stdin.** Demos take their inputs from hardcoded `let` bindings.
+- **Real-world I/O beyond stdin/stdout.** `Reaver.RPLAN` exposes
+  `read_file`, `print`, `stamp`, `now`, `warn`, but most demos haven't
+  exercised these. The bindings work; sample code is welcome.
+- **Persistent state across REPL turns.** `repl_calc.gls` evaluates each
+  line independently. Threading state would require either a do-notation
+  effect handler or an accumulator threaded through the recursive loop.
 
 ## Using the prelude in a new demo
 

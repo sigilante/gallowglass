@@ -51,6 +51,7 @@ PRELUDE_INTRINSICS: dict[str, int] = {
     # Bit ops (used by bytes encoding)
     'Lsh': 2,
     'Rsh': 2,
+    'Bex': 1,    # 2^n — used for bytesBar high-bit decoding in REPL demos
     # Introspection (used in the harness; future codegen may emit these)
     'Type':  1,
     'IsPin': 1,

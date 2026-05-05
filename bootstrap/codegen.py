@@ -84,12 +84,21 @@ def bapp(f, *args):
 def body_nat(k: int, arity: int):
     """
     Return the PLAN representation of the literal nat k inside a law body
-    whose arity is `arity`.  Nats 0..arity are de Bruijn indices in the
-    law evaluator, so a literal k <= arity must be pinned to escape the
-    de Bruijn interpretation.
+    whose arity is `arity`. Nats 0..arity are de Bruijn slot indices in
+    the law evaluator, so a literal k <= arity must escape the slot
+    interpretation. Use the quote form `A(N(0), N(k))` — `(0 k)` in
+    Plan-Asm syntax — which the runtime interprets as a constant value
+    `k` regardless of slot count.
+
+    Previously this used `P(N(k))` (an opcode-pin), but per Reaver's
+    runtime `arity (P _ _ _) = 1`: every Pin'd Nat is a saturating
+    opcode pin, so `P(N(0))` triggers `op 0` dispatch on application —
+    and Reaver has no `op 0` case, crashing with `no primop ... of
+    size = ...` when the placeholder gets used as a function. Quote
+    form is unambiguously a value and never dispatches.
     """
     if k <= arity:
-        return P(N(k))
+        return A(N(0), N(k))
     return N(k)
 
 
@@ -610,6 +619,23 @@ class Compiler:
                 stub = self._make_bplan_prim(
                     rplan_name, rplan_arity, gateway_pin=self._RPLAN_PIN
                 )
+            elif fq.startswith('Reaver.BPLAN.'):
+                # Reaver.BPLAN.<lower> exposes any BPLAN intrinsic in
+                # `bplan_deps.PRELUDE_INTRINSICS` as a gallowglass-level
+                # name. Source-side names are lower-snake_case;
+                # PRELUDE_INTRINSICS keys are PascalCase. Map by case-
+                # folding the source name and matching against the
+                # PascalCase keys. Any miss falls through to the opaque
+                # sentinel (which parses but won't actually run).
+                source_short = fq.split('.')[-1]
+                target_name = source_short[:1].upper() + source_short[1:]
+                from bootstrap.bplan_deps import PRELUDE_INTRINSICS
+                if target_name in PRELUDE_INTRINSICS:
+                    stub = self._make_bplan_prim(
+                        target_name, PRELUDE_INTRINSICS[target_name]
+                    )
+                else:
+                    stub = P(N(encode_name(fq)))
             elif fq in self._CORE_IO_PRIMITIVES:
                 stub = self._CORE_IO_PRIMITIVES[fq]
             elif fq in self._get_core_text_primitives():
@@ -2134,7 +2160,7 @@ class Compiler:
             wv = self._compile_expr(wild_body, env, f'{name_hint}_wild')
             m_body = A(const2_pin, wv) if env.arity == 0 else bapp(const2_pin, wv)
         else:
-            m_body = A(const2_pin, body_nat(0, 0)) if env.arity == 0 else bapp(const2_pin, P(N(0)))
+            m_body = A(const2_pin, body_nat(0, 0)) if env.arity == 0 else bapp(const2_pin, A(N(0), N(0)))
 
         # --- Build the app handler ---
         if not field_arms:
@@ -2385,7 +2411,7 @@ class Compiler:
                 for i in range(1, n_cap + 1):
                     m_body = bapp(m_body, N(i))
             else:
-                m_body = (bapp(const2_pin, P(N(0))) if handler_env.arity > 0
+                m_body = (bapp(const2_pin, A(N(0), N(0))) if handler_env.arity > 0
                           else A(const2_pin, N(0)))
 
             handler_body = self._make_reflect_dispatch(
@@ -2527,7 +2553,7 @@ class Compiler:
             if wild_val is not None:
                 const_wild = bapp(const2_pin, wild_val) if env.arity > 0 else A(const2_pin, wild_val)
             else:
-                const_wild = bapp(const2_pin, P(N(0))) if env.arity > 0 else A(const2_pin, N(0))
+                const_wild = bapp(const2_pin, A(N(0), N(0))) if env.arity > 0 else A(const2_pin, N(0))
             return self._make_op2_dispatch(zero_val, const_wild, scrutinee, env)
 
         succ = make_succ_compiled(0)
@@ -2541,7 +2567,7 @@ class Compiler:
         """
         id_pin = P(self._ID_LAW)
         const2_pin = P(self._CONST2_LAW)
-        m_body = bapp(const2_pin, P(N(0))) if env.arity > 0 else A(const2_pin, N(0))
+        m_body = bapp(const2_pin, A(N(0), N(0))) if env.arity > 0 else A(const2_pin, N(0))
         if env.arity == 0:
             return A(A(A(A(A(A(P(N(2)), id_pin), id_pin), app_handler),
                         zero_val), m_body), scrutinee)

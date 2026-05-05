@@ -1,0 +1,31 @@
+-- Echo demo — runs as a Reaver process.
+--
+-- Reads up to 1024 bytes from stdin and writes them back to stdout.
+-- The simplest end-to-end demonstration of gallowglass-as-a-Reaver-process:
+-- exercises Reaver.RPLAN.input + Reaver.RPLAN.output + Reaver.BPLAN.seq.
+--
+-- Run:
+--   echo "hello" | demos/run_repl.sh
+--   demos/run_repl.sh          # interactive — Ctrl-D to exit
+--
+-- A more ambitious calculator-style REPL with lex/parse/eval was scoped
+-- as part of this work but uncovered a codegen issue with body-context
+-- placeholder values. The codegen fix (`body_nat` quote-form) shipped
+-- alongside this demo; the full calc REPL is left as a follow-up
+-- (see ROADMAP.md "Demo gallery").
+
+external mod Reaver.RPLAN {
+  input  : Nat → Nat
+  output : Nat → Nat
+}
+
+external mod Reaver.BPLAN {
+  seq : Nat → Nat → Nat
+}
+
+-- main : Nat → Nat — Reaver applies main to the strNat-encoded CLI args
+-- (we ignore them) and forces the result. The `seq` is load-bearing:
+-- without it a `match … { | _ → 0 }` shape elides the scrutinee
+-- evaluation as dead code, dropping the I/O side effect.
+let main : Nat → Nat
+  = λ _ → Reaver.BPLAN.seq (Reaver.RPLAN.output (Reaver.RPLAN.input 1024)) 0
