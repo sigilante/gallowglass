@@ -355,6 +355,29 @@ so future sessions can pick up where the current one stopped.)
       `TestRenderTypeDecl` in `tests/bootstrap/test_glass_ir.py` cover
       the parameterized and arrow-arg shapes. (PR: #75)
 
+- [ ] **D5. 4+ level nested `match` returns wrong arm value when a
+      deep arm constructs a multi-field constructor from outer-bound
+      vars.** Surfaced bisecting the calculator REPL demo. Minimal
+      reproducer (in `tests/reaver/fixtures/repro5_4level.gls` style):
+      a function `λ lhs rest → match rest { | Cons h t → match h {
+      | TkPlus → match t { | Cons h2 t2 → match h2 { | TkNum n →
+      EAdd lhs (EConst n) | _ → … } | … } | … } | … }`. With input
+      `(EConst 5) [TkPlus, TkNum 7]` should return
+      `EAdd (EConst 5) (EConst 7)`. Actually returns `EConst 5` —
+      the constructor expression in the deepest arm evaluates to
+      just `lhs`, suggesting `lhs` (an outer slot) doesn't survive
+      the 4-level lifting/dispatch chain to the deepest arm body.
+      3-level nesting works; 2-level works; 4-level breaks.
+      Fix-loop and non-fix lambda forms both reproduce — not
+      fix-specific. Likely related to AUDIT.md A1 ("outer locals
+      dropped in mixed nullary/field dispatch") in spirit but a
+      different code path. **Reproducers and a `_calc_layers.py`
+      bisect harness preserved on branch `debug/calc-layers`** —
+      pull from there to investigate. The full calc REPL demo
+      (deferred from PR #83) cannot be unblocked without fixing
+      this. PR #84 cleared the orthogonal `(#pin 0)` codegen
+      issues; D5 is the remaining blocker.
+
 D1–D4 above were the IDE-tooling prerequisites that landed
 back-to-back in support of the new `bootstrap/mcp_server.py` (PR #74) —
 a stdio MCP server exposing `compile_snippet`, `infer_type`,

@@ -1,0 +1,36 @@
+type List a = | Nil | Cons a (List a)
+type Token = | TkNum Nat | TkPlus
+type Expr = | EConst Nat | EAdd Expr Expr
+
+external mod Reaver.BPLAN {
+  add : Nat → Nat → Nat
+  lsh : Nat → Nat → Nat
+}
+
+-- 3-level nested match (rest → h → t)
+let go : Expr → List Token → Expr
+  = λ lhs rest → match rest {
+      | Nil → lhs
+      | Cons h t → match h {
+          | TkPlus → match t {
+              | Nil → EAdd lhs (EConst 99)
+              | Cons _ _ → lhs
+            }
+          | TkNum _ → lhs
+        }
+    }
+
+-- Input: [TkPlus]. Hits the deepest arm, returns EAdd lhs (EConst 99).
+let result : Expr = go (EConst 5) (Cons TkPlus Nil)
+
+let trace_target : Nat
+  = match result {
+      | EConst n → BPLAN.add 100 n
+      | EAdd a b → match a {
+          | EConst x → match b {
+              | EConst y → BPLAN.add 200 (BPLAN.add x y)
+              | _ → 9999
+            }
+          | _ → 9998
+        }
+    }
