@@ -79,15 +79,35 @@ def _run_repl(stdin_bytes: bytes, timeout: int = 120) -> tuple[bytes, bytes]:
 
 @requires_reaver
 class TestReplCalc(unittest.TestCase):
-    """The compiled echo demo reads stdin and writes stdout via
-    Reaver.RPLAN, sequenced through Reaver.BPLAN.seq so the I/O side
-    effect actually fires."""
+    """End-to-end: the compiled `demos/repl_calc.gls` reads arithmetic
+    expressions from stdin (one per line), evaluates each, and writes the
+    decimal result followed by '\\n' to stdout. Output uses Reaver's
+    bytesBar length-marker encoding so trailing newlines survive
+    `natBytes`. A division-by-zero or parse failure emits `err\\n` and
+    stops the loop.
+    """
 
-    def test_passes_bytes_through(self):
-        """Whatever bytes go in come back out."""
-        stdout, stderr = _run_repl(b'hello world\n')
-        self.assertEqual(stdout, b'hello world\n',
-            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-2000:]!r}')
+    def test_single_expression(self):
+        stdout, stderr = _run_repl(b'1+2\n')
+        self.assertEqual(stdout, b'3\n',
+            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-1500:]!r}')
+
+    def test_multiple_expressions(self):
+        stdout, stderr = _run_repl(b'1+2\n3*4\n6/2\n')
+        self.assertEqual(stdout, b'3\n12\n3\n',
+            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-1500:]!r}')
+
+    def test_division_by_zero_breaks_loop(self):
+        # The middle expression triggers EvErr; the loop emits "err\n"
+        # and stops without evaluating "4*5".
+        stdout, stderr = _run_repl(b'1+2\n6/0\n4*5\n')
+        self.assertEqual(stdout, b'3\nerr\n',
+            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-1500:]!r}')
+
+    def test_unparseable_input_emits_err(self):
+        stdout, stderr = _run_repl(b'hello\n')
+        self.assertEqual(stdout, b'err\n',
+            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-1500:]!r}')
 
 
 if __name__ == '__main__':

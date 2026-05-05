@@ -1045,6 +1045,64 @@ let r4 : Nat = pick (Field 7) 42
     assert eval_val(src, 'r4') == 7
 
 
+# ---------------------------------------------------------------------------
+# Wildcard against type with field-bearing siblings
+#
+# `match e { | <nullary> → … | _ → … }` on a type whose other constructors
+# carry fields (so the scrutinee can show up as an App at runtime) used to
+# route through `_build_nat_dispatch` with `id_pin` as the Elim app-case,
+# returning the App unchanged instead of firing the wildcard.  The fix
+# detects field-bearing siblings in `_compile_con_match`, routes through
+# `_compile_adt_dispatch`, and synthesises a const-law app handler for the
+# wildcard via `_build_wild_app_handler`.
+# ---------------------------------------------------------------------------
+
+
+_EXPR_TYPE = '''
+type E =
+  | EConst Nat
+  | EAdd E E
+  | EErr
+'''
+
+
+def test_wild_app_handler_top_level():
+    """`match e { | EErr → 999 | _ → 100 }` against a field-bearing
+    constructor (EConst 7, EAdd 1 2) must fire the wildcard, not return
+    the App."""
+    src = _EXPR_TYPE + '''
+let check : E → Nat
+  = λ e → match e {
+      | EErr → 999
+      | _    → 100
+    }
+let r1 : Nat = check EErr
+let r2 : Nat = check (EConst 7)
+let r3 : Nat = check (EAdd (EConst 1) (EConst 2))
+'''
+    assert eval_val(src, 'r1') == 999
+    assert eval_val(src, 'r2') == 100
+    assert eval_val(src, 'r3') == 100
+
+
+def test_wild_app_handler_captures_outer_lambda():
+    """The wildcard arm's body must see outer-lambda locals through the
+    lifted const-law that backs the App branch."""
+    src = _EXPR_TYPE + '''
+let check : E → Nat → Nat
+  = λ e v → match e {
+      | EErr → 999
+      | _    → v
+    }
+let r1 : Nat = check EErr 42
+let r2 : Nat = check (EConst 7) 42
+let r3 : Nat = check (EAdd (EConst 1) (EConst 2)) 42
+'''
+    assert eval_val(src, 'r1') == 999
+    assert eval_val(src, 'r2') == 42
+    assert eval_val(src, 'r3') == 42
+
+
 def test_a1_top_level_path_unchanged():
     """At env.arity == 0 (top level), the old `pred_env = arity=1, no locals`
     path is still taken — no captures to lift.  Pin the no-regression."""
