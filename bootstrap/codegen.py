@@ -2151,7 +2151,7 @@ class Compiler:
             wv = self._compile_expr(wild_body, env, f'{name_hint}_wild')
             m_body = A(const2_pin, wv) if env.arity == 0 else bapp(const2_pin, wv)
         else:
-            m_body = A(const2_pin, body_nat(0, 0)) if env.arity == 0 else bapp(const2_pin, P(N(0)))
+            m_body = A(const2_pin, body_nat(0, 0)) if env.arity == 0 else bapp(const2_pin, A(N(0), N(0)))
 
         # --- Build the app handler ---
         if not field_arms:
@@ -2402,7 +2402,7 @@ class Compiler:
                 for i in range(1, n_cap + 1):
                     m_body = bapp(m_body, N(i))
             else:
-                m_body = (bapp(const2_pin, P(N(0))) if handler_env.arity > 0
+                m_body = (bapp(const2_pin, A(N(0), N(0))) if handler_env.arity > 0
                           else A(const2_pin, N(0)))
 
             handler_body = self._make_reflect_dispatch(
@@ -2544,7 +2544,7 @@ class Compiler:
             if wild_val is not None:
                 const_wild = bapp(const2_pin, wild_val) if env.arity > 0 else A(const2_pin, wild_val)
             else:
-                const_wild = bapp(const2_pin, P(N(0))) if env.arity > 0 else A(const2_pin, N(0))
+                const_wild = bapp(const2_pin, A(N(0), N(0))) if env.arity > 0 else A(const2_pin, N(0))
             return self._make_op2_dispatch(zero_val, const_wild, scrutinee, env)
 
         succ = make_succ_compiled(0)
@@ -2558,7 +2558,7 @@ class Compiler:
         """
         id_pin = P(self._ID_LAW)
         const2_pin = P(self._CONST2_LAW)
-        m_body = bapp(const2_pin, P(N(0))) if env.arity > 0 else A(const2_pin, N(0))
+        m_body = bapp(const2_pin, A(N(0), N(0))) if env.arity > 0 else A(const2_pin, N(0))
         if env.arity == 0:
             return A(A(A(A(A(A(P(N(2)), id_pin), id_pin), app_handler),
                         zero_val), m_body), scrutinee)
