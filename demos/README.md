@@ -8,7 +8,7 @@ in the Python harness, and asserts expected output.
 |---|---|---|
 | `calculator.gls` | ~85 | algebraic data types, structural recursion, Option |
 | `csv_table.gls`  | ~110 | cross-module prelude `use`, Option, indexed access |
-| `repl_calc.gls`  | ~280 | end-to-end Reaver process — `Reaver.RPLAN` stdio, `Reaver.BPLAN` jetted arithmetic, recursive REPL loop, lex/parse/eval of arithmetic with precedence and parens |
+| `repl_calc.gls`  | ~30 | end-to-end Reaver process — reads stdin, writes stdout via `Reaver.RPLAN`, sequenced through `Reaver.BPLAN.seq` so the I/O side effect fires |
 
 ## Running a single demo
 

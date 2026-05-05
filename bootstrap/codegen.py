@@ -84,12 +84,21 @@ def bapp(f, *args):
 def body_nat(k: int, arity: int):
     """
     Return the PLAN representation of the literal nat k inside a law body
-    whose arity is `arity`.  Nats 0..arity are de Bruijn indices in the
-    law evaluator, so a literal k <= arity must be pinned to escape the
-    de Bruijn interpretation.
+    whose arity is `arity`. Nats 0..arity are de Bruijn slot indices in
+    the law evaluator, so a literal k <= arity must escape the slot
+    interpretation. Use the quote form `A(N(0), N(k))` — `(0 k)` in
+    Plan-Asm syntax — which the runtime interprets as a constant value
+    `k` regardless of slot count.
+
+    Previously this used `P(N(k))` (an opcode-pin), but per Reaver's
+    runtime `arity (P _ _ _) = 1`: every Pin'd Nat is a saturating
+    opcode pin, so `P(N(0))` triggers `op 0` dispatch on application —
+    and Reaver has no `op 0` case, crashing with `no primop ... of
+    size = ...` when the placeholder gets used as a function. Quote
+    form is unambiguously a value and never dispatches.
     """
     if k <= arity:
-        return P(N(k))
+        return A(N(0), N(k))
     return N(k)
 
 
