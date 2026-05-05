@@ -1,0 +1,37 @@
+-- Reaver.BPLAN
+-- Bindings to the Reaver BPLAN named-op surface
+-- (`vendor/reaver/src/hs/Plan.hs op 66`).
+--
+-- These ops are jetted in the Python harness (`dev/harness/bplan.py`)
+-- and dispatched natively by Reaver. They give gallowglass programs
+-- constant-time arithmetic and bit operations without paying for the
+-- pure-recursive prelude implementations in `Core.Nat`.
+--
+-- The full op set is enumerated in `bootstrap/bplan_deps.py`'s
+-- `PRELUDE_INTRINSICS` table; the canary at
+-- `tests/sanity/test_bplan_deps.py` greps the pinned `Plan.hs` and
+-- asserts presence at the right arity. Adding a binding here is
+-- declaration-only — no codegen change needed, since
+-- `_register_ext` resolves any `Reaver.BPLAN.<lower>` source name
+-- against the PRELUDE_INTRINSICS table automatically.
+--
+-- BPLAN is in scope wherever a program starts with `@boot`; these
+-- declarations are advisory shapes for source-level use.
+
+external mod Reaver.BPLAN {
+  -- Arithmetic (all binary, total). `mod` is omitted — `mod` is a
+  -- reserved keyword in the surface syntax. Compute remainders as
+  -- `sub n (mul (div n d) d)` when needed.
+  add  : Nat → Nat → Nat
+  sub  : Nat → Nat → Nat
+  mul  : Nat → Nat → Nat
+  div  : Nat → Nat → Nat
+
+  -- Comparison (return 1 / 0)
+  eq   : Nat → Nat → Nat
+
+  -- Bit ops
+  lsh  : Nat → Nat → Nat   -- left shift: lsh n k = n * 2^k
+  rsh  : Nat → Nat → Nat   -- right shift: rsh n k = floor (n / 2^k)
+  bex  : Nat → Nat         -- bit exponent: bex n = 2^n
+}

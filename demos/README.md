@@ -8,6 +8,7 @@ in the Python harness, and asserts expected output.
 |---|---|---|
 | `calculator.gls` | ~85 | algebraic data types, structural recursion, Option |
 | `csv_table.gls`  | ~110 | cross-module prelude `use`, Option, indexed access |
+| `repl_calc.gls`  | ~280 | end-to-end Reaver process — `Reaver.RPLAN` stdio, `Reaver.BPLAN` jetted arithmetic, recursive REPL loop, lex/parse/eval of arithmetic with precedence and parens |
 
 ## Running a single demo
 
@@ -79,11 +80,41 @@ default recursion limit. As a rule of thumb:
 typical pattern: bump `sys.setrecursionlimit` before evaluating, and don't
 worry about it.
 
+## Running a demo as a Reaver process
+
+`repl_calc.gls` runs as a real Reaver process — it reads stdin, writes
+stdout, and loops until EOF. The end-to-end test in
+`tests/demos/test_repl_calc.py` shows the pattern; manually:
+
+```bash
+python3 -c "
+import sys; sys.path.insert(0, '.'); sys.setrecursionlimit(50000)
+from bootstrap.lexer import lex
+from bootstrap.parser import parse
+from bootstrap.scope import resolve
+from bootstrap.codegen import compile_program
+from bootstrap.emit_pla import emit_program
+src = open('demos/repl_calc.gls').read()
+prog = parse(lex(src, 'repl_calc.gls'), 'repl_calc.gls')
+resolved, _ = resolve(prog, 'Main', {}, 'repl_calc.gls')
+print(emit_program(compile_program(resolved, 'Main')))
+" > /tmp/demo/demo.plan
+cp vendor/reaver/src/plan/boot.plan /tmp/demo/
+echo "1+2*3" | (cd vendor/reaver && nix develop --command \
+    cabal run -v0 plan-assembler -- /tmp/demo demo Main_main 0)
+```
+
+For programs that don't need a loop, see `tests/reaver/test_smoke.py`
+for the simpler `Trace` driver pattern.
+
 ## What demos cannot yet do
 
-- **String I/O.** Text/Bytes are constructible but no I/O effect is exposed
-  to user code in the harness yet.
-- **Read from stdin.** Demos take their inputs from hardcoded `let` bindings.
+- **Real-world I/O beyond stdin/stdout.** `Reaver.RPLAN` exposes
+  `read_file`, `print`, `stamp`, `now`, `warn`, but most demos haven't
+  exercised these. The bindings work; sample code is welcome.
+- **Persistent state across REPL turns.** `repl_calc.gls` evaluates each
+  line independently. Threading state would require either a do-notation
+  effect handler or an accumulator threaded through the recursive loop.
 
 ## Using the prelude in a new demo
 

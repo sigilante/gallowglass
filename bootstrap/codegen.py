@@ -610,6 +610,23 @@ class Compiler:
                 stub = self._make_bplan_prim(
                     rplan_name, rplan_arity, gateway_pin=self._RPLAN_PIN
                 )
+            elif fq.startswith('Reaver.BPLAN.'):
+                # Reaver.BPLAN.<lower> exposes any BPLAN intrinsic in
+                # `bplan_deps.PRELUDE_INTRINSICS` as a gallowglass-level
+                # name. Source-side names are lower-snake_case;
+                # PRELUDE_INTRINSICS keys are PascalCase. Map by case-
+                # folding the source name and matching against the
+                # PascalCase keys. Any miss falls through to the opaque
+                # sentinel (which parses but won't actually run).
+                source_short = fq.split('.')[-1]
+                target_name = source_short[:1].upper() + source_short[1:]
+                from bootstrap.bplan_deps import PRELUDE_INTRINSICS
+                if target_name in PRELUDE_INTRINSICS:
+                    stub = self._make_bplan_prim(
+                        target_name, PRELUDE_INTRINSICS[target_name]
+                    )
+                else:
+                    stub = P(N(encode_name(fq)))
             elif fq in self._CORE_IO_PRIMITIVES:
                 stub = self._CORE_IO_PRIMITIVES[fq]
             elif fq in self._get_core_text_primitives():
