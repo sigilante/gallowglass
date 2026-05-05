@@ -355,9 +355,8 @@ so future sessions can pick up where the current one stopped.)
       `TestRenderTypeDecl` in `tests/bootstrap/test_glass_ir.py` cover
       the parameterized and arrow-arg shapes. (PR: #75)
 
-- [ ] **D5. 4+ level nested `match` returns wrong arm value when a
-      deep arm constructs a multi-field constructor from outer-bound
-      vars.** Surfaced bisecting the calculator REPL demo. Minimal
+- [x] **D5. `_build_nat_dispatch` mis-routes named/wildcard arms when
+      first arm's tag is positive.** Surfaced bisecting the calculator REPL demo. Minimal
       reproducer (in `tests/reaver/fixtures/repro5_4level.gls` style):
       a function `λ lhs rest → match rest { | Cons h t → match h {
       | TkPlus → match t { | Cons h2 t2 → match h2 { | TkNum n →
@@ -369,14 +368,29 @@ so future sessions can pick up where the current one stopped.)
       the 4-level lifting/dispatch chain to the deepest arm body.
       3-level nesting works; 2-level works; 4-level breaks.
       Fix-loop and non-fix lambda forms both reproduce — not
-      fix-specific. Likely related to AUDIT.md A1 ("outer locals
-      dropped in mixed nullary/field dispatch") in spirit but a
-      different code path. **Reproducers and a `_calc_layers.py`
-      bisect harness preserved on branch `debug/calc-layers`** —
-      pull from there to investigate. The full calc REPL demo
-      (deferred from PR #83) cannot be unblocked without fixing
-      this. PR #84 cleared the orthogonal `(#pin 0)` codegen
-      issues; D5 is the remaining blocker.
+      fix-specific. Reproducers preserved at
+      `tests/reaver/fixtures/repro_d5_4level_breaks.gls` and
+      `tests/reaver/fixtures/repro5_3level_works.gls`; bisect harness
+      at `tests/reaver/_calc_layers.py`.
+
+      **Root cause (resolved):** `_build_nat_dispatch`'s outer level
+      (`bootstrap/codegen.py:1935-1957`) used the FIRST arm's body as
+      the `op2` zero-case unconditionally, with no handling for when
+      `arms_sorted[0].tag > 0`. The all-nullary path of
+      `_compile_con_match` routes here for `match h { | TkPlus → A
+      | _ → B }` patterns where TkPlus has tag 1 — the dispatch then
+      fired arm `A` for scrutinee=0 (empty constructor type — never
+      legal at runtime) and arm `B` (the wildcard) for scrutinee=1
+      (TkPlus itself). Backwards.
+
+      `_build_tag_chain`, the parallel pre-compiled-pairs version, has
+      had `first_tag > 0` handling since F11 (it shifts every tag down
+      by 1, uses the wildcard as the new zero, recurses on the
+      shifted chain). The fix mirrors that pattern in
+      `_build_nat_dispatch` with the additional lambda-lifting machinery
+      it needs (captures + self-ref). 1346 tests pass locally;
+      end-to-end calc REPL demonstrably evaluates `1+2 → 3`, `5 → 5`
+      under Reaver. (PR: fix/d5-nested-match-slot-drop)
 
 D1–D4 above were the IDE-tooling prerequisites that landed
 back-to-back in support of the new `bootstrap/mcp_server.py` (PR #74) —
