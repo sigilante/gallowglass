@@ -145,8 +145,25 @@ class Env:
     # Used by _infer_type_key to determine instance dicts for constrained calls.
     param_types: dict = field(default_factory=dict)
 
+    # True iff the next `_compile_expr` call from this Env is the
+    # syntactic root of a law's body (or a continuation of a let-chain
+    # rooted there).  Reaver's `lawExp` text-form parser only accepts
+    # the `(1 rhs body)` bind form at that position; nested lets need
+    # to be lambda-lifted into a sub-law.  Default False so any code
+    # path that doesn't deliberately mark itself as "law-root" treats
+    # the let as an expression-position let.  See AUDIT.md D8.
+    top_of_law: bool = False
+
     def child(self) -> 'Env':
-        """Return a shallow copy for a new scope."""
+        """Return a shallow copy for a new scope.
+
+        `top_of_law` is intentionally NOT propagated — `child()` is used
+        for arm bodies, sub-expression contexts, etc., where the fresh
+        env is no longer at the law's body root.  Callers that need to
+        preserve `top_of_law` (currently `_compile_local_let` for the
+        let-chain body, and `_compile_expr_pin` for the pin form's
+        continuation) set it explicitly after `child()`.
+        """
         return Env(globals=self.globals, locals=dict(self.locals), arity=self.arity,
                    self_ref_name=self.self_ref_name,
                    param_types=dict(self.param_types))
@@ -1039,6 +1056,7 @@ class Compiler:
             param_name = self._pat_var_name(pat)
             body_env = body_env.bind_param(param_name)
 
+        body_env.top_of_law = True
         body_val = self._compile_expr(body_expr, body_env, fq)
         total_arity = len(dict_param_fqs) + len(user_params)
         name_nat = encode_name(decl.name)
@@ -1049,7 +1067,23 @@ class Compiler:
     # -----------------------------------------------------------------------
 
     def _compile_expr(self, expr: Any, env: Env, name_hint: str = '') -> Any:
-        """Compile an expression to a PLAN value."""
+        """Compile an expression to a PLAN value.
+
+        Per AUDIT.md D8, the `top_of_law` flag must only stay True while
+        we're traversing a chain of lets at the law's body root.  Any
+        other expression — match, app, lambda, etc. — means we've left
+        the root, and any subsequent let inside us is a nested let
+        that needs lambda-lifting.  Flip the flag off here at the
+        chokepoint.  ExprLet and ExprPin handle preservation themselves
+        (let-chains stay at top, programmer pins are erased into the
+        body's globals so the body inherits the position).
+        ExprAnn is a transparent type ascription wrapper — preserve
+        the flag so `let x = (e : T)` still gets the native form.
+        """
+        if env.top_of_law and not isinstance(expr, (ExprLet, ExprPin, ExprAnn)):
+            env = env.child()
+            env.top_of_law = False
+
         if isinstance(expr, ExprNat):
             return self._compile_nat_literal(expr.value, env)
 
@@ -1499,6 +1533,7 @@ class Compiler:
             else:
                 body_env = body_env.bind_param(param_name)
 
+        body_env.top_of_law = True
         body_val = self._compile_expr(body_expr, body_env, name_hint)
         name_nat = encode_name(name_hint) if name_hint else 0
         return L(len(params), name_nat, body_val)
@@ -1523,6 +1558,7 @@ class Compiler:
         for pn in param_names:
             lifted_env = lifted_env.bind_param(pn)
 
+        lifted_env.top_of_law = True
         body_val = self._compile_expr(body_expr, lifted_env)
         name_nat = encode_name(name_hint) if name_hint else 0
         lifted_law = L(len(free_vars) + len(params), name_nat, body_val)
@@ -2881,12 +2917,21 @@ class Compiler:
         """
         Compile a local let binding.
 
-        In PLAN law bodies, local lets use the let-binding form:
-          (1 rhs continuation)
-        where continuation is the rest of the body with the bound var
-        at the next de Bruijn index.
+        Three cases:
 
-        In top-level context (env.arity == 0), compile inline.
+        - **Top-level (`env.arity == 0`).** Inline as a global binding
+          so the body can reference it; no PLAN-level let form needed.
+        - **In a law body, at the body root (`env.top_of_law`).** Emit
+          the PLAN let form `A(A(N(1), rhs), body)`. Reaver's `lawExp`
+          parser recognises this shape only at the law's body root,
+          between the sig and the final body form.
+        - **In a law body, nested inside an expression** (e.g. the
+          body of a match arm). Lambda-lift: `let x = rhs in body`
+          becomes `App(Pin(SubLaw), captures…, rhs)` where `SubLaw`
+          is a fresh law over `[captures…, x]` whose body is `body`.
+          This avoids emitting a `(1 …)` form anywhere Reaver's text
+          parser would refuse it (AUDIT.md D8). The capture pattern
+          mirrors `_build_field_arm_law` and `_make_pred_succ_law`.
         """
         pat = expr.pattern
         pat_name = self._pat_var_name(pat)
@@ -2898,29 +2943,80 @@ class Compiler:
             body_env = env.child()
             body_env.globals[pat_name] = rhs_val
             return self._compile_expr(expr.body, body_env, name_hint)
-        else:
-            # Law body: use PLAN let-binding form (1 rhs continuation)
-            # judge processes A(A(N(1), rhs), body) by:
-            #   evaluating rhs, binding it to the NEXT index (n+1), then evaluating body
-            # Existing locals keep their current indices; the new binding gets index n+1.
+
+        if env.top_of_law:
+            # Law body root: native PLAN let form. judge processes
+            # A(A(N(1), rhs), body) by evaluating rhs, binding it to
+            # the NEXT slot, then evaluating body. Preserve top_of_law
+            # through the body recursion so a chain of top-level lets
+            # all use this fast path.
             body_env = env.child()
-            new_idx = env.arity + 1          # next available de Bruijn index
+            new_idx = env.arity + 1
             body_env.locals[pat_name] = new_idx
             body_env.arity = new_idx
+            body_env.top_of_law = True
             body_val = self._compile_expr(expr.body, body_env, name_hint)
             return A(A(N(1), rhs_val), body_val)
+
+        # Nested let: lambda-lift the body into a sub-law that takes
+        # captures + the let-bound name as parameters.
+        bound = {pat_name}
+        free_set: set = set()
+        self._collect_free(expr.body, bound, env, free_set)
+        free_locals = [k for k in env.locals if k in free_set]
+        uses_self = bool(env.self_ref_name) and self._body_uses_self_ref(expr.body, env)
+
+        # Sub-law env layout: [self?][captures…][pat_name]
+        sub_env = Env(globals=env.globals, arity=0)
+        sub_env.self_ref_name = ''
+        sub_env.top_of_law = True
+
+        n_cap = 0
+        if uses_self:
+            n_cap += 1
+            sub_env.arity = n_cap
+            sub_env.locals[env.self_ref_name] = n_cap
+            short = env.self_ref_name.split('.')[-1]
+            sub_env.locals[short] = n_cap
+        for fv in free_locals:
+            n_cap += 1
+            sub_env.arity = n_cap
+            sub_env.locals[fv] = n_cap
+        n_cap += 1
+        sub_env.arity = n_cap
+        sub_env.locals[pat_name] = n_cap
+
+        body_val = self._compile_expr(expr.body, sub_env, name_hint)
+        sub_law = L(n_cap, encode_name(pat_name) if pat_name else 0, body_val)
+
+        # Apply: Pin(SubLaw) self? captures… rhs.
+        # Pin keeps it from being forced before saturation by `kal`.
+        result = P(sub_law)
+        if uses_self:
+            result = bapp(result, N(0))
+        for fv in free_locals:
+            result = bapp(result, N(env.locals[fv]))
+        result = bapp(result, rhs_val)
+        return result
 
     # -----------------------------------------------------------------------
     # Programmer pins
     # -----------------------------------------------------------------------
 
     def _compile_expr_pin(self, expr: ExprPin, env: Env, name_hint: str) -> Any:
-        """Compile @name = rhs  body."""
+        """Compile @name = rhs  body.
+
+        Programmer pins are erased into the body's globals — the body
+        is at the same syntactic position as the pin form, so preserve
+        `top_of_law` so a subsequent let-chain in the body still gets
+        the native `(1 rhs body)` form.
+        """
         rhs_val = self._compile_expr(expr.rhs, env, expr.name)
         pinned = P(rhs_val) if not is_pin(rhs_val) else rhs_val
 
         body_env = env.child()
         body_env.globals[expr.name] = pinned
+        body_env.top_of_law = env.top_of_law
         return self._compile_expr(expr.body, body_env, name_hint)
 
     # -----------------------------------------------------------------------

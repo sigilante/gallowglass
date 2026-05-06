@@ -441,51 +441,44 @@ so future sessions can pick up where the current one stopped.)
       gate because `_compile_var`'s `_compile_nat_literal` already
       emits the quote form for them.
 
-- [ ] **D8. Nested `let` inside an in-law expression emits a `(1 rhs body)`
-      form Reaver's parser doesn't recognise.** Surfaced during the
-      Phase G #2 pre-flight smoke test: bootstrap-compiling
+- [x] **D8. Nested `let` inside an in-law expression emitted a `(1 rhs
+      body)` form Reaver's parser doesn't recognise.** Surfaced during
+      the Phase G #2 pre-flight smoke test: bootstrap-compiling
       `compiler/src/Compiler.gls` and running the result under Reaver
-      crashes at `Compiler_lex_skip_ws` with `law: unbound: "_3"`.
-      Minimal 14-line reproducer:
+      crashed at `Compiler_lex_skip_ws` with `law: unbound: "_3"`.
+      14-line reproducer at
+      `tests/reaver/fixtures/repro_d8_let_in_arm.gls`.
 
-      ```
-      external mod Reaver.BPLAN { add : Nat → Nat → Nat
-                                  eq  : Nat → Nat → Nat }
-      let go : Nat → Nat → Nat
-        = λ x y → match (BPLAN.eq x 0) {
-            | 0 → let b = BPLAN.add x y in BPLAN.add b 1
-            | _ → y
-          }
-      ```
+      `_compile_local_let` emitted in-law lets as `A(A(N(1), rhs),
+      body)`, which the body emitter rendered as the bind syntax
+      `_d1(rhs) … body`. Reaver's `lawExp` parser
+      (`vendor/reaver/src/hs/PlanAssembler.hs`) only accepts that bind
+      form at the law's body root — between `(sig)` and the body form,
+      not nested inside an expression. When the let was the body of a
+      match arm (extremely common — `Compiler.gls` has hundreds of
+      occurrences), the bind form landed in Elim's z-slot and Reaver
+      tried to resolve `_d1` as a slot reference in the enclosing law.
 
-      `_compile_local_let` emits in-law lets as `A(A(N(1), rhs), body)`,
-      and `_emit_body` renders that as the bind syntax `_d1(rhs) … body`
-      with `d1 = depth+1`. Reaver's `lawExp`
-      (`vendor/reaver/src/hs/PlanAssembler.hs`) only accepts bind forms
-      at the law's *top level* — between `(sig)` and the body form,
-      not nested inside an expression. Our emitter, however, recurses
-      into Elim args, match arms, etc. and produces the bind form
-      wherever a `let` syntactically appears in the source. When the
-      let is the body of a match arm (`| 0 → let b = … in …`), the
-      `_d1(rhs) body` text lands inside Elim's z-slot position and
-      Reaver tries to resolve `_d1` as a slot reference in the
-      enclosing law, where it's out of range.
-
-      **Fix direction:** lambda-lift nested in-law lets at codegen
-      time. `let x = rhs in body` (when env.arity > 0 and the let is
-      not at the law's body top) becomes `App(Pin(SubLaw), captures…,
-      rhs)` where SubLaw is a fresh law over `[captures…, x]` with
-      `body` as its body. Top-of-law lets keep the existing
-      `(1 rhs body)` form — Reaver parses those natively. This mirrors
-      the capture-and-partial-apply pattern already in use by
-      `_build_field_arm_law` and `_build_wild_app_handler`.
-
-      Tracked under the Phase G arc; blocks Phase G #2. The bug also
-      explains the seven `tests/compiler/test_*.py` skips that cite
-      "too slow under Python harness" — those tests would not just be
-      slow but actually crash on Reaver today because of this same
-      shape. Plan: `plans/phase_g_2.md`. Reproducer kept at
-      `tests/reaver/fixtures/repro_d8_let_in_arm.gls` (TBD).
+      **Root cause (resolved):** added a `top_of_law: bool` field to
+      `Env`, set True at law-body entry points (`_compile_constrained_-
+      let`, `_compile_lam_as_law`, `_compile_lam_lifted`); flipped to
+      False at the top of `_compile_expr` for any non-let, non-pin,
+      non-ann expression (the chokepoint that ensures arm bodies, app
+      args, etc. don't inherit the flag). `_compile_local_let` checks
+      it: at law body root → emit `(1 rhs body)` and preserve the flag
+      through the let-chain body so multiple chained top lets keep the
+      native form; nested → lambda-lift via the same capture-and-
+      partial-apply pattern as `_build_field_arm_law` and
+      `_make_pred_succ_law`. `_compile_expr_pin` preserves the flag so
+      programmer pins don't break the chain. Nine regression tests
+      `test_d8_*` in `tests/bootstrap/test_codegen.py` and two
+      differential tests in `tests/reaver/test_differential.py` pin
+      both sides (top-of-law form unchanged; nested arm-body let
+      lambda-lifts and runs to the right value on Reaver). Empty-source
+      Compiler.gls now parses cleanly under Reaver — the
+      arithmetic-migration concern (Phase G #2 proper) becomes the
+      next bottleneck rather than this codegen bug.
+      (PR: fix/d8-nested-let-lambda-lift)
 
 D1–D4 above were the IDE-tooling prerequisites that landed
 back-to-back in support of the new `bootstrap/mcp_server.py` (PR #74) —

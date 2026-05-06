@@ -347,6 +347,40 @@ let main : Nat
 '''
         self._assert_equiv(src, with_prelude=True)
 
+    def test_d8_nested_let_in_match_arm(self):
+        """A `let` inside a match arm body is lambda-lifted into a sub-law
+        rather than emitted as the `(1 rhs body)` form (which Reaver's
+        text parser only accepts at the law's body root). Regression for
+        AUDIT.md D8: previously crashed Reaver with `law: unbound: "_3"`."""
+        src = '''
+use Core.Nat
+
+let go : Nat -> Nat -> Nat
+  = λ x y → match x {
+      | 0 → let b = Nat.add x y in Nat.add b 1
+      | _ → y
+    }
+
+let main : Nat = go 0 15   -- (0+15)+1 = 16
+'''
+        self._assert_equiv(src, with_prelude=True)
+
+    def test_d8_chained_lets_in_arm(self):
+        """A chain of nested lets in an arm body — each one gets its own
+        sub-law in the lambda-lifted form."""
+        src = '''
+use Core.Nat
+
+let pick : Nat -> Nat
+  = λ n → match n {
+      | 0 → let a = 100 in let b = Nat.add a 23 in let c = Nat.mul b 2 in c
+      | _ → n
+    }
+
+let main : Nat = pick 0   -- ((100+23)*2) = 246
+'''
+        self._assert_equiv(src, with_prelude=True)
+
     # --- nested patterns + or-patterns + guards ---------------------------
 
     def test_nested_constructor_pattern(self):

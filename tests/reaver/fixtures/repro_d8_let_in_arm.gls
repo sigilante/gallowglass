@@ -9,4 +9,5 @@ let go : Nat → Nat → Nat
       | _ → y
     }
 
-let main : Nat → Nat = λ _ → go 5 10
+-- Trace target: `go 5 10` should evaluate to `(5+10)+1 = 16`.
+let main : Nat = go 5 10
