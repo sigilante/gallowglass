@@ -1,0 +1,12 @@
+external mod Reaver.BPLAN {
+  add : Nat → Nat → Nat
+  eq : Nat → Nat → Nat
+}
+
+let go : Nat → Nat → Nat
+  = λ x y → match (BPLAN.eq x 0) {
+      | 0 → let b = BPLAN.add x y in BPLAN.add b 1
+      | _ → y
+    }
+
+let main : Nat → Nat = λ _ → go 5 10
