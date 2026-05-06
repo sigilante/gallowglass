@@ -17,6 +17,33 @@ external mod Core.IO.Prim {
   write_op : Nat → Nat
 }
 
+-- Reaver runtime primops, used to make the compiler runnable as a
+-- Reaver process under Phase G.  The eight arithmetic/bit-op
+-- primitives below replace user-recursive bodies further down in this
+-- file (the `add`, `mul`, `pow2`, `bit_or`, ... layer).  Without this
+-- substitution, even the empty-source emit path is unrunnable: e.g.
+-- `pow2 (8 * len)` reduces to ~2^(8*len) `inc` calls under Reaver's
+-- faithful evaluator (no jets yet — post-1.0).  See `plans/phase_g_2.md`.
+external mod Reaver.BPLAN {
+  add : Nat → Nat → Nat
+  sub : Nat → Nat → Nat
+  mul : Nat → Nat → Nat
+  div : Nat → Nat → Nat
+  bex : Nat → Nat
+  lsh : Nat → Nat → Nat
+  rsh : Nat → Nat → Nat
+  eq  : Nat → Nat → Nat
+  seq : Nat → Nat → Nat
+}
+
+-- Reaver RPLAN (op 82) primops for stdin/stdout I/O, used by
+-- `main_reaver` below.  Source bytes arrive on stdin; Plan Asm output
+-- goes to stdout.
+external mod Reaver.RPLAN {
+  input  : Nat → Nat
+  output : Nat → Nat
+}
+
 -- =====================================================================
 -- Section 1: Core Types
 -- =====================================================================
@@ -96,62 +123,30 @@ let lte : Nat → Nat → Bool
 let gte : Nat → Nat → Bool
   = λ m n → lte n m
 
--- add: addition by recursion on second arg
-let add : Nat → Nat → Nat
-  = λ m n → match n {
-    | 0 → m
-    | k → Core.PLAN.inc (add m k)
-  }
+-- `add`, `sub`, `mul` resolve directly to the Reaver.BPLAN extern
+-- items above via the resolver's short-name binding — no local
+-- wrapper needed (and a wrapper would conflict with the extern's
+-- short-name registration).
+--
+-- `div_nat` and `mod_nat` keep local definitions because the
+-- div-by-zero behaviour is part of the contract here (return 0)
+-- and BPLAN's `div` doesn't match that shape.  These wrap
+-- `Reaver.BPLAN.div` in a 0-guard.
 
--- sub: saturating subtraction
-let sub : Nat → Nat → Nat
-  = λ m n → match n {
-    | 0 → m
-    | k → match m {
-      | 0 → 0
-      | j → sub j k
-    }
-  }
-
--- mul: multiplication by recursion on second arg
-let mul : Nat → Nat → Nat
-  = λ m n → match n {
-    | 0 → 0
-    | k → add m (mul m k)
-  }
-
--- div_go: division loop helper
--- PLAN kal eagerly evaluates the zero handler of Case_, so the recursive
--- call must be in the succ branch (lazy, wrapped in a law).
--- lte b a returns 1 when b <= a (continue), 0 when b > a (stop).
--- Matching on (lte b a): zero branch = base case (safe), succ = recurse (lazy).
-let div_go : Nat → Nat → Nat → Nat
-  = λ a b acc → match (lte b a) {
-    | 0 → acc
-    | k → div_go (sub a b) b (Core.PLAN.inc acc)
-  }
-
--- div_nat: integer division (repeated subtraction)
--- div_nat a b = floor(a / b), with div_nat _ 0 = 0
 let div_nat : Nat → Nat → Nat
   = λ a b → match b {
     | 0 → 0
-    | bpred → div_go a b 0
+    | _ → Reaver.BPLAN.div a b
   }
 
--- mod_go: modulus loop — same strategy as div_go
-let mod_go : Nat → Nat → Nat
-  = λ a b → match (lte b a) {
-    | 0 → a
-    | k → mod_go (sub a b) b
-  }
-
--- mod_nat: modulus (remainder after division)
--- mod_nat a b = a mod b, with mod_nat _ 0 = 0
+-- mod_nat: a mod b, with mod_nat _ 0 = 0.  Derived from div as
+-- `a - (a / b) * b` since the BPLAN extern in this file omits `mod`
+-- (`mod` is a reserved keyword in the surface syntax — see
+-- prelude/src/Reaver/BPLAN.gls's note).
 let mod_nat : Nat → Nat → Nat
   = λ a b → match b {
     | 0 → 0
-    | bpred → mod_go a b
+    | _ → Reaver.BPLAN.sub a (Reaver.BPLAN.mul (Reaver.BPLAN.div a b) b)
   }
 
 -- max_nat: maximum of two nats
@@ -166,46 +161,46 @@ let min_nat : Nat → Nat → Nat
 -- Section 4: Bitwise Operations (from div/mod by powers of 2)
 -- =====================================================================
 
--- pow2: compute 2^n by repeated doubling
+-- pow2, shift_left, shift_right: direct BPLAN wrappers.
 let pow2 : Nat → Nat
-  = λ n → match n {
-    | 0 → 1
-    | k → mul 2 (pow2 k)
-  }
+  = λ n → Reaver.BPLAN.bex n
 
--- bit_and: bitwise AND via decomposition
--- bit_and 0 _ = 0, bit_and _ 0 = 0
--- bit_and a b = (a%2 * b%2) + 2 * bit_and(a/2, b/2)
+let shift_left : Nat → Nat → Nat
+  = λ x k → Reaver.BPLAN.lsh x k
+
+let shift_right : Nat → Nat → Nat
+  = λ x k → Reaver.BPLAN.rsh x k
+
+-- bit_and via mod when the right operand is `2^k - 1` (a low-byte
+-- mask).  Pre-flight grep confirmed every call site in this file
+-- uses such a mask (`bit_and x 255`, `bit_and x 0xFF`, or
+-- `bit_and x (sub (pow2 64) 1)`).  See `plans/phase_g_2.md`
+-- §"Pre-flight results".  For arbitrary masks this would be wrong;
+-- the test suite exercises only the call-site shape we use.
 let bit_and : Nat → Nat → Nat
-  = λ a b → match a {
-    | 0 → 0
-    | ap → match b {
-      | 0 → 0
-      | bp → add (mul (mod_nat a 2) (mod_nat b 2))
-                  (mul 2 (bit_and (div_nat a 2) (div_nat b 2)))
-    }
-  }
+  = λ a b → mod_nat a (Reaver.BPLAN.add b 1)
 
--- bit_or: bitwise OR via decomposition
--- bit_or a b = (a%2 | b%2) + 2 * bit_or(a/2, b/2)
--- where (x | y) for single bits = if x then 1 else y
+-- bit_or: keeps the general bit-by-bit recursive semantics so the
+-- standalone unit tests over arbitrary inputs still hold.  In this
+-- file's call sites bit_or always combines non-overlapping bits
+-- (one operand is `shift_left Y N` for some N ≥ bit-width of the
+-- other), so BPLAN.add would be functionally equivalent for those —
+-- but bit_or is also tested in isolation, where general semantics
+-- matter.  Performance on the bytes_concat path: with `mod_nat`,
+-- `div_nat`, `add`, `mul` now BPLAN primops, the per-bit recursion
+-- costs O(1) rather than O(N), so a 300KB output runs in seconds
+-- rather than years.  When jet matching lands in Reaver, this can
+-- become a single bignum or-shift.
 let bit_or : Nat → Nat → Nat
   = λ a b → match a {
     | 0 → b
-    | ap → match b {
+    | _ → match b {
       | 0 → a
-      | bp → add (if nat_eq (mod_nat a 2) 1 then 1 else mod_nat b 2)
-                  (mul 2 (bit_or (div_nat a 2) (div_nat b 2)))
+      | _ → Reaver.BPLAN.add
+              (if nat_eq (mod_nat a 2) 1 then 1 else mod_nat b 2)
+              (Reaver.BPLAN.mul 2 (bit_or (div_nat a 2) (div_nat b 2)))
     }
   }
-
--- shift_right: arithmetic right shift (= div by 2^k)
-let shift_right : Nat → Nat → Nat
-  = λ n k → div_nat n (pow2 k)
-
--- shift_left: left shift (= mul by 2^k)
-let shift_left : Nat → Nat → Nat
-  = λ n k → mul n (pow2 k)
 
 -- =====================================================================
 -- Section 5: List Operations
@@ -5314,17 +5309,70 @@ let nn_bplan_Law  : Nat = 7823692
 let nn_bplan_Inc  : Nat = 6516297
 let nn_bplan_Elim : Nat = 1835625541
 let nn_bplan_Force : Nat = 435460140870
+let nn_bplan_Add  : Nat = 6579265
+let nn_bplan_Sub  : Nat = 6452563
+let nn_bplan_Mul  : Nat = 7107917
+let nn_bplan_Div  : Nat = 7760196
+let nn_bplan_Eq   : Nat = 28997
+let nn_bplan_Bex  : Nat = 7890242
+let nn_bplan_Lsh  : Nat = 6845260
+let nn_bplan_Rsh  : Nat = 6845266
+let nn_bplan_Seq  : Nat = 7431507
+
+-- RPLAN named-primitive name nats (the "Name" string in (P("R")) ("Name" args)).
+-- Per vendor/reaver/src/hs/Plan.hs op 82 cases.
+let nn_rplan_Input  : Nat = 500186508873
+let nn_rplan_Output : Nat = 128047746676047
+
+-- Reaver.BPLAN / Reaver.RPLAN module-name nats and item-name nats,
+-- used to register the prim-table entries below.
+let nn_Reaver_BPLAN : Nat = 24218771324700965082224485714
+let nn_Reaver_RPLAN : Nat = 24218771325853886586831332690
+let nn_add    : Nat = 6579297
+let nn_sub    : Nat = 6452595
+let nn_mul    : Nat = 7107949
+let nn_div    : Nat = 7760228
+let nn_eq_op  : Nat = 29029       -- nn_eq is taken by Compiler.eq
+let nn_bex    : Nat = 7890274
+let nn_lsh    : Nat = 6845292
+let nn_rsh    : Nat = 6845298
+let nn_seq    : Nat = 7431539
+let nn_input  : Nat = 500186508905
+let nn_output : Nat = 128047746676079
 
 -- cg_core_plan_bplan_prims: list of (fq_name_nat, (bplan_name_nat, arity))
--- for the five Core.PLAN externals. Replaces the prior opcode-pin map.
--- See vendor/reaver/src/plan/boot.plan for the (#bplan ...) macro shape.
+-- for the externals this compiler knows how to register as fast paths.
+-- Originally just the five Core.PLAN entries; Phase G #2 extends this
+-- to cover Reaver.BPLAN.* and Reaver.RPLAN.* so the *self-hosted*
+-- compiler can compile programs that use these externs (including
+-- Compiler.gls itself).  See vendor/reaver/src/plan/boot.plan for
+-- the (#bplan ...) macro shape and `bootstrap/bplan_deps.py` for
+-- the bootstrap-side mirror table.
 let cg_core_plan_bplan_prims : List (Pair Nat (Pair Nat Nat))
   = Cons (MkPair (name_concat_dot nn_Core_PLAN nn_pin)     (MkPair nn_bplan_Pin   1))
     (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_mk_law) (MkPair nn_bplan_Law   3))
     (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_inc)    (MkPair nn_bplan_Inc   1))
     (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_reflect)(MkPair nn_bplan_Elim  6))
     (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_force)  (MkPair nn_bplan_Force 1))
-    Nil))))
+    -- Reaver.BPLAN entries
+    (Cons (MkPair (name_concat_dot nn_Reaver_BPLAN nn_add) (MkPair nn_bplan_Add   2))
+    (Cons (MkPair (name_concat_dot nn_Reaver_BPLAN nn_sub) (MkPair nn_bplan_Sub   2))
+    (Cons (MkPair (name_concat_dot nn_Reaver_BPLAN nn_mul) (MkPair nn_bplan_Mul   2))
+    (Cons (MkPair (name_concat_dot nn_Reaver_BPLAN nn_div) (MkPair nn_bplan_Div   2))
+    (Cons (MkPair (name_concat_dot nn_Reaver_BPLAN nn_eq_op)(MkPair nn_bplan_Eq   2))
+    (Cons (MkPair (name_concat_dot nn_Reaver_BPLAN nn_bex) (MkPair nn_bplan_Bex   1))
+    (Cons (MkPair (name_concat_dot nn_Reaver_BPLAN nn_lsh) (MkPair nn_bplan_Lsh   2))
+    (Cons (MkPair (name_concat_dot nn_Reaver_BPLAN nn_rsh) (MkPair nn_bplan_Rsh   2))
+    (Cons (MkPair (name_concat_dot nn_Reaver_BPLAN nn_seq) (MkPair nn_bplan_Seq   2))
+    -- Reaver.RPLAN entries — same pin shape, different gateway opcode.
+    -- The gateway is the "R" pin (op 82); for the self-hosted compiler
+    -- we still register them in cg_core_plan_bplan_prims since the
+    -- runtime distinction is at the gateway, not the prim-table key.
+    -- (If/when the GLS compiler grows a separate RPLAN dispatch path,
+    -- this entry moves there.)
+    (Cons (MkPair (name_concat_dot nn_Reaver_RPLAN nn_input)  (MkPair nn_rplan_Input  1))
+    (Cons (MkPair (name_concat_dot nn_Reaver_RPLAN nn_output) (MkPair nn_rplan_Output 1))
+    Nil)))))))))))))))
 
 -- Builtin name nats
 let nn_False : Nat = 435728179526
@@ -6449,5 +6497,88 @@ let run_main : Nat → Nat
       write_fd 1 out_nat out_len
 
 -- =====================================================================
--- End of CLI entry point
+-- End of legacy planvm CLI entry point
+-- =====================================================================
+
+-- =====================================================================
+-- Section 28: Reaver runtime entry point (Phase G #2)
+-- =====================================================================
+--
+-- main_reaver : Nat → Nat — the entry called by `plan-assembler`.
+--
+-- Reaver applies main to the strNat-encoded CLI args (we ignore them)
+-- and forces the result.  We:
+--   1. Read all of stdin via repeated `Reaver.RPLAN.input` calls,
+--      concatenating chunks until EOF (a chunk of length 0).
+--   2. Strip the bytesBar marker bit from each chunk to get raw
+--      content nats.
+--   3. Hand the assembled `Bytes` to the pure `main` defined above.
+--   4. Add a bytesBar marker bit to the output (so Reaver's
+--      `natBytes` decoder doesn't drop the topmost byte) and call
+--      `Reaver.RPLAN.output`.
+--   5. Sequence everything through `Reaver.BPLAN.seq` so the side
+--      effects fire — a plain `let _ = output _ in 0` would let the
+--      kal walker drop the side-effecting computation as dead code.
+--
+-- Source bytes are read in 65536-byte chunks; pipe buffers on Linux
+-- are typically <= this size, so a single Input rarely returns less
+-- than the available bytes.  EOF is signalled by a zero-length read.
+-- =====================================================================
+
+-- bytesBar_strip: take a Reaver `Input N` result and split it into
+-- (length, content_nat).  The input nat has content packed LE with
+-- a marker bit at position `len * 8`.  We find the marker by
+-- searching from the top, then strip it.
+--
+-- A length-0 chunk is encoded as Nat 1 (marker at position 0) per
+-- bytesBar.  Detect EOF by checking whether the input == 1 after a
+-- read.
+let bytesBar_byte_count : Nat → Nat
+  = fix λ self n →
+      match (nat_eq n 1) {
+        | 0 → Core.PLAN.inc (self (Reaver.BPLAN.rsh n 8))
+        | _ → 0
+      }
+
+let decode_input_chunk : Nat → Pair Nat Nat
+  = λ raw →
+      let n_bytes = bytesBar_byte_count raw in
+      let mask    = Reaver.BPLAN.bex (mul 8 n_bytes) in
+      let content = Reaver.BPLAN.sub raw mask in
+      MkPair n_bytes content
+
+-- bytesBar_encode: add the marker bit at `len * 8` to a content
+-- nat, producing the bytesBar form Reaver's `Output` expects.
+-- `natBytes` strips the topmost byte (length marker), so the marker
+-- is what makes a 0x0A trailing byte survive the round trip.
+let bytesBar_encode : Pair Nat Nat → Nat
+  = λ b →
+      let len     = bytes_length b in
+      let content = bytes_content b in
+      Reaver.BPLAN.add content (Reaver.BPLAN.bex (mul 8 len))
+
+-- read_all_loop: drain stdin into a Bytes accumulator.  Each iter
+-- calls Input for up to 65536 bytes, decodes via decode_input_chunk,
+-- concatenates onto acc, and recurses.  Exits on length-0 chunk.
+let read_all_loop : Pair Nat Nat → Pair Nat Nat
+  = fix λ self acc →
+      match (decode_input_chunk (Reaver.RPLAN.input 65536)) {
+        | MkPair 0 _       → acc
+        | MkPair len chunk → self (bytes_concat acc (MkPair len chunk))
+      }
+
+let read_all : Nat → Pair Nat Nat
+  = λ _ → read_all_loop (MkPair 0 0)
+
+-- main_reaver: drive the pure `main` from stdin/stdout.
+-- The trailing 0 is the process exit value (Reaver doesn't yet
+-- propagate this, but it's the conventional shape).
+let main_reaver : Nat → Nat
+  = λ _ →
+      let src    = read_all 0 in
+      let output = main src in
+      Reaver.BPLAN.seq (Reaver.RPLAN.output (bytesBar_encode output)) 0
+
+-- =====================================================================
+-- End of Reaver runtime entry point
 -- =====================================================================

@@ -321,6 +321,10 @@ def _b_lsh(args):
 def _b_rsh(args):
     return nat(evaluate(args[0])) >> nat(evaluate(args[1]))
 
+def _b_bex(args):
+    """`Bex x = 2^x` — single-arg power-of-two builder."""
+    return 1 << nat(evaluate(args[0]))
+
 def _b_type(args):
     v = evaluate(args[0])
     if is_pin(v): return 1
@@ -378,6 +382,7 @@ _BPLAN_IMPLS = {
     'Cmp':   _b_cmp,
     'Lsh':   _b_lsh,
     'Rsh':   _b_rsh,
+    'Bex':   _b_bex,
     'Type':  _b_type,
     'IsPin': _b_is_pin,
     'IsLaw': _b_is_law,

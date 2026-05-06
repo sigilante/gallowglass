@@ -266,3 +266,52 @@ migration, bytesBar codec, read_all loop, `main_reaver`,
 ## Estimated effort
 
 PR 1: 1–2 days. PR 2: 3–5 days. Total: ~1 week of focused work.
+
+## Status (post-implementation)
+
+PR 1 (D8 fix) shipped — see `fix/d8-nested-let-lambda-lift`.
+
+PR 2 (this plan) shipped on `feat/phase-g-2-compiler-main-reaver`.
+Two surprises during implementation worth recording:
+
+1. **`add` / `sub` / `mul` shadow conflict.** Declaring
+   `external mod Reaver.BPLAN { add … sub … mul … }` registers the
+   short names `add`/`sub`/`mul` in the same global frame as a
+   top-level `let add = …`.  The resolver flags ambiguity. Fix:
+   drop the local wrappers entirely and let the extern's short-name
+   binding handle every call site.  `div_nat`/`mod_nat` stay as
+   locals because BPLAN's `div`/`mod` don't match the previous
+   div-by-zero contract (return 0); the local wrappers add a
+   0-guard around the BPLAN primops.
+2. **`bit_or` for general (overlapping) inputs is still required.**
+   Pre-flight grep confirmed every `bit_or` call site in
+   `Compiler.gls` is non-overlapping, but the standalone unit
+   test in `tests/compiler/test_utils.py::TestBitwiseOps::test_bit_or`
+   exercises arbitrary inputs (`bit_or 6 3 = 7`, bits at position
+   1 overlap).  Replacing with `BPLAN.add` silently breaks that
+   test.  Resolution: keep the recursive `bit_or` body, but its
+   inner `mod_nat`/`div_nat`/`add`/`mul` calls are now BPLAN
+   primops — per-bit recursion costs O(1) per step instead of
+   O(N), making `bit_or` fast enough for the `bytes_concat` path.
+   `pow2`/`shift_left`/`shift_right`/`bit_and` migrate cleanly
+   because their call sites match the pre-flight assumptions exactly.
+
+The empty-source smoke test in
+`tests/reaver/test_selfhost.py::TestPhaseG2Smoke` runs in ~2
+seconds and pins:
+
+- All ~568 bindings (including `read_all_loop`,
+  `decode_input_chunk`, `bytesBar_encode`, `main_reaver`) load
+  under Reaver without `law: unbound` or other parse errors.
+- `main_reaver` invokes cleanly on empty stdin: the pure `main`
+  pipeline runs on `(MkPair 0 0)`, returns `(MkPair 0 0)`, and
+  `bytesBar_encode (MkPair 0 0) = bex 0 = 1`. `Output 1` writes
+  zero bytes (`natBytes 1 = ""`), matching the empty-source
+  contract.
+
+Running `Compiler.gls` against a non-trivial source under Reaver
+still times out — the recursive `bit_or` per `bytes_concat` is
+O(N) bits × O(N) concats = O(N²) bit recursions — which is Phase
+G #3's concern (Reaver-side jet matching for `bit_or`/`bytes_concat`,
+or scoping the byte-identity test to small fixtures). The
+deliverable for #2 is the *I/O surface*, not throughput.
