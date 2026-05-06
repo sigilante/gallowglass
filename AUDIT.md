@@ -392,6 +392,55 @@ so future sessions can pick up where the current one stopped.)
       end-to-end calc REPL demonstrably evaluates `1+2 → 3`, `5 → 5`
       under Reaver. (PR: fix/d5-nested-match-slot-drop)
 
+- [x] **D6. All-nullary explicit arms + wildcard against a type with
+      field-bearing siblings: wildcard does not fire for App scrutinees.**
+      Surfaced when promoting the calc REPL to the `demos/` tree.
+      `match e { | EErr → … | _ → … }` where `Expr` also has `EConst`,
+      `EAdd`, etc.: con_arms is all-nullary so `_compile_con_match`
+      routed to `_build_nat_dispatch`, which builds an Elim whose
+      app-case is `id_pin` (returns the App unchanged). For an App
+      scrutinee — i.e. any non-EErr value — `id_pin` short-circuited
+      the wildcard and returned the original value, so `check (EConst
+      7)` returned `EConst 7` (interpreted as a Nat = 0) instead of
+      the wildcard's body. The same issue masked the calc REPL's
+      `parse_term_loop`/`parse_expr_loop` wildcard arm: for input
+      `[Num 12, Num 34]` the loop returned `id_pin App`, not
+      `MkPair lhs rest`, breaking the outer match.
+
+      **Root cause (resolved):** `_compile_con_match` now detects
+      whether the matched type has any field-bearing sibling
+      constructor; if so AND a wildcard is present, it routes through
+      `_compile_adt_dispatch` so the App branch can fire properly. The
+      `_compile_adt_dispatch` `not field_arms` path now builds a
+      `_build_wild_app_handler` const-law (lifting captures + self-ref)
+      for the App branch instead of using `id_pin`. Regression tests
+      `test_wild_app_handler_top_level` and
+      `test_wild_app_handler_captures_outer_lambda` in
+      `tests/bootstrap/test_codegen.py`. End-to-end calc REPL multi-line
+      input is exercised by `tests/reaver/test_repl_calc.py`.
+
+- [x] **D7. Top-level App constants inlined into law bodies, bare Nat
+      literals collide with de Bruijn slots.** Same calc-REPL bisect:
+      `let render_err : Nat = BPLAN.add (BPLAN.lsh 1 32) …` (a constant
+      Nat encoded via BPLAN ops) compiles to an App tree containing
+      `N(1)`, `N(32)` literals. When referenced inside a law body via
+      `_compile_var`, the Apps were returned as-is and the emitter's
+      body-context renderer treats `is_nat(v) and v <= depth` as a
+      slot reference (`_1` instead of literal `1`). Result: every body
+      reference to a top-level App constant silently captured the
+      enclosing law's first parameter. Surfaced as missing `\n`s in
+      the REPL's `render_err` output (the marker bit was the literal
+      `1<<32`, lost to slot rebinding).
+
+      **Root cause (resolved):** `emit_pla.emit_program` now registers
+      `is_law(val) | is_pin(val) | is_app(val)` top-level entries in
+      `bind_table`, so cross-binding references emit as the bare
+      symbol (`Main_render_err`) and Reaver's `BIND` lookup resolves
+      to the evaluated value. Pure-Nat constants (e.g. `let n : Nat =
+      42`) still inline — `is_nat(val)` deliberately stays out of the
+      gate because `_compile_var`'s `_compile_nat_literal` already
+      emits the quote form for them.
+
 D1–D4 above were the IDE-tooling prerequisites that landed
 back-to-back in support of the new `bootstrap/mcp_server.py` (PR #74) —
 a stdio MCP server exposing `compile_snippet`, `infer_type`,

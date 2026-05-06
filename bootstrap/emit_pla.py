@@ -236,7 +236,15 @@ def emit_program(compiled: dict[str, Any], *,
     # has already seen — avoiding forward-reference errors.
     bind_table: dict[int, str] = {}
     for fq, val in compiled.items():
-        if is_law(val) and id(val) not in bind_table:
+        # Register Laws (and pinned-Laws) so cross-binding function references
+        # emit as `name` instead of inlining the law tree. Also register top-
+        # level App values (e.g. parameter-less `let render_err = …`) so their
+        # users emit a name reference instead of inlining the App tree —
+        # inlining is unsound in body context, where the App's interior bare
+        # `N(k)` literals collide with de Bruijn slot `_k` references.
+        if id(val) in bind_table:
+            continue
+        if is_law(val) or is_pin(val) or is_app(val):
             bind_table[id(val)] = _fq_to_symbol(fq)
 
     global _bind_symbols, _bind_skip_id

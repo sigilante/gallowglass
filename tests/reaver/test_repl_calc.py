@@ -77,17 +77,56 @@ def _run_repl(stdin_bytes: bytes, timeout: int = 120) -> tuple[bytes, bytes]:
     return result.stdout, result.stderr
 
 
+PROMPT = 'Ᵹ» '.encode('utf-8')
+BANNER = b'gallowglass calc -- ops: + - * / ^ ( )\n'
+
+
 @requires_reaver
 class TestReplCalc(unittest.TestCase):
-    """The compiled echo demo reads stdin and writes stdout via
-    Reaver.RPLAN, sequenced through Reaver.BPLAN.seq so the I/O side
-    effect actually fires."""
+    """End-to-end: the compiled `demos/repl_calc.gls` reads arithmetic
+    expressions from stdin (one per line), evaluates each, and writes the
+    decimal result followed by '\\n' to stdout. Output uses Reaver's
+    bytesBar length-marker encoding so trailing newlines (and the
+    multi-byte UTF-8 prompt `Ᵹ» `) survive `natBytes`. A division-by-zero
+    or parse failure emits `err\\n` and stops the loop.
 
-    def test_passes_bytes_through(self):
-        """Whatever bytes go in come back out."""
-        stdout, stderr = _run_repl(b'hello world\n')
-        self.assertEqual(stdout, b'hello world\n',
-            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-2000:]!r}')
+    Under non-interactive piped input, every byte of stdin arrives in a
+    single `RPLAN.input` chunk, so the prompt fires exactly twice: once
+    before the chunk is consumed, and once at the EOF read that
+    terminates the loop.
+    """
+
+    def test_single_expression(self):
+        stdout, stderr = _run_repl(b'1+2\n')
+        self.assertEqual(stdout, BANNER + PROMPT + b'3\n' + PROMPT,
+            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-1500:]!r}')
+
+    def test_multiple_expressions(self):
+        stdout, stderr = _run_repl(b'1+2\n3*4\n6/2\n')
+        self.assertEqual(stdout, BANNER + PROMPT + b'3\n12\n3\n' + PROMPT,
+            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-1500:]!r}')
+
+    def test_division_by_zero_breaks_loop(self):
+        # The middle expression triggers EvErr; the inner loop returns 0
+        # (without evaluating "4*5"), but `repl_step` still recurses into
+        # the next `Input` read — which sees EOF — so a trailing prompt
+        # is emitted before the process exits.
+        stdout, stderr = _run_repl(b'1+2\n6/0\n4*5\n')
+        self.assertEqual(stdout, BANNER + PROMPT + b'3\nerr\n' + PROMPT,
+            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-1500:]!r}')
+
+    def test_unparseable_input_emits_err(self):
+        stdout, stderr = _run_repl(b'hello\n')
+        self.assertEqual(stdout, BANNER + PROMPT + b'err\n' + PROMPT,
+            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-1500:]!r}')
+
+    def test_exponentiation(self):
+        # 2^3=8 (basic); 2*3^2=18 (^ tighter than *); 2^3^2=512 (right-
+        # assoc); (2^3)^2=64 (paren override); 5^0=1 (n^0 = 1).
+        stdout, stderr = _run_repl(b'2^3\n2*3^2\n2^3^2\n(2^3)^2\n5^0\n')
+        self.assertEqual(stdout,
+            BANNER + PROMPT + b'8\n18\n512\n64\n1\n' + PROMPT,
+            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-1500:]!r}')
 
 
 if __name__ == '__main__':

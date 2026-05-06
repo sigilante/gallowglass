@@ -2092,11 +2092,31 @@ class Compiler:
 
         all_nullary = all(info.arity == 0 for info, _, _ in con_arms)
 
+        # When the explicit con_arms are all nullary but the matched type has
+        # field-bearing sibling constructors (so the scrutinee can show up as
+        # an App), `_build_nat_dispatch` alone is wrong: it builds an Elim
+        # whose app-case is `id_pin`, which returns the App unchanged instead
+        # of firing the wildcard.  Route through `_compile_adt_dispatch` in
+        # that case so the App branch invokes the wildcard arm.  The fast
+        # `_build_nat_dispatch` path is preserved for pure-nullary types
+        # (Bool, fully-enumerated Tokens with no wildcard, etc.) where the
+        # scrutinee is guaranteed to be a Nat tag.
         if all_nullary:
-            # Simple case: scrutinee is a bare nat tag
-            tag_val = scrutinee
             wild_body = wild_arm[1] if wild_arm else None
             wild_var_con = wild_arm[0].name if (wild_arm and isinstance(wild_arm[0], PatVar)) else None
+            type_has_field_sibling = False
+            if wild_arm is not None:
+                arm_type = next((info.type_name for info, _, _ in con_arms if info.type_name), '')
+                if arm_type:
+                    for ci in self.con_info.values():
+                        if ci.type_name == arm_type and ci.arity > 0:
+                            type_has_field_sibling = True
+                            break
+            if type_has_field_sibling:
+                return self._compile_adt_dispatch(
+                    scrutinee, con_arms, wild_arm, env, name_hint, loc=loc
+                )
+            tag_val = scrutinee
             arms_sorted = [(info.tag, body) for info, _, body in con_arms]
             return self._build_nat_dispatch(arms_sorted, wild_body, wild_var_con, tag_val, env, name_hint)
         else:
@@ -2241,12 +2261,78 @@ class Compiler:
 
         # --- Build the app handler ---
         if not field_arms:
-            app_handler = id_pin
+            # No explicit field-bearing arms.  When a wildcard arm exists, an
+            # App scrutinee must fire it (otherwise `id_pin` would return the
+            # App unchanged, which user code never expects).  Build a 2-arg
+            # const-law over the wildcard body, lifting captures + self-ref
+            # the same way `_build_field_arm_law` does.
+            if wild_body is None:
+                app_handler = id_pin
+            else:
+                app_handler = self._build_wild_app_handler(
+                    wild_body, env, name_hint
+                )
         else:
             app_handler = self._build_field_arm_law(field_arms, wild_body, wild_var_con, env, name_hint, loc=loc)
 
         # --- Assemble Case_ dispatch ---
         return self._make_reflect_dispatch(app_handler, z_body, m_body, scrutinee, env)
+
+    def _build_wild_app_handler(self, wild_body, env: Env, name_hint: str) -> Any:
+        """
+        Build a 2-arg law that ignores its arguments and evaluates `wild_body`,
+        for use as the App branch of an Elim dispatch when the match has no
+        explicit field-bearing arms but does have a wildcard.
+
+        Mirrors the capture-and-partial-apply pattern used in
+        `_build_field_arm_law` so references to outer-lambda locals and the
+        enclosing function's self-ref resolve correctly.
+        """
+        const2_pin = P(self._CONST2_LAW)
+
+        if env.arity == 0:
+            # Top-level: no locals or self-ref to lift.  const2_pin twice
+            # over wild_body absorbs the (outer_fun, outer_arg) pair.
+            wv = self._compile_expr(wild_body, env, f'{name_hint}_wild')
+            return A(const2_pin, A(const2_pin, wv))
+
+        # In-law: lift outer captures + self-ref into a (n_cap + 2)-arity
+        # law that ignores its last two args (outer_fun, outer_arg).
+        names: set = set()
+        self._collect_all_names(wild_body, names)
+        free_locals = [fv for fv in env.locals if fv in names]
+        uses_self = bool(env.self_ref_name) and self._body_uses_self_ref(wild_body, env)
+
+        handler_env = Env(globals=env.globals, arity=0)
+        handler_env.self_ref_name = ''
+
+        n_cap = 0
+        if uses_self:
+            n_cap += 1
+            handler_env.arity = n_cap
+            handler_env.locals[env.self_ref_name] = n_cap
+            short = env.self_ref_name.split('.')[-1]
+            handler_env.locals[short] = n_cap
+
+        for fv in free_locals:
+            n_cap += 1
+            handler_env.arity = n_cap
+            handler_env.locals[fv] = n_cap
+
+        # Final two slots are the unused (outer_fun, outer_arg) pair.
+        handler_env.arity = n_cap + 2
+
+        wv = self._compile_expr(wild_body, handler_env, f'{name_hint}_wild')
+        lifted = P(L(handler_env.arity, encode_name(f'{name_hint}_wild_app'), wv))
+
+        # Partial-apply at env's perspective so the slot in the parent law is
+        # a 2-arg function over (outer_fun, outer_arg).
+        out = lifted
+        if uses_self:
+            out = bapp(out, N(0))
+        for fv in free_locals:
+            out = bapp(out, N(env.locals[fv]))
+        return out
 
     def _build_field_arm_law(self, field_arms, wild_body, wild_var_con, env: Env, name_hint: str, loc=None) -> Any:
         """
