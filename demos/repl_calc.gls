@@ -48,6 +48,7 @@ type Token =
   | TkMinus
   | TkStar
   | TkSlash
+  | TkCaret
   | TkLParen
   | TkRParen
   | TkEOF
@@ -59,6 +60,7 @@ type Expr =
   | ESub Expr Expr
   | EMul Expr Expr
   | EDiv Expr Expr
+  | EPow Expr Expr
   | EErr
 
 type EvalResult =
@@ -168,12 +170,15 @@ let single_char_token : Nat → Token
       | 0 → match (BPLAN.eq b 45) {          -- '-'
           | 0 → match (BPLAN.eq b 42) {      -- '*'
               | 0 → match (BPLAN.eq b 47) {  -- '/'
-                  | 0 → match (BPLAN.eq b 40) {   -- '('
-                      | 0 → match (BPLAN.eq b 41) {  -- ')'
-                          | 0 → TkErr
-                          | _ → TkRParen
+                  | 0 → match (BPLAN.eq b 94) {  -- '^'
+                      | 0 → match (BPLAN.eq b 40) {   -- '('
+                          | 0 → match (BPLAN.eq b 41) {  -- ')'
+                              | 0 → TkErr
+                              | _ → TkRParen
+                            }
+                          | _ → TkLParen
                         }
-                      | _ → TkLParen
+                      | _ → TkCaret
                     }
                   | _ → TkSlash
                 }
@@ -246,7 +251,27 @@ let parse_factor
         }
     }
 
--- parse_term_loop: factor (('*' | '/') factor)* loop body. `pe` is the
+-- parse_pow: factor ('^' parse_pow)?.  Right-associative — `2^3^2` is
+-- `2^(3^2)` = 512, matching standard math convention.  We recurse into
+-- parse_pow on the right rather than looping, so the deepest `^` binds
+-- first.  Note: '^' here is exponentiation, not bitwise XOR; the demo
+-- evaluates over Nat with no negative or boolean interpretation.
+let parse_pow
+      : (List Token → Pair Expr (List Token))
+      → List Token → Pair Expr (List Token)
+  = fix λ self pe toks → match (parse_factor pe toks) {
+      | MkPair lhs rest → match rest {
+          | Nil → MkPair lhs Nil
+          | Cons h t → match h {
+              | TkCaret → match (self pe t) {
+                  | MkPair rhs rest2 → MkPair (EPow lhs rhs) rest2
+                }
+              | _ → MkPair lhs rest
+            }
+        }
+    }
+
+-- parse_term_loop: pow (('*' | '/') pow)* loop body. `pe` is the
 -- pass-self for the paren branch — restricted dialect doesn't capture
 -- outer-lambda params through nested `fix`, so we thread it explicitly.
 let parse_term_loop
@@ -255,21 +280,21 @@ let parse_term_loop
   = fix λ self pe lhs rest → match rest {
       | Nil → MkPair lhs Nil
       | Cons h t → match h {
-          | TkStar → match (parse_factor pe t) {
+          | TkStar → match (parse_pow pe t) {
               | MkPair rhs rest2 → self pe (EMul lhs rhs) rest2
             }
-          | TkSlash → match (parse_factor pe t) {
+          | TkSlash → match (parse_pow pe t) {
               | MkPair rhs rest2 → self pe (EDiv lhs rhs) rest2
             }
           | _ → MkPair lhs rest
         }
     }
 
--- parse_term: factor (('*' | '/') factor)*.
+-- parse_term: pow (('*' | '/') pow)*.
 let parse_term
       : (List Token → Pair Expr (List Token))
       → List Token → Pair Expr (List Token)
-  = λ pe toks → match (parse_factor pe toks) {
+  = λ pe toks → match (parse_pow pe toks) {
       | MkPair lhs rest → parse_term_loop pe lhs rest
     }
 
@@ -311,6 +336,22 @@ let parse : List Token → Expr
 -- Evaluator: tree-walking, division-by-zero → EvErr.
 -- ---------------------------------------------------------------------------
 
+-- pow_loop: tail-recursive accumulator.  `n^k = pow_loop 1 n k`.  Each
+-- step multiplies acc by base and decrements k.  Reaver has no Pow
+-- primop (declared in boot.plan but unimplemented in Plan.hs), so this
+-- builds the operation out of BPLAN.mul.  Cost is O(k) multiplications;
+-- for the calc REPL's use case (small integer exponents) that's fine.
+let pow_loop : Nat → Nat → Nat → Nat
+  = fix λ self acc base k → match k {
+      | 0 → acc
+      | _ → self (BPLAN.mul acc base) base (BPLAN.sub k 1)
+    }
+
+-- pow n k: n raised to the k-th power.  By convention `0^0 = 1` and
+-- `n^0 = 1` for all n; this falls out of the accumulator seed of 1.
+let pow : Nat → Nat → Nat
+  = λ n k → pow_loop 1 n k
+
 let eval : Expr → EvalResult
   = fix λ self e → match e {
       | EConst n → EvOk n
@@ -343,6 +384,13 @@ let eval : Expr → EvalResult
                   | 0 → EvErr
                   | _ → EvOk (BPLAN.div x y)
                 }
+            }
+        }
+      | EPow a b → match (self a) {
+          | EvErr → EvErr
+          | EvOk x → match (self b) {
+              | EvErr → EvErr
+              | EvOk y → EvOk (pow x y)
             }
         }
       | EErr → EvErr
@@ -395,18 +443,18 @@ let render : EvalResult → Nat
       | EvErr  → render_err
     }
 
--- banner: startup line "gallowglass calc -- ops: + - * / ( )\n"
--- (37 bytes pure ASCII).  Pre-computed as the bytesBar-encoded nat —
+-- banner: startup line "gallowglass calc -- ops: + - * / ^ ( )\n"
+-- (39 bytes pure ASCII).  Pre-computed as the bytesBar-encoded nat —
 -- bytes packed little-endian (byte 0 = first character) with the
--- length-marker bit set at position 296.  Embedded as a decimal literal
+-- length-marker bit set at position 312.  Embedded as a decimal literal
 -- rather than a chain of BPLAN ops because the byte count makes a
 -- nested-add tower unwieldy; the comment shows the source text and the
 -- helper invocation that produced the constant.
 --
---   python3 -c "s='gallowglass calc -- ops: + - * / ( )\n'; \
+--   python3 -c "s='gallowglass calc -- ops: + - * / ^ ( )\n'; \
 --     b=s.encode(); print(int.from_bytes(b,'little')|(1<<(len(b)*8)))"
 let banner : Nat
-  = 132367874332633686100815503842460391152196155854182154420186175167627831414774001239351655
+  = 8674861012264874464982291786170712127760553755613318012354086273863761094284939518916432781671
 
 -- prompt: bytes for the input prompt "Ᵹ» " (UTF-8: EA 9D BD C2 BB 20)
 -- with the bytesBar marker bit set at byte 6.  Layout:

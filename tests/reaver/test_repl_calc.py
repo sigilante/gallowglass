@@ -78,7 +78,7 @@ def _run_repl(stdin_bytes: bytes, timeout: int = 120) -> tuple[bytes, bytes]:
 
 
 PROMPT = 'Ᵹ» '.encode('utf-8')
-BANNER = b'gallowglass calc -- ops: + - * / ( )\n'
+BANNER = b'gallowglass calc -- ops: + - * / ^ ( )\n'
 
 
 @requires_reaver
@@ -118,6 +118,14 @@ class TestReplCalc(unittest.TestCase):
     def test_unparseable_input_emits_err(self):
         stdout, stderr = _run_repl(b'hello\n')
         self.assertEqual(stdout, BANNER + PROMPT + b'err\n' + PROMPT,
+            f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-1500:]!r}')
+
+    def test_exponentiation(self):
+        # 2^3=8 (basic); 2*3^2=18 (^ tighter than *); 2^3^2=512 (right-
+        # assoc); (2^3)^2=64 (paren override); 5^0=1 (n^0 = 1).
+        stdout, stderr = _run_repl(b'2^3\n2*3^2\n2^3^2\n(2^3)^2\n5^0\n')
+        self.assertEqual(stdout,
+            BANNER + PROMPT + b'8\n18\n512\n64\n1\n' + PROMPT,
             f'stdout mismatch.\nstdout={stdout!r}\nstderr-tail={stderr[-1500:]!r}')
 
 
