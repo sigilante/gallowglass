@@ -49,16 +49,22 @@ def make_seed(name):
 
 
 def eval_plan(val, *args):
-    """Evaluate a PLAN value applied to arguments using the Python harness."""
+    """Evaluate a PLAN value applied to arguments using the BPLAN harness.
+
+    Phase G #2 migrated `Compiler.gls`'s arithmetic and bit-op layer
+    to Reaver.BPLAN primops; the BPLAN harness (`dev.harness.bplan`)
+    implements those ops while still falling back to the same kal-style
+    evaluator as `dev.harness.plan` for non-BPLAN nodes.
+    """
     import sys
     old_limit = sys.getrecursionlimit()
     sys.setrecursionlimit(max(old_limit, 50000))
     try:
-        from dev.harness.plan import evaluate
+        from dev.harness.bplan import bevaluate
         result = val
         for arg in args:
             result = A(result, arg)
-        return evaluate(result)
+        return bevaluate(result)
     finally:
         sys.setrecursionlimit(old_limit)
 
@@ -87,18 +93,23 @@ class TestCompilation(unittest.TestCase):
                          f'Missing constructor {name}')
 
     def test_has_utility_functions(self):
-        """Core utility functions are compiled."""
-        expected_fns = [
+        """Core utility functions are compiled.  Phase G #2 moved
+        `add`/`sub`/`mul` out of `Compiler.*` and onto direct
+        `Reaver.BPLAN.*` extern resolution; both name spaces are
+        checked here."""
+        expected_compiler_fns = [
             'Compiler.pred', 'Compiler.is_zero',
             'Compiler.nat_eq', 'Compiler.nat_lt',
-            'Compiler.add', 'Compiler.sub', 'Compiler.mul',
             'Compiler.div_nat', 'Compiler.mod_nat',
             'Compiler.length', 'Compiler.map', 'Compiler.foldl', 'Compiler.foldr',
             'Compiler.reverse', 'Compiler.append',
             'Compiler.assoc_lookup', 'Compiler.assoc_insert',
             'Compiler.byte_at', 'Compiler.bytes_concat',
         ]
-        for name in expected_fns:
+        expected_extern_fns = [
+            'Reaver.BPLAN.add', 'Reaver.BPLAN.sub', 'Reaver.BPLAN.mul',
+        ]
+        for name in expected_compiler_fns + expected_extern_fns:
             self.assertIn(name, self.compiled,
                          f'Missing function {name}')
 
@@ -147,23 +158,31 @@ class TestNatArithmetic(unittest.TestCase):
         result = eval_plan(self._get('nat_lt'), 7, 3)
         self.assertEqual(result, 0)
 
+    # add/sub/mul are now resolved to Reaver.BPLAN extern items;
+    # `_get` would fail on `Compiler.add`. Look up by FQ.
+    def _bplan(self, name):
+        return self.compiled[f'Reaver.BPLAN.{name}']
+
     def test_add(self):
-        self.assertEqual(eval_plan(self._get('add'), 3, 4), 7)
+        self.assertEqual(eval_plan(self._bplan('add'), 3, 4), 7)
 
     def test_add_zero(self):
-        self.assertEqual(eval_plan(self._get('add'), 5, 0), 5)
+        self.assertEqual(eval_plan(self._bplan('add'), 5, 0), 5)
 
     def test_sub(self):
-        self.assertEqual(eval_plan(self._get('sub'), 7, 3), 4)
+        self.assertEqual(eval_plan(self._bplan('sub'), 7, 3), 4)
 
     def test_sub_saturating(self):
-        self.assertEqual(eval_plan(self._get('sub'), 3, 7), 0)
+        # BPLAN.Sub is saturating per `vendor/reaver/src/hs/Plan.hs`:
+        #   if ny >= nx then 0 else nx - ny
+        # so 3 - 7 = 0, matching the previous user-recursive behaviour.
+        self.assertEqual(eval_plan(self._bplan('sub'), 3, 7), 0)
 
     def test_mul(self):
-        self.assertEqual(eval_plan(self._get('mul'), 3, 4), 12)
+        self.assertEqual(eval_plan(self._bplan('mul'), 3, 4), 12)
 
     def test_mul_zero(self):
-        self.assertEqual(eval_plan(self._get('mul'), 5, 0), 0)
+        self.assertEqual(eval_plan(self._bplan('mul'), 5, 0), 0)
 
     def test_div_nat(self):
         self.assertEqual(eval_plan(self._get('div_nat'), 10, 3), 3)
