@@ -441,6 +441,44 @@ so future sessions can pick up where the current one stopped.)
       gate because `_compile_var`'s `_compile_nat_literal` already
       emits the quote form for them.
 
+- [x] **D8. Nested `let` inside an in-law expression emitted a `(1 rhs
+      body)` form Reaver's parser doesn't recognise.** Surfaced during
+      the Phase G #2 pre-flight smoke test: bootstrap-compiling
+      `compiler/src/Compiler.gls` and running the result under Reaver
+      crashed at `Compiler_lex_skip_ws` with `law: unbound: "_3"`.
+      14-line reproducer at
+      `tests/reaver/fixtures/repro_d8_let_in_arm.gls`.
+
+      `_compile_local_let` emitted in-law lets as `A(A(N(1), rhs),
+      body)`, which the body emitter rendered as the bind syntax
+      `_d1(rhs) … body`. Reaver's `lawExp` parser
+      (`vendor/reaver/src/hs/PlanAssembler.hs`) only accepts that bind
+      form at the law's body root — between `(sig)` and the body form,
+      not nested inside an expression. When the let was the body of a
+      match arm (extremely common — `Compiler.gls` has hundreds of
+      occurrences), the bind form landed in Elim's z-slot and Reaver
+      tried to resolve `_d1` as a slot reference in the enclosing law.
+
+      **Root cause (resolved):** added a `top_of_law: bool` field to
+      `Env`, set True at law-body entry points (`_compile_constrained_-
+      let`, `_compile_lam_as_law`, `_compile_lam_lifted`); flipped to
+      False at the top of `_compile_expr` for any non-let, non-pin,
+      non-ann expression (the chokepoint that ensures arm bodies, app
+      args, etc. don't inherit the flag). `_compile_local_let` checks
+      it: at law body root → emit `(1 rhs body)` and preserve the flag
+      through the let-chain body so multiple chained top lets keep the
+      native form; nested → lambda-lift via the same capture-and-
+      partial-apply pattern as `_build_field_arm_law` and
+      `_make_pred_succ_law`. `_compile_expr_pin` preserves the flag so
+      programmer pins don't break the chain. Seven regression tests
+      `test_d8_*` in `tests/bootstrap/test_codegen.py` and two
+      differential tests in `tests/reaver/test_differential.py` pin
+      both sides (top-of-law form unchanged; nested arm-body let
+      lambda-lifts and runs to the right value on Reaver). Empty-source
+      Compiler.gls now parses cleanly under Reaver — the
+      arithmetic-migration concern (Phase G #2 proper) becomes the
+      next bottleneck rather than this codegen bug.
+
 D1–D4 above were the IDE-tooling prerequisites that landed
 back-to-back in support of the new `bootstrap/mcp_server.py` (PR #74) —
 a stdio MCP server exposing `compile_snippet`, `infer_type`,
