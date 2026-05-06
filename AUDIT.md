@@ -470,7 +470,7 @@ so future sessions can pick up where the current one stopped.)
       native form; nested → lambda-lift via the same capture-and-
       partial-apply pattern as `_build_field_arm_law` and
       `_make_pred_succ_law`. `_compile_expr_pin` preserves the flag so
-      programmer pins don't break the chain. Seven regression tests
+      programmer pins don't break the chain. Nine regression tests
       `test_d8_*` in `tests/bootstrap/test_codegen.py` and two
       differential tests in `tests/reaver/test_differential.py` pin
       both sides (top-of-law form unchanged; nested arm-body let
@@ -478,6 +478,7 @@ so future sessions can pick up where the current one stopped.)
       Compiler.gls now parses cleanly under Reaver — the
       arithmetic-migration concern (Phase G #2 proper) becomes the
       next bottleneck rather than this codegen bug.
+      (PR: fix/d8-nested-let-lambda-lift)
 
 D1–D4 above were the IDE-tooling prerequisites that landed
 back-to-back in support of the new `bootstrap/mcp_server.py` (PR #74) —
