@@ -60,7 +60,8 @@ gallowglass/
   prelude/src/Core/      -- Core prelude in Gallowglass (8 modules, 112 definitions)
   compiler/src/          -- Self-hosting compiler in Gallowglass
   tests/                 -- Test suite (bootstrap, prelude, compiler)
-  doc/                   -- Language guide and references
+  doc/                   -- Language guide, phrasebook, and references
+  tutorials/             -- Notebook-based walkthroughs for the Jupyter kernel
 ```
 
 ## Build and test
@@ -150,6 +151,28 @@ To uninstall the kernel:
 ```bash
 jupyter kernelspec remove gallowglass
 ```
+
+#### Tutorials
+
+Notebook-based walkthroughs live under `tutorials/`. Lesson 1 covers
+declarations, types, algebraic types, and pattern matching:
+
+```bash
+jupyter lab tutorials/01-hello-gallowglass.ipynb
+```
+
+Each lesson is regenerable from its sibling `_build_lesson_NN.py`
+script, which captures real kernel output so the committed
+notebooks stay in sync with the renderer. See `tutorials/README.md`
+for authoring details.
+
+#### LLM-context reference
+
+`doc/phrasebook.md` is a dense, LLM-shaped reference of canonical
+Gallowglass patterns, common pitfalls (the type-variable / binding-
+name lex distinction, `let-in` vs decl-let, class-method dispatch
+boundaries), and current bootstrap limitations. Designed to be
+included verbatim in an LLM's context window.
 
 ### MCP server
 

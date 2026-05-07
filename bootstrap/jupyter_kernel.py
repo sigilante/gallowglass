@@ -754,17 +754,35 @@ def _install_kernelspec(user: bool = True, prefix: str | None = None) -> str:
 
     Returns the install path. Uses ``ipykernel``'s ``install`` helper
     in turn, since the kernel.json is tiny and synthesised here.
+
+    The kernelspec bakes the repository root into ``env.PYTHONPATH``
+    so the kernel can be launched from any working directory (e.g.
+    Jupyter sets the kernel's cwd to the notebook's directory, which
+    typically isn't the repo root).
     """
     import json
     import tempfile
     from jupyter_client.kernelspec import KernelSpecManager
 
+    # Repo root = parent of the directory containing this file.
+    repo_root = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), '..',
+    ))
+
     spec = {
         'argv': [sys.executable, '-m', 'bootstrap.jupyter_kernel', '-f', '{connection_file}'],
         'display_name': 'Gallowglass',
         'language': 'gallowglass',
+        'env': {
+            # Without this the kernel dies on launch with
+            # `ModuleNotFoundError: No module named 'bootstrap'`
+            # when Jupyter spawns it from any cwd that isn't the
+            # repo root.
+            'PYTHONPATH': repo_root,
+        },
         'metadata': {
             'description': 'Gallowglass — LLM-first language compiling to PLAN',
+            'gallowglass_repo': repo_root,
         },
     }
 
