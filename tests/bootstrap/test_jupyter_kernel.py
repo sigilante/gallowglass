@@ -148,6 +148,91 @@ class TestTypeDrivenRender(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# HTML rendering — colourised cell output for Jupyter's text/html MIME type
+# ---------------------------------------------------------------------------
+
+class TestHtmlRendering(unittest.TestCase):
+    """Cells render with both ``text/plain`` (always) and
+    ``text/html`` (when the kernel can produce a useful colourised
+    version). Jupyter clients prefer the HTML form when both are
+    present, falling back to plain text in terminals or JSON exports.
+    """
+
+    def test_nat_html_has_colour(self):
+        ev = make_evaluator()
+        r = ev.eval_cell('42')
+        self.assertIsNotNone(r.value_html)
+        self.assertIn('<code', r.value_html)
+        self.assertIn('color:#0097a7', r.value_html)   # Nat cyan
+        self.assertIn('42', r.value_html)
+
+    def test_constructor_html_styled(self):
+        ev = make_evaluator()
+        ev.eval_cell('use Core.Pair')
+        r = ev.eval_cell('Pair.MkPair 3 7')
+        self.assertIn('color:#1976d2', r.value_html)   # ctor blue
+        self.assertIn('font-weight:600', r.value_html)
+        self.assertIn('MkPair', r.value_html)
+
+    def test_string_html_quoted_and_escaped(self):
+        ev = make_evaluator()
+        # HTML special chars in the value get escaped — defensive
+        # against XSS via cell content.
+        r = ev.eval_cell('"<hi>"')
+        self.assertIsNotNone(r.value_html)
+        self.assertIn('&lt;hi&gt;', r.value_html)
+        self.assertIn('color:#388e3c', r.value_html)   # text green
+
+    def test_function_html_shows_type(self):
+        ev = make_evaluator()
+        r = ev.eval_cell('λ n → n + 1')
+        self.assertIn('font-style:italic', r.value_html)
+        self.assertIn('Nat → Nat', r.value_html)
+
+    def test_decl_summary_html(self):
+        """Declaration cells emit an HTML version of the summary."""
+        ev = make_evaluator()
+        r = ev.eval_cell('let twice : Nat → Nat = λ n → n + n')
+        self.assertTrue(r.decls_only)
+        self.assertIsNotNone(r.value_html)
+        self.assertIn('<div', r.value_html)
+        self.assertIn('twice', r.value_html)
+        self.assertIn('Nat → Nat', r.value_html)
+
+    def test_use_summary_html(self):
+        ev = make_evaluator()
+        r = ev.eval_cell('use Core.Pair')
+        self.assertIsNotNone(r.value_html)
+        self.assertIn('color:#e65100', r.value_html)   # `use` keyword
+        self.assertIn('Core.Pair', r.value_html)
+
+    def test_type_decl_summary_html(self):
+        ev = make_evaluator()
+        r = ev.eval_cell('type Color = | Red | Green | Blue')
+        self.assertIsNotNone(r.value_html)
+        self.assertIn('Color', r.value_html)
+        self.assertIn('Red | Green | Blue', r.value_html)
+
+    def test_text_plain_always_present(self):
+        """Both MIME types coexist — HTML never replaces plain."""
+        ev = make_evaluator()
+        for src in ['42', 'True', '"hello"', 'let foo = 1', 'use Core.Pair']:
+            r = ev.eval_cell(src)
+            self.assertIsNotNone(r.value_text,
+                                 f'value_text missing for {src!r}')
+
+    def test_structural_fallback_no_html(self):
+        """When the renderer can't use type info, plain text comes
+        back but ``value_html`` is ``None``."""
+        ev = make_evaluator()
+        result_text, result_html = ev._format_value_both(
+            val=42, cell_type=None, type_env=None, con_info=None,
+        )
+        self.assertEqual(result_text, '42')
+        self.assertIsNone(result_html)
+
+
+# ---------------------------------------------------------------------------
 # Decl-cell summary output (Glass-IR-flavored)
 # ---------------------------------------------------------------------------
 

@@ -104,7 +104,9 @@ from dev.harness.bplan import bevaluate, register_prelude_jets
 from bootstrap.mcp_server import (
     load_prelude, PreludeSnapshot, _typecheck_capture,
 )
-from bootstrap.value_render import render_typed
+from bootstrap.value_render import (
+    render_typed, render_typed_html, render_decl_summary_html,
+)
 
 
 DEFAULT_MODULE = 'Notebook'
@@ -118,12 +120,19 @@ DEFAULT_MODULE = 'Notebook'
 class CellResult:
     """Result of evaluating one cell.
 
-    Exactly one of ``value_text`` or ``error`` is populated for non-
-    silent cells; ``decls_only`` cells (program fragments that
-    contributed declarations but had no expression to evaluate) have
-    both fields ``None``.
+    ``value_text`` is the ``text/plain`` rendering. ``value_html`` is
+    an optional ``text/html`` rendering — populated whenever the
+    kernel can produce a colourised version (the type-driven path
+    and decl summaries can; structural fallbacks set it to ``None``
+    so the Jupyter client renders the plain-text form unchanged).
+
+    Exactly one of ``value_text`` / ``error`` is populated for non-
+    silent cells. ``decls_only`` cells with no contributed decls
+    have all of ``value_text`` / ``value_html`` / ``error`` as
+    ``None``.
     """
     value_text: str | None = None
+    value_html: str | None = None
     error: dict | None = None
     decls_only: bool = False
 
@@ -195,26 +204,21 @@ class GallowglassEvaluator:
         self._cell_counter += 1
         cell_name = f'_cell_{self._cell_counter}'
 
-        # Attempt 1: Show-aware expression mode.
-        try:
-            text_value = self._eval_show_expression(source, cell_name)
-        except _NotAnExpression:
-            pass
-        except _CellError:
-            # Show-mode-specific failures (no Show instance, etc.) —
-            # fall through to plain expression mode for the same wrap
-            # without the display call.
-            pass
-        else:
-            return CellResult(value_text=self._render_text_value(text_value))
-
-        # Attempt 2: plain expression mode + type-driven render. The
-        # cell's inferred type drives constructor-name lookup and
-        # field-type substitution so compound values like
-        # `MkPair 3 7` render with constructor names instead of the
-        # bare structural App tree (`((0 3) 7)`). Functions and
-        # types without registered constructors fall through to
-        # `value_render._render_structural`.
+        # Type-driven expression mode. The cell's inferred type
+        # drives constructor-name lookup and field-type
+        # substitution: ``MkPair 3 7`` renders with the constructor
+        # name, ``Cons 1 Nil`` likewise, primitives (``Nat``,
+        # ``Bool``, ``Text``) get their canonical literal forms
+        # with type-specific colour cues in the HTML output.
+        #
+        # The user-facing ``Show`` typeclass is no longer
+        # auto-applied — the type-driven path subsumes its wins
+        # for primitives (with cleaner per-type colour) and
+        # bypasses its constrained-instance reduction gap for
+        # compound types. ``Show`` instances still exist in the
+        # prelude and fire when the user calls ``show`` explicitly;
+        # we just don't synthesize a ``display _cell`` wrapper for
+        # every cell anymore.
         wrapped = self._wrap_as_expression(source, cell_name)
         try:
             forced, cell_type, type_env, con_info = (
@@ -225,9 +229,10 @@ class GallowglassEvaluator:
         except _CellError as e:
             return CellResult(error=e.envelope)
         else:
-            return CellResult(
-                value_text=self._format_value(forced, cell_type, type_env, con_info),
+            text, html_form = self._format_value_both(
+                forced, cell_type, type_env, con_info,
             )
+            return CellResult(value_text=text, value_html=html_form)
 
         # Attempt 3: program mode. The cell contributes declarations
         # to the accumulator. Display a one-line summary per new
@@ -240,7 +245,11 @@ class GallowglassEvaluator:
             return CellResult(error=e.envelope)
 
         if summaries:
-            return CellResult(decls_only=True, value_text='\n'.join(summaries))
+            return CellResult(
+                decls_only=True,
+                value_text='\n'.join(summaries),
+                value_html=render_decl_summary_html(summaries),
+            )
         return CellResult(decls_only=True)
 
     def reset(self) -> None:
@@ -266,87 +275,6 @@ class GallowglassEvaluator:
         if prefix and not prefix.endswith('\n'):
             prefix = prefix + '\n'
         return f'{prefix}let {cell_name} = {source}\n'
-
-    def _wrap_as_show_expression(self, source: str, cell_name: str) -> str:
-        """Wrap the cell with a Show-aware reducer.
-
-        The bootstrap codegen dispatches typeclass methods only at
-        constrained-let call sites, so we need a per-cell ``display``
-        wrapper to call ``show``. The wrapper is locally scoped — it
-        doesn't pollute the user's accumulator namespace.
-
-        The synthesised source looks like::
-
-            <accumulated>
-            use Core.Text { Show, show }
-            let _show_<N>_display : ∀ a. Show a => a → Text = λ x → show x
-            let _cell_<N> = <source>
-            let _show_<N> : Text = _show_<N>_display _cell_<N>
-        """
-        prefix = self._accumulated_source
-        if prefix and not prefix.endswith('\n'):
-            prefix = prefix + '\n'
-        display = f'_show_{self._cell_counter}_display'
-        show_name = f'_show_{self._cell_counter}'
-        return (
-            f'{prefix}'
-            f'use Core.Text {{ Show, show }}\n'
-            f'let {display} : ∀ a. Show a => a → Text = λ x → show x\n'
-            f'let {cell_name} = {source}\n'
-            f'let {show_name} : Text = {display} {cell_name}\n'
-        )
-
-    def _eval_show_expression(self, source: str, cell_name: str) -> Any:
-        """Compile a Show-aware wrap and force the rendered Text.
-
-        Returns the forced PLAN value of ``_show_N`` (a Text =
-        ``A(byte_length, content_nat)``) when Show resolves cleanly.
-        Raises ``_NotAnExpression`` if even the wrap doesn't parse,
-        or ``_CellError`` if any pipeline phase fails — including
-        the typecheck failure that signals "this cell's type has no
-        Show instance," which is the common reason to fall through
-        to plain expression mode.
-
-        When the cell's value forces to something that *isn't* a Text
-        pair (the nested-dictionary insertion path the bootstrap
-        codegen doesn't fully implement for constrained instances —
-        e.g. ``Show a => Show Pair`` leaves the inner ``show`` in a
-        partially-applied state), this also raises
-        ``_NotAnExpression`` so the caller falls back to structural
-        render. That keeps user-visible output honest: either Show
-        gave us a clean Text, or we surface the underlying tree.
-        """
-        wrapped = self._wrap_as_show_expression(source, cell_name)
-        filename = f'<cell {cell_name} (show)>'
-        try:
-            tokens = lex(wrapped, filename)
-            program = parse(tokens, filename)
-        except ParseError:
-            raise _NotAnExpression()
-
-        try:
-            resolved, env = resolve(program, self.module,
-                                    self.prelude.module_envs, filename)
-            _type_env, expr_types = self._typecheck(resolved, env, filename)
-            _compiler, compiled = self._compile_with_prelude(resolved, expr_types)
-        except (ScopeError, TypecheckError, CodegenError) as e:
-            raise _CellError(_error_envelope(_stage_for(e), e)) from e
-
-        show_fq = f'{self.module}._show_{self._cell_counter}'
-        if show_fq not in compiled:
-            raise _NotAnExpression()
-
-        forced = self._force(compiled[show_fq])
-
-        # Sanity-check the forced shape. A clean Text is
-        # ``A(N(byte_length), N(content_nat))``. Anything else
-        # (typically a half-applied ``show`` from the constrained-
-        # instance codegen gap) means the Show path didn't fully
-        # reduce — fall back to structural render instead of showing
-        # a confusing ``<pin show>`` tree to the user.
-        if not (is_app(forced) and is_nat(forced.fun) and is_nat(forced.arg)):
-            raise _NotAnExpression()
-        return forced
 
     def _eval_expression(self, wrapped_source: str, cell_name: str) -> tuple:
         """Compile ``wrapped_source`` and evaluate the cell binding.
@@ -579,57 +507,44 @@ class GallowglassEvaluator:
     def _format_value(self, val: Any, cell_type: Any = None,
                       type_env: dict | None = None,
                       con_info: dict | None = None) -> str:
-        """Render a PLAN value as text/plain.
+        """Render a PLAN value as text/plain. (See
+        ``_format_value_both`` for the HTML-emitting sibling.)
+        Kept for callers that only want the plain rendering."""
+        text, _html = self._format_value_both(val, cell_type, type_env, con_info)
+        return text
 
-        With type info (``cell_type``, ``type_env``, ``con_info``),
-        uses the type-driven renderer in
-        :mod:`bootstrap.value_render`: constructor names are
-        recovered from ``con_info``, field types are substituted
-        from each constructor's scheme, and primitives (``Nat``,
-        ``Bool``, ``Text``) render as their canonical literal forms.
-        Compound types like ``MkPair 3 7`` come out with their
-        constructor name instead of a bare ``((0 3) 7)``.
+    def _format_value_both(self, val: Any, cell_type: Any,
+                           type_env: dict | None,
+                           con_info: dict | None) -> tuple[str, str | None]:
+        """Render a value as ``(text/plain, text/html)``.
 
-        Without type info (call site has only the value), falls back
-        to the bare structural form.
+        With type info, both renderings come from
+        :mod:`bootstrap.value_render`: constructor names recovered
+        from ``con_info``, field types substituted from each
+        constructor's scheme, primitives in their canonical literal
+        forms. The HTML rendering wraps tokens in inline-styled
+        ``<span>`` elements so notebook output gets colour and
+        weight cues for constructors / types / numbers / strings.
 
-        Cells whose result type has a Show instance render via
-        ``_render_text_value`` *before* this method runs — Show is
-        the user's chosen rendering and wins over the meta-derived
-        path.
+        Without type info, falls back to a structural render.
+        ``value_html`` is ``None`` in that case so the Jupyter
+        client just shows the plain text — no point colouring a
+        debug-form ``(f arg)``.
         """
         if cell_type is not None and type_env is not None and con_info is not None:
             try:
-                return render_typed(val, cell_type,
+                text = render_typed(val, cell_type,
                                     type_env=type_env, con_info=con_info)
+                html_form = render_typed_html(val, cell_type,
+                                              type_env=type_env, con_info=con_info)
+                return text, html_form
             except Exception:  # noqa: BLE001
-                # Renderer hiccup — fall back to structural rather
-                # than letting a display bug eat the cell result.
+                # Renderer hiccup — fall back to structural plain
+                # text rather than letting a display bug eat the
+                # cell result.
                 pass
-        return _render(val, depth=0)
+        return _render(val, depth=0), None
 
-    def _render_text_value(self, text_val: Any) -> str:
-        """Decode a Gallowglass Text value to a Python str.
-
-        Text is encoded as ``A(byte_length, content_nat)`` where
-        ``content_nat`` is the UTF-8 bytes packed little-endian.
-        Phase G #2's BPLAN-backed pack/unpack means the value here
-        is always already in this canonical pair shape after
-        ``bevaluate``. Decoding errors fall back to the structural
-        renderer rather than dropping the result.
-        """
-        if is_app(text_val) and is_nat(text_val.fun) and is_nat(text_val.arg):
-            byte_length = int(text_val.fun)
-            content_nat = int(text_val.arg)
-            if byte_length == 0:
-                return ''
-            try:
-                return content_nat.to_bytes(byte_length, 'little').decode('utf-8')
-            except (OverflowError, UnicodeDecodeError):
-                pass
-        # Unexpected shape — surface structurally rather than silently
-        # dropping the cell result.
-        return self._format_value(text_val)
 
 
 # ---------------------------------------------------------------------------
@@ -790,9 +705,16 @@ def _kernel_main() -> None:
                 }
 
             if result.value_text is not None and not silent:
+                # Always emit text/plain; emit text/html when the
+                # renderer produced one. Jupyter clients prefer the
+                # richer MIME type when both are present, falling
+                # back to text/plain for terminal/JSON contexts.
+                data = {'text/plain': result.value_text}
+                if result.value_html is not None:
+                    data['text/html'] = result.value_html
                 self.send_response(self.iopub_socket, 'execute_result', {
                     'execution_count': self.execution_count,
-                    'data': {'text/plain': result.value_text},
+                    'data': data,
                     'metadata': {},
                 })
 

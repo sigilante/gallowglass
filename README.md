@@ -135,9 +135,11 @@ snd_plus_one (MkPair 3 7)
 
 Cell output is type-driven. Declaration cells (`let`, `type`, `use`) display a one-line summary per declaration so the user can see what was just added to the notebook (`twice : Nat → Nat`). Expression cells render the result value:
 
-* **Primitives** (`Nat`, `Bool`, `Text`) render through the `Show` typeclass — `42`, `True`, `"hello"`.
-* **Constructors** (user-defined types, `Pair`, `Option`, `List`, `Result`) render with their constructor names recovered from the compile-time `con_info` table — `MkPair 3 7`, `Cons 1 (Cons 2 Nil)`, `Some 42` — even when the user-level `Show` instance doesn't fully reduce (a known bootstrap codegen gap on nested constraints; the type-driven path bypasses it entirely).
+* **Primitives** (`Nat`, `Bool`, `Text`) render in their canonical literal forms — `42`, `True`, `"hello"`.
+* **Constructors** (user-defined types, `Pair`, `Option`, `List`, `Result`) render with their constructor names recovered from the compile-time `con_info` table — `MkPair 3 7`, `Cons 1 (Cons 2 Nil)`, `Some 42`. Field types are derived by matching each constructor's scheme against the cell's instantiated type and applying the substitution.
 * **Functions** render as `<λ : Nat → Nat>`, surfacing the type rather than the underlying law structure.
+
+Output is emitted as both `text/plain` and `text/html` — JupyterLab and notebooks render the colourised HTML form (constructor names in bold blue, types in muted italic, numbers in cyan, strings in green, keywords in orange italic). Terminals and JSON exports fall back to the plain text rendering, which carries the same content without colour.
 
 If the cell isn't an expression at all, it's parsed as one or more top-level declarations and accumulated into the notebook's module. A failing cell does not corrupt the accumulated state — the next cell still sees whatever the last successful cell defined.
 
