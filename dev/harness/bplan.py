@@ -64,10 +64,14 @@ def _unwrap(x):
 
 # ---------------------------------------------------------------------------
 # Jet registry: id(L_object) → J
-# Populated once by register_jets(); never modified after that.
+# Keys are Python object ids, so the keyed L objects must outlive the
+# registry — otherwise GC can reuse their addresses for unrelated Laws and
+# dispatch will route to a stale jet (wrong arity, wrong implementation).
+# _JET_KEEPALIVE pins strong refs for exactly that reason.
 # ---------------------------------------------------------------------------
 
 _JET_REGISTRY: dict = {}
+_JET_KEEPALIVE: list = []
 
 
 def register_jets(compiled_dict: dict) -> None:
@@ -78,8 +82,9 @@ def register_jets(compiled_dict: dict) -> None:
     Jets are registered by Python identity of the Law object so that
     _bexec can recognise P(law) pins in compiled law bodies.
     """
-    global _JET_REGISTRY
+    global _JET_REGISTRY, _JET_KEEPALIVE
     _JET_REGISTRY = {}
+    _JET_KEEPALIVE = []
 
     for fq_name, (arity, fn) in _COMPILER_JETS.items():
         val = compiled_dict.get(fq_name)
@@ -89,8 +94,10 @@ def register_jets(compiled_dict: dict) -> None:
         # compiled value is either L(…) directly or P(L(…))
         if isinstance(val, L):
             _JET_REGISTRY[id(val)] = jet
+            _JET_KEEPALIVE.append(val)
         elif isinstance(val, P) and isinstance(val.val, L):
             _JET_REGISTRY[id(val.val)] = jet
+            _JET_KEEPALIVE.append(val.val)
 
 
 # ---------------------------------------------------------------------------
@@ -704,5 +711,7 @@ def register_prelude_jets(compiled_dict: dict) -> None:
         jet = J(arity, fq_name, fn)
         if isinstance(val, L):
             _JET_REGISTRY[id(val)] = jet
+            _JET_KEEPALIVE.append(val)
         elif isinstance(val, P) and isinstance(val.val, L):
             _JET_REGISTRY[id(val.val)] = jet
+            _JET_KEEPALIVE.append(val.val)
