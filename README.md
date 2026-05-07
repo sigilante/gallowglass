@@ -111,7 +111,7 @@ and choose **Gallowglass** from the kernel selector.
 A typical session:
 
 ```gallowglass
--- Cell 1: declaration
+-- Cell 1: declaration — renders as `twice : Nat → Nat`
 let twice : Nat → Nat = λ n → n + n
 
 -- Cell 2: expression — renders as `42`
@@ -120,16 +120,24 @@ twice 21
 -- Cell 3: text — renders as `"hello"` (quoted)
 "hello"
 
--- Cell 4: more declarations (unqualified import for nicer call sites)
+-- Cell 4: more declarations
 use Core.Pair unqualified { Pair, MkPair }
+use Core.List unqualified { List, Cons, Nil }
+
+-- Cell 5: compound value — renders as `Cons (MkPair 1 10) (Cons (MkPair 2 20) Nil)`
+Cons (MkPair 1 10) (Cons (MkPair 2 20) Nil)
+
+-- Cell 6: pattern match — renders as `8`
 let snd_plus_one : Pair Nat Nat → Nat
   = λ p → match p { | MkPair _ b → b + 1 }
-
--- Cell 5: expression — renders as `8`
 snd_plus_one (MkPair 3 7)
 ```
 
-Cells are tried first as expressions wrapped in a Show-aware reducer (`Show a => a → Text`); when the result type has a `Show` instance (`Nat`, `Bool`, `Text` — and any user-defined instance), the kernel renders the user-friendly form. When it doesn't (functions, partially-applied laws, compound types whose nested-dictionary instances don't fully reduce in the bootstrap codegen yet), the kernel falls back to a structural form like `<law arity=1 name="twice">`.
+Cell output is type-driven. Declaration cells (`let`, `type`, `use`) display a one-line summary per declaration so the user can see what was just added to the notebook (`twice : Nat → Nat`). Expression cells render the result value:
+
+* **Primitives** (`Nat`, `Bool`, `Text`) render through the `Show` typeclass — `42`, `True`, `"hello"`.
+* **Constructors** (user-defined types, `Pair`, `Option`, `List`, `Result`) render with their constructor names recovered from the compile-time `con_info` table — `MkPair 3 7`, `Cons 1 (Cons 2 Nil)`, `Some 42` — even when the user-level `Show` instance doesn't fully reduce (a known bootstrap codegen gap on nested constraints; the type-driven path bypasses it entirely).
+* **Functions** render as `<λ : Nat → Nat>`, surfacing the type rather than the underlying law structure.
 
 If the cell isn't an expression at all, it's parsed as one or more top-level declarations and accumulated into the notebook's module. A failing cell does not corrupt the accumulated state — the next cell still sees whatever the last successful cell defined.
 
