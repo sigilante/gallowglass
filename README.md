@@ -88,6 +88,64 @@ sys.stdout.buffer.write(emit(compiled, 'Module.main'))
 
 Skipped tests are planvm-gated (the legacy xocore VM, no longer a deployment target) or deep-recursion stress tests that exceed Python's stack. Run `python3 -m pytest tests/ -q` for current pass/skip totals.
 
+## Interactive use
+
+### Jupyter kernel
+
+A Jupyter kernel evaluates Gallowglass cells in-process via the Python BPLAN harness — declarations accumulate across cells, expressions render as cell results.
+
+Install the kernelspec once per environment:
+
+```bash
+python3 -m bootstrap.jupyter_kernel install
+```
+
+This registers a `gallowglass` kernel with Jupyter (under `~/Library/Jupyter/kernels/gallowglass/` on macOS, `~/.local/share/jupyter/kernels/gallowglass/` on Linux). Then launch a notebook:
+
+```bash
+jupyter lab    # or `jupyter notebook`
+```
+
+and choose **Gallowglass** from the kernel selector.
+
+A typical session:
+
+```gallowglass
+-- Cell 1: declaration
+let twice : Nat -> Nat = \ n -> n + n
+
+-- Cell 2: expression — renders as `42`
+twice 21
+
+-- Cell 3: more declarations
+use Core.Pair
+let snd_plus_one : Pair Nat Nat -> Nat
+  = \ p -> match p { | Pair.MkPair _ b -> b + 1 }
+
+-- Cell 4: expression — renders as `8`
+snd_plus_one (Pair.MkPair 3 7)
+```
+
+Cells try expression mode first (`let _cell_N = <code>`); if that doesn't parse, the cell is treated as one or more top-level declarations and accumulated into the notebook's module. A failing cell does not corrupt the accumulated state — the next cell sees whatever the last successful cell defined.
+
+The kernel runs entirely in Python and does not require Reaver or Nix. Compound values currently render as a structural debug form (`((MkPair_pin 3) 7)`) until the `Show` typeclass arc lands.
+
+To uninstall the kernel:
+
+```bash
+jupyter kernelspec remove gallowglass
+```
+
+### MCP server
+
+For LLM-driven workflows, an MCP (Model Context Protocol) server exposes four tools — `compile_snippet`, `infer_type`, `explain_effect_row`, `render_fragment` — over stdio:
+
+```bash
+python3 -m bootstrap.mcp_server
+```
+
+The server loads the Core prelude once at startup and threads it as priors into every per-call snippet build. See `bootstrap/mcp_server.py` for the protocol shape.
+
 ## Design principles
 
 - **Contracts derive tests. Tests do not become contracts.** A contract is valuable if it could be written by someone who only had the mathematical specification.
