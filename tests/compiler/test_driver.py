@@ -145,8 +145,11 @@ class TestDriverSmoke(unittest.TestCase):
 
     @unittest.skip(
         "main calls emit_program → emit_pval → multi-byte output → ~100K Python "
-        "frames > 50K limit. Covered by M8.8 self-hosting validation and planvm "
-        "seed loading."
+        "frames > 50K limit. Phase G #2's BPLAN-backed arithmetic made this "
+        "runnable in CPU time, but the BPLAN harness's own evaluation stack "
+        "still exceeds Python's recursion ceiling. Covered end-to-end by "
+        "tests/reaver/test_selfhost.py running Compiler.gls under the Reaver "
+        "runtime, which has no Python-frame limit."
     )
     def test_main_minimal_snippet(self):
         # Source: "let x = 42\n"

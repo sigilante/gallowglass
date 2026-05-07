@@ -357,15 +357,15 @@ class TestByteOps(unittest.TestCase):
         content = int.from_bytes(bs, 'little') if bs else 0
         return A(A(mk_pair, len(bs)), content)
 
-    @unittest.skip("byte_at uses recursive div/mod — too slow for Python harness; works on planvm")
     def test_byte_at(self):
-        # content nat for bytes [0x48, 0x65, 0x6C] = 0x6C6548
+        # content nat for bytes [0x48, 0x65, 0x6C] = 0x6C6548.
+        # Phase G #2 made `byte_at` (= `bit_and (rsh content (8*idx)) 255`)
+        # fast: rsh and bit_and are now BPLAN primops.
         content = 0x48 | (0x65 << 8) | (0x6C << 16)
         self.assertEqual(eval_plan(self._get('byte_at'), content, 0), 0x48)
         self.assertEqual(eval_plan(self._get('byte_at'), content, 1), 0x65)
         self.assertEqual(eval_plan(self._get('byte_at'), content, 2), 0x6C)
 
-    @unittest.skip("byte_at even at index 0 does div_nat(n, 1) = n iterations — too slow")
     def test_byte_at_index_zero(self):
         content = 0x48 | (0x65 << 8)
         self.assertEqual(eval_plan(self._get('byte_at'), content, 0), 0x48)
@@ -374,8 +374,8 @@ class TestByteOps(unittest.TestCase):
         bs = self._make_bytes(b'Hello')
         self.assertEqual(eval_plan(self._get('bytes_length'), bs), 5)
 
-    @unittest.skip("bytes_at uses byte_at (recursive div/mod) — too slow for Python harness")
     def test_bytes_at(self):
+        # Phase G #2: bytes_at delegates to byte_at, which is now BPLAN-fast.
         bs = self._make_bytes(b'Hi')
         self.assertEqual(eval_plan(self._get('bytes_at'), bs, 0), ord('H'))
         self.assertEqual(eval_plan(self._get('bytes_at'), bs, 1), ord('i'))
@@ -392,15 +392,19 @@ class TestByteOps(unittest.TestCase):
         b = self._make_bytes(b'\x01\x02')
         self.assertEqual(eval_plan(self._get('bytes_eq'), a, b), 0)
 
-    @unittest.skip("bytes_concat uses bit_or/shift_left (recursive) — too slow for Python harness")
     def test_bytes_concat(self):
+        # Phase G #2: bit_or stays recursive (general overlapping-bit
+        # semantics required) but its inner ops are BPLAN primops, so
+        # per-bit recursion is O(1) per step. shift_left is a BPLAN.lsh
+        # wrapper.  Small fixtures run in milliseconds.
         a = self._make_bytes(b'He')
         b = self._make_bytes(b'lo')
         result = eval_plan(self._get('bytes_concat'), a, b)
-        from dev.harness.plan import evaluate
-        result = evaluate(result)
+        from dev.harness.bplan import bevaluate
+        result = bevaluate(result)
         if is_app(result) and is_app(result.fun):
             self.assertEqual(result.fun.arg, 4)
+            self.assertEqual(result.arg, int.from_bytes(b'Helo', 'little'))
         else:
             self.fail(f'bytes_concat did not produce MkPair: {result}')
 
