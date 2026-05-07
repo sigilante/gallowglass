@@ -82,12 +82,106 @@ class TestExpressionMode(unittest.TestCase):
         self.assertIn('7', r.value_text)
 
     def test_show_falls_back_for_function(self):
-        """Functions have no Show instance — fall back to structural
-        renderer, which surfaces the law as `<law arity=N name="…">`."""
+        """Functions have no Show instance. The type-driven renderer
+        identifies the cell type as ``Nat → Nat`` and surfaces it as
+        ``<λ : Nat → Nat>`` — more useful than the bare law form."""
         ev = make_evaluator()
         r = ev.eval_cell('λ n → n + 1')
-        self.assertIn('<law', r.value_text)
-        self.assertIn('arity=1', r.value_text)
+        self.assertIn('<λ', r.value_text)
+        self.assertIn('Nat → Nat', r.value_text)
+
+
+# ---------------------------------------------------------------------------
+# Type-driven value rendering — uses con_info + type_env to recover
+# constructor names instead of structural App-tree fallback.
+# ---------------------------------------------------------------------------
+
+class TestTypeDrivenRender(unittest.TestCase):
+    """Cells whose type has registered constructors render with
+    constructor names. Without this layer, ``MkPair 3 7`` would
+    show as ``((0 3) 7)`` because the constrained-instance Show
+    codegen doesn't fully reduce."""
+
+    def test_pair_renders_with_constructor_name(self):
+        ev = make_evaluator()
+        ev.eval_cell('use Core.Pair')
+        r = ev.eval_cell('Pair.MkPair 3 7')
+        self.assertEqual(r.value_text, 'MkPair 3 7')
+
+    def test_list_renders_with_cons_nil(self):
+        ev = make_evaluator()
+        ev.eval_cell('use Core.List unqualified { List, Cons, Nil }')
+        r = ev.eval_cell('Cons 1 (Cons 2 (Cons 3 Nil))')
+        self.assertEqual(r.value_text, 'Cons 1 (Cons 2 (Cons 3 Nil))')
+
+    def test_option_renders_some_and_none(self):
+        ev = make_evaluator()
+        ev.eval_cell('use Core.Option unqualified { Option, Some, None }')
+        self.assertEqual(ev.eval_cell('Some 42').value_text, 'Some 42')
+        self.assertEqual(ev.eval_cell('None : Option Nat').value_text, 'None')
+
+    def test_result_renders_ok_err(self):
+        ev = make_evaluator()
+        ev.eval_cell('use Core.Result unqualified { Result, Ok, Err }')
+        self.assertEqual(ev.eval_cell('Ok 42').value_text, 'Ok 42')
+
+    def test_nested_constructors_parenthesised(self):
+        """``Cons (Some 1) ...`` — the field rendering parenthesises
+        constructor applications so the result is unambiguous."""
+        ev = make_evaluator()
+        ev.eval_cell('use Core.List unqualified { List, Cons, Nil }')
+        ev.eval_cell('use Core.Option unqualified { Option, Some, None }')
+        r = ev.eval_cell('Cons (Some 1) (Cons None Nil)')
+        self.assertEqual(r.value_text, 'Cons (Some 1) (Cons None Nil)')
+
+    def test_user_defined_type_renders(self):
+        """A user-defined type with constructors — same machinery as
+        the prelude types because the type-driven renderer just
+        reads ``con_info`` and ``type_env``, both of which the
+        kernel populates from the typecheck/compile of the cell."""
+        ev = make_evaluator()
+        ev.eval_cell('type Color = | Red | Green | Blue')
+        # Each constructor renders by name.
+        self.assertEqual(ev.eval_cell('Red').value_text, 'Red')
+        self.assertEqual(ev.eval_cell('Green').value_text, 'Green')
+        self.assertEqual(ev.eval_cell('Blue').value_text, 'Blue')
+
+
+# ---------------------------------------------------------------------------
+# Decl-cell summary output (Glass-IR-flavored)
+# ---------------------------------------------------------------------------
+
+class TestDeclSummary(unittest.TestCase):
+    """Cells that contribute declarations (rather than evaluating
+    to a value) display a one-line summary per decl so the user
+    knows what was defined."""
+
+    def test_let_summary(self):
+        ev = make_evaluator()
+        r = ev.eval_cell('let twice : Nat → Nat = λ n → n + n')
+        self.assertTrue(r.decls_only)
+        self.assertEqual(r.value_text, 'twice : Nat → Nat')
+
+    def test_multi_let_summary(self):
+        ev = make_evaluator()
+        r = ev.eval_cell('let foo = 5\nlet bar = 10')
+        self.assertTrue(r.decls_only)
+        self.assertIn('foo : Nat', r.value_text)
+        self.assertIn('bar : Nat', r.value_text)
+
+    def test_use_summary(self):
+        ev = make_evaluator()
+        r = ev.eval_cell('use Core.Pair')
+        self.assertTrue(r.decls_only)
+        self.assertEqual(r.value_text, 'use Core.Pair')
+
+    def test_type_summary(self):
+        ev = make_evaluator()
+        r = ev.eval_cell('type Color = | Red | Green | Blue')
+        self.assertTrue(r.decls_only)
+        self.assertIn('type Color', r.value_text)
+        self.assertIn('Red', r.value_text)
+        self.assertIn('Blue', r.value_text)
 
     def test_precedence(self):
         """`*` binds tighter than `+`."""
@@ -130,8 +224,11 @@ class TestProgramFragmentMode(unittest.TestCase):
         ev = make_evaluator()
         decl = ev.eval_cell('let foo = 42')
         self.assertTrue(decl.decls_only)
-        self.assertIsNone(decl.value_text)
         self.assertIsNone(decl.error)
+        # Decl cells surface a `name : Type` summary so the user
+        # knows what was defined; this is the type-driven decl
+        # output added with the value renderer.
+        self.assertEqual(decl.value_text, 'foo : Nat')
 
         ref = ev.eval_cell('foo')
         self.assertEqual(ref.value_text, '42')

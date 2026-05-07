@@ -104,6 +104,7 @@ from dev.harness.bplan import bevaluate, register_prelude_jets
 from bootstrap.mcp_server import (
     load_prelude, PreludeSnapshot, _typecheck_capture,
 )
+from bootstrap.value_render import render_typed
 
 
 DEFAULT_MODULE = 'Notebook'
@@ -207,24 +208,39 @@ class GallowglassEvaluator:
         else:
             return CellResult(value_text=self._render_text_value(text_value))
 
-        # Attempt 2: plain expression mode (structural render).
+        # Attempt 2: plain expression mode + type-driven render. The
+        # cell's inferred type drives constructor-name lookup and
+        # field-type substitution so compound values like
+        # `MkPair 3 7` render with constructor names instead of the
+        # bare structural App tree (`((0 3) 7)`). Functions and
+        # types without registered constructors fall through to
+        # `value_render._render_structural`.
         wrapped = self._wrap_as_expression(source, cell_name)
         try:
-            value = self._eval_expression(wrapped, cell_name)
+            forced, cell_type, type_env, con_info = (
+                self._eval_expression(wrapped, cell_name)
+            )
         except _NotAnExpression:
             pass
         except _CellError as e:
             return CellResult(error=e.envelope)
         else:
-            return CellResult(value_text=self._format_value(value))
+            return CellResult(
+                value_text=self._format_value(forced, cell_type, type_env, con_info),
+            )
 
         # Attempt 3: program mode. The cell contributes declarations
-        # to the accumulator, no value displayed.
+        # to the accumulator. Display a one-line summary per new
+        # declaration so the user can confirm what the cell defined
+        # — `name : Type` for lets, `type T` for type decls, `use M`
+        # for imports. Without this the cell looks like a no-op.
         try:
-            self._eval_program_fragment(source)
+            summaries = self._eval_program_fragment(source)
         except _CellError as e:
             return CellResult(error=e.envelope)
 
+        if summaries:
+            return CellResult(decls_only=True, value_text='\n'.join(summaries))
         return CellResult(decls_only=True)
 
     def reset(self) -> None:
@@ -311,8 +327,8 @@ class GallowglassEvaluator:
         try:
             resolved, env = resolve(program, self.module,
                                     self.prelude.module_envs, filename)
-            expr_types = self._typecheck(resolved, env, filename)
-            compiled = self._compile_with_prelude(resolved, expr_types)
+            _type_env, expr_types = self._typecheck(resolved, env, filename)
+            _compiler, compiled = self._compile_with_prelude(resolved, expr_types)
         except (ScopeError, TypecheckError, CodegenError) as e:
             raise _CellError(_error_envelope(_stage_for(e), e)) from e
 
@@ -332,8 +348,13 @@ class GallowglassEvaluator:
             raise _NotAnExpression()
         return forced
 
-    def _eval_expression(self, wrapped_source: str, cell_name: str) -> Any:
+    def _eval_expression(self, wrapped_source: str, cell_name: str) -> tuple:
         """Compile ``wrapped_source`` and evaluate the cell binding.
+
+        Returns ``(forced_value, cell_type, type_env, con_info)`` so
+        the caller can render the value via the type-driven path.
+        ``cell_type`` may be ``None`` if the typechecker couldn't pin
+        a concrete type to the cell binding (rare but defensive).
 
         Raises ``_NotAnExpression`` if the wrap fails to parse — that's
         the signal to fall back to program mode. Other pipeline errors
@@ -360,8 +381,8 @@ class GallowglassEvaluator:
         try:
             resolved, env = resolve(program, self.module,
                                     self.prelude.module_envs, filename)
-            expr_types = self._typecheck(resolved, env, filename)
-            compiled = self._compile_with_prelude(resolved, expr_types)
+            type_env, expr_types = self._typecheck(resolved, env, filename)
+            compiler, compiled = self._compile_with_prelude(resolved, expr_types)
         except (ScopeError, TypecheckError, CodegenError) as e:
             raise _CellError(_error_envelope(_stage_for(e), e)) from e
 
@@ -371,14 +392,25 @@ class GallowglassEvaluator:
             # name. Treat as not-an-expression so program mode can try.
             raise _NotAnExpression()
 
-        return self._force(compiled[fq])
+        # Cell type comes from the let-binding's scheme. Strip the
+        # ∀-quantification to expose the monotype the renderer wants.
+        cell_type = self._cell_type(type_env, fq)
+        forced = self._force(compiled[fq])
+        return forced, cell_type, type_env, compiler.con_info
 
     # ------------------------------------------------------------------
     # Program mode
     # ------------------------------------------------------------------
 
-    def _eval_program_fragment(self, source: str) -> None:
+    def _eval_program_fragment(self, source: str) -> list[str]:
         """Append ``source`` to the accumulator and recompile.
+
+        Returns a list of human-readable summaries for the new top-
+        level declarations contributed by this cell — one per
+        ``DeclLet`` (``name : Type``), ``DeclType`` (``type T``), or
+        ``DeclUse`` (``use Mod``). Other declaration kinds are
+        silently included only if their effect is observable
+        (currently none — instances/effects don't surface here).
 
         On success, the accumulator commits the new source. On
         failure, the accumulator stays as it was — partial states
@@ -397,38 +429,92 @@ class GallowglassEvaluator:
             program = parse(tokens, filename)
             resolved, env = resolve(program, self.module,
                                     self.prelude.module_envs, filename)
-            expr_types = self._typecheck(resolved, env, filename)
+            type_env, expr_types = self._typecheck(resolved, env, filename)
             self._compile_with_prelude(resolved, expr_types)
         except (ParseError, ScopeError, TypecheckError, CodegenError) as e:
             raise _CellError(_error_envelope(_stage_for(e), e)) from e
 
-        # All phases succeeded — commit the new source.
+        # All phases succeeded — commit the new source. Then derive
+        # the cell's contributions for display.
         self._accumulated_source = candidate
+        return self._summarise_cell_decls(source, type_env)
+
+    def _summarise_cell_decls(self, source: str, type_env: dict) -> list[str]:
+        """Re-parse the cell source alone to identify which decls
+        the cell contributed, then look each one up in ``type_env``
+        for its scheme so the display can carry type info.
+
+        Re-parsing is cheap (one cell's worth of source) and avoids
+        threading new-vs-old decl tracking through the whole
+        accumulator pipeline. Failures fall through silently — if
+        the cell parsed in-context-of-accumulator but doesn't parse
+        standalone (e.g. it relies on a prior `use`), we just don't
+        show a summary.
+        """
+        from bootstrap.ast import DeclLet, DeclType, DeclUse
+        from bootstrap.typecheck import pp_scheme
+
+        try:
+            tokens = lex(source, '<cell summary>')
+            program = parse(tokens, '<cell summary>')
+        except ParseError:
+            return []
+
+        summaries: list[str] = []
+        for decl in program.decls:
+            if isinstance(decl, DeclLet):
+                fq = f'{self.module}.{decl.name}'
+                scheme = type_env.get(fq)
+                if scheme is not None:
+                    summaries.append(f'{decl.name} : {pp_scheme(scheme)}')
+                else:
+                    summaries.append(decl.name)
+            elif isinstance(decl, DeclType):
+                ctor_names = ' | '.join(c.name for c in decl.constructors)
+                summaries.append(f'type {decl.name} = {ctor_names}')
+            elif isinstance(decl, DeclUse):
+                mod = '.'.join(decl.module_path)
+                summaries.append(f'use {mod}')
+            # Other decl kinds (instance, class, effect, mod) are
+            # observable through their effect on later cells; we
+            # don't surface a summary line for them yet.
+        return summaries
 
     # ------------------------------------------------------------------
     # Compile + evaluate helpers
     # ------------------------------------------------------------------
 
-    def _typecheck(self, resolved, env, filename: str) -> dict:
-        """Typecheck against the prelude priors and return the
-        per-expression type map.
+    def _typecheck(self, resolved, env, filename: str) -> tuple:
+        """Typecheck against the prelude priors.
 
-        ``expr_types`` is what codegen needs to insert dictionary
-        arguments at constrained call sites — without it, calls to
-        class methods (``show``, ``eq``, …) surface as ``unbound
-        variable`` codegen errors.
+        Returns ``(type_env, expr_types)``:
+
+        * ``type_env`` (FQ-name → :class:`Scheme`) — used by the
+          type-driven value renderer to look up constructor schemes
+          and substitute field types from a constructor's
+          instantiation.
+        * ``expr_types`` (``id(expr)`` → MonoType) — used by codegen
+          to insert dictionary arguments at constrained call sites;
+          without it, class-method calls surface as ``unbound
+          variable`` codegen errors.
+
+        Both maps include the prelude priors merged in, so the
+        renderer can resolve types defined in any ``Core.*`` module.
         """
-        _te, _tc, expr_types = _typecheck_capture(
+        type_env, _tc, expr_types = _typecheck_capture(
             resolved, env, self.module, filename,
             prior_te=self.prelude.type_env,
             prior_tc=self.prelude.type_constructors,
             record_expr_types=True,
         )
-        return expr_types or {}
+        return type_env, expr_types or {}
 
-    def _compile_with_prelude(self, resolved, expr_types: dict) -> dict:
-        """Run codegen against the prelude priors. Returns the
-        compiled FQ → PVal dict for the notebook module.
+    def _compile_with_prelude(self, resolved, expr_types: dict) -> tuple:
+        """Run codegen against the prelude priors. Returns
+        ``(compiler, compiled)`` so the caller can read
+        ``compiler.con_info`` for the type-driven renderer's
+        constructor lookups (the prelude's con_info already merged
+        in via ``pre_con_info``).
 
         Mirrors ``bootstrap.mcp_server._compile_snippet``'s codegen
         block but skips the pin-wrapping and pin-id collection — the
@@ -443,7 +529,22 @@ class GallowglassEvaluator:
             pre_con_info=self.prelude.con_info,
             expr_types=expr_types,
         )
-        return compiler.compile(resolved)
+        compiled = compiler.compile(resolved)
+        return compiler, compiled
+
+    def _cell_type(self, type_env: dict, fq: str):
+        """Extract the cell binding's monotype from its scheme.
+
+        Returns ``None`` if no scheme is recorded — the renderer
+        falls back to structural in that case rather than crashing.
+        Strips the scheme's universal quantifier to get a monotype
+        the type-driven renderer can match against.
+        """
+        scheme = type_env.get(fq)
+        if scheme is None:
+            return None
+        body = getattr(scheme, 'body', None)
+        return body
 
     def _force(self, val: Any) -> Any:
         """Reduce a PLAN value to head normal form via the BPLAN harness.
@@ -475,21 +576,36 @@ class GallowglassEvaluator:
     # Result formatting
     # ------------------------------------------------------------------
 
-    def _format_value(self, val: Any) -> str:
-        """Render a PLAN value as text/plain (structural fallback).
+    def _format_value(self, val: Any, cell_type: Any = None,
+                      type_env: dict | None = None,
+                      con_info: dict | None = None) -> str:
+        """Render a PLAN value as text/plain.
 
-        Used when the Show-aware path doesn't fire (cell evaluates to
-        a value with no Show instance, such as a function). Renders:
+        With type info (``cell_type``, ``type_env``, ``con_info``),
+        uses the type-driven renderer in
+        :mod:`bootstrap.value_render`: constructor names are
+        recovered from ``con_info``, field types are substituted
+        from each constructor's scheme, and primitives (``Nat``,
+        ``Bool``, ``Text``) render as their canonical literal forms.
+        Compound types like ``MkPair 3 7`` come out with their
+        constructor name instead of a bare ``((0 3) 7)``.
 
-        * ``Nat`` as a decimal literal.
-        * ``Pin`` as ``<pin {inner}>``.
-        * ``Law`` as ``<law arity=N name="...">``.
-        * ``App`` as ``(fun arg)``, structural.
+        Without type info (call site has only the value), falls back
+        to the bare structural form.
 
         Cells whose result type has a Show instance render via
-        ``_render_text_value`` instead — that path produces the
-        user-friendly representation the Show typeclass defines.
+        ``_render_text_value`` *before* this method runs — Show is
+        the user's chosen rendering and wins over the meta-derived
+        path.
         """
+        if cell_type is not None and type_env is not None and con_info is not None:
+            try:
+                return render_typed(val, cell_type,
+                                    type_env=type_env, con_info=con_info)
+            except Exception:  # noqa: BLE001
+                # Renderer hiccup — fall back to structural rather
+                # than letting a display bug eat the cell result.
+                pass
         return _render(val, depth=0)
 
     def _render_text_value(self, text_val: Any) -> str:
