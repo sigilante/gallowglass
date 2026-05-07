@@ -165,14 +165,14 @@ def main() -> None:
 
     for kind, body in CELLS:
         if kind == 'md':
-            nb.cells.append(v4.new_markdown_cell(body))
+            nb.cells.append(v4.new_markdown_cell(body, id=f"md-{len(nb.cells):02d}"))
             continue
         # kind == 'code'
         exec_count += 1
         result = evaluator.eval_cell(body)
         outputs = _render_outputs(result.value_text, result.value_html,
                                   execution_count=exec_count)
-        cell = v4.new_code_cell(source=body, outputs=outputs)
+        cell = v4.new_code_cell(source=body, outputs=outputs, id=f"code-{exec_count:02d}")
         cell['execution_count'] = exec_count
         nb.cells.append(cell)
 

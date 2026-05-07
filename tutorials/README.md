@@ -22,11 +22,14 @@ local kernel.
 
 ## Index
 
-| File                                | Topic                                           |
-|-------------------------------------|-------------------------------------------------|
-| `01-hello-gallowglass.ipynb`        | Declarations, types, ADTs, pattern matching.    |
+| File                                | Topic                                                                                                |
+|-------------------------------------|------------------------------------------------------------------------------------------------------|
+| `01-hello-gallowglass.ipynb`        | Declarations, types, ADTs, pattern matching.                                                         |
+| `02-typeclasses.ipynb`              | `Eq`, `Ord`, `Show`; constrained wrappers for class-method dispatch; defining your own instances.    |
+| `03-glass-ir.ipynb`                 | The typed intermediate representation, pin hashes, content addressing.                               |
+| `04-effects-and-handlers.ipynb`     | Effect rows, the `eff` declaration, `handle` shape, the `External` and `Abort` invariants.           |
 
-More to come — see the README's roadmap section.
+The lessons are sequential — each one assumes the previous.
 
 ## Authoring
 

@@ -57,47 +57,70 @@ def _code_cells(nb: dict):
         yield i, src, text_out
 
 
-class TestLesson01HelloGallowglass(unittest.TestCase):
-    """``tutorials/01-hello-gallowglass.ipynb`` re-executes cleanly
-    and produces the recorded text/plain outputs."""
+class _TutorialNotebookTestMixin:
+    """Shared assertions for one notebook's cell-by-cell behaviour.
+
+    Subclasses set ``NOTEBOOK`` (the .ipynb filename) and ``BUILD``
+    (the matching ``_build_lesson_NN.py`` for the regeneration hint
+    in the failure message). The test methods walk every code cell
+    in the notebook and check (a) it evaluates without raising and
+    (b) its committed text/plain output matches what the live
+    evaluator produces.
+    """
+
+    NOTEBOOK: str = ''
+    BUILD: str = ''
 
     @classmethod
-    def setUpClass(cls):
-        cls.nb = _load_notebook('01-hello-gallowglass.ipynb')
-        cls.evaluator = GallowglassEvaluator()
+    def _load(cls):
+        return _load_notebook(cls.NOTEBOOK)
 
     def test_cells_execute_without_error(self):
-        """Every code cell evaluates without surfacing an error
-        envelope. A failure here usually means the kernel's
-        behaviour changed and the tutorial source no longer
-        type-checks against the current implementation."""
-        for idx, src, _expected in _code_cells(self.nb):
-            result = self.evaluator.eval_cell(src)
+        nb = self._load()
+        ev = GallowglassEvaluator()
+        for idx, src, _expected in _code_cells(nb):
+            result = ev.eval_cell(src)
             self.assertIsNone(
                 result.error,
-                f'cell {idx} errored: {result.error}\n'
+                f'{self.NOTEBOOK} cell {idx} errored: {result.error}\n'
                 f'source:\n{src}',
             )
 
     def test_cell_outputs_match_recorded(self):
-        """The committed text/plain output for each cell matches
-        what the evaluator produces today.  Mismatches here mean
-        either the notebook needs regenerating or the renderer's
-        behaviour changed in a way the tutorial should reflect."""
-        # Fresh evaluator — the previous test's run accumulated state.
+        nb = self._load()
         ev = GallowglassEvaluator()
-        for idx, src, expected in _code_cells(self.nb):
+        for idx, src, expected in _code_cells(nb):
             result = ev.eval_cell(src)
             actual = result.value_text or ''
             self.assertEqual(
                 actual, expected,
-                f'cell {idx} output drift:\n'
+                f'{self.NOTEBOOK} cell {idx} output drift:\n'
                 f'  expected: {expected!r}\n'
                 f'  actual:   {actual!r}\n'
                 f'  source:\n{src}\n'
-                f'(re-run `python3 tutorials/_build_lesson_01.py` to '
+                f'(re-run `python3 tutorials/{self.BUILD}` to '
                 f'regenerate the committed outputs)',
             )
+
+
+class TestLesson01HelloGallowglass(_TutorialNotebookTestMixin, unittest.TestCase):
+    NOTEBOOK = '01-hello-gallowglass.ipynb'
+    BUILD = '_build_lesson_01.py'
+
+
+class TestLesson02Typeclasses(_TutorialNotebookTestMixin, unittest.TestCase):
+    NOTEBOOK = '02-typeclasses.ipynb'
+    BUILD = '_build_lesson_02.py'
+
+
+class TestLesson03GlassIR(_TutorialNotebookTestMixin, unittest.TestCase):
+    NOTEBOOK = '03-glass-ir.ipynb'
+    BUILD = '_build_lesson_03.py'
+
+
+class TestLesson04EffectsAndHandlers(_TutorialNotebookTestMixin, unittest.TestCase):
+    NOTEBOOK = '04-effects-and-handlers.ipynb'
+    BUILD = '_build_lesson_04.py'
 
 
 if __name__ == '__main__':
