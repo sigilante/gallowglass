@@ -5,8 +5,10 @@
 --
 -- Dependencies:
 --   Core.Nat — Eq class
+--   Core.Text — Show / Debug classes, text_concat
 
 use Core.Nat { Eq }
+use Core.Text { Show, Debug, text_concat }
 
 type Result a b =
   | Ok  a
@@ -69,5 +71,21 @@ instance Eq a => Eq Result {
   eq = λ x y → match x {
     | Ok  a → match y { | Ok  b → eq a b | Err _ → False }
     | Err a → match y { | Ok _  → False  | Err b → eq a b }
+  }
+}
+
+-- Show / Debug: same a~b assumption as Eq above. Show uses the
+-- "Ok(x)" / "Err(e)" surface form; Debug uses constructor syntax.
+instance Show a => Show Result {
+  show = λ r → match r {
+    | Ok  x → text_concat "Ok(" (text_concat (show x) ")")
+    | Err e → text_concat "Err(" (text_concat (show e) ")")
+  }
+}
+
+instance Debug a => Debug Result {
+  debug = λ r → match r {
+    | Ok  x → text_concat "Ok " (debug x)
+    | Err e → text_concat "Err " (debug e)
   }
 }

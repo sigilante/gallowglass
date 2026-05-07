@@ -102,6 +102,18 @@ instance Show Nat {
   show = show_nat
 }
 
+-- show_text: render Text by surrounding it with double quotes.
+-- Per the design principle "Show is for users", this distinguishes
+-- text values from other Showable forms in interactive surfaces
+-- (Jupyter, REPL).  No escape handling yet — embedded `"` characters
+-- would render verbatim; that's a forward-work refinement.
+let show_text : Text → Text
+  = λ t → text_concat "\"" (text_concat t "\"")
+
+instance Show Text {
+  show = show_text
+}
+
 -- Debug typeclass: developer-facing text representation
 -- Distinct from Show per spec. Initially same output for primitive types,
 -- but Debug for compound types uses constructor syntax (e.g., "Some 42")

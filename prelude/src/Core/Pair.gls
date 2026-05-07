@@ -3,6 +3,11 @@
 --
 -- Encoding: MkPair a b = A(A(tag=0, a), b).
 -- Single constructor, so tag is always 0.
+--
+-- Dependencies:
+--   Core.Text — Show / Debug classes, text_concat
+
+use Core.Text { Show, Debug, text_concat }
 
 type Pair a b =
   | MkPair a b
@@ -36,3 +41,22 @@ let swap : ∀ a b. Pair a b → Pair b a
   = λ p → match p {
     | MkPair x y → MkPair y x
   }
+
+-- Show / Debug instances assume the pair's two components share the
+-- same type, mirroring `instance Eq a => Eq Result`. The bootstrap
+-- compiler doesn't yet support dual-class constraints
+-- (`(Show a, Show b) =>`) — see the note on Result's Eq instance.
+-- For asymmetric pairs (e.g. `Pair Text Nat`), users can render via
+-- `text_concat` directly until that lands.
+
+instance Show a => Show Pair {
+  show = λ p → match p {
+    | MkPair x y → text_concat "(" (text_concat (show x) (text_concat ", " (text_concat (show y) ")")))
+  }
+}
+
+instance Debug a => Debug Pair {
+  debug = λ p → match p {
+    | MkPair x y → text_concat "MkPair " (text_concat (debug x) (text_concat " " (debug y)))
+  }
+}

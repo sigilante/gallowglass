@@ -26,6 +26,8 @@ def evaluate(v):
 
 CORE_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'prelude', 'src', 'Core')
 NAT_PATH = os.path.join(CORE_DIR, 'Nat.gls')
+BOOL_PATH = os.path.join(CORE_DIR, 'Bool.gls')
+TEXT_PATH = os.path.join(CORE_DIR, 'Text.gls')
 RESULT_PATH = os.path.join(CORE_DIR, 'Result.gls')
 MODULE = 'Core.Result'
 
@@ -35,12 +37,24 @@ MODULE = 'Core.Result'
 # ---------------------------------------------------------------------------
 
 def _compile_result():
+    """Build Result with its `use` dependencies. Result gained a
+    `use Core.Text` for the Show / Debug instances; that pulls in
+    Bool transitively as well."""
     from bootstrap.build import build_modules
     with open(NAT_PATH) as f:
         nat_src = f.read()
+    with open(BOOL_PATH) as f:
+        bool_src = f.read()
+    with open(TEXT_PATH) as f:
+        text_src = f.read()
     with open(RESULT_PATH) as f:
         res_src = f.read()
-    return build_modules([('Core.Nat', nat_src), ('Core.Result', res_src)])
+    return build_modules([
+        ('Core.Nat', nat_src),
+        ('Core.Bool', bool_src),
+        ('Core.Text', text_src),
+        ('Core.Result', res_src),
+    ])
 
 _RESULT_COMPILED = None
 

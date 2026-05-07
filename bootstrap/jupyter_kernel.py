@@ -97,11 +97,13 @@ from bootstrap.typecheck import TypecheckError
 from dev.harness.plan import P, is_nat, is_pin, is_law, is_app
 from dev.harness.bplan import bevaluate, register_prelude_jets
 
-# Prelude loading reuses the MCP server's snapshot machinery — both
-# tools want the same "compile prelude once, thread through every
-# subsequent build" shape. Importing the function (not the module
-# state) means we do not share the MCP server's process-global cache.
-from bootstrap.mcp_server import load_prelude, PreludeSnapshot
+# Prelude loading + typecheck-capture both reuse the MCP server's
+# snapshot machinery — both tools want the same "compile prelude once,
+# thread through every subsequent build" shape. Importing functions
+# (not module state) means we do not share MCP's process-global cache.
+from bootstrap.mcp_server import (
+    load_prelude, PreludeSnapshot, _typecheck_capture,
+)
 
 
 DEFAULT_MODULE = 'Notebook'
@@ -167,30 +169,56 @@ class GallowglassEvaluator:
         Returns a ``CellResult``. Exceptions raised by the bootstrap
         pipeline are caught and converted to structured errors;
         unexpected exceptions propagate (they're bugs).
+
+        Three attempts in order:
+
+        1. **Show-aware expression mode.** Wrap as
+           ``let _cell_N = <code>; let _show_N : Text = display _cell_N``
+           where ``display`` is a constrained ``Show a => a → Text``
+           function. If typecheck succeeds, the cell's value has a
+           Show instance and we evaluate ``_show_N`` (the rendered
+           Text). This is the path the user wants — pretty output.
+
+        2. **Plain expression mode.** If (1) fails to typecheck (no
+           Show instance for the cell's type, e.g. functions), fall
+           back to evaluating ``_cell_N`` directly and rendering
+           structurally.
+
+        3. **Program-fragment mode.** If both expression-mode parses
+           fail, treat the cell as one or more top-level decls and
+           append to the accumulator.
         """
         if not source.strip():
             return CellResult(decls_only=True)
 
-        # Strategy: try expression mode first (cheaper to detect parse
-        # failure than to compile a full program and discover at codegen
-        # time that we wanted an expression). If expression-mode parse
-        # fails, fall back to program-mode.
         self._cell_counter += 1
         cell_name = f'_cell_{self._cell_counter}'
-        wrapped = self._wrap_as_expression(source, cell_name)
 
-        # Attempt 1: expression mode.
+        # Attempt 1: Show-aware expression mode.
+        try:
+            text_value = self._eval_show_expression(source, cell_name)
+        except _NotAnExpression:
+            pass
+        except _CellError:
+            # Show-mode-specific failures (no Show instance, etc.) —
+            # fall through to plain expression mode for the same wrap
+            # without the display call.
+            pass
+        else:
+            return CellResult(value_text=self._render_text_value(text_value))
+
+        # Attempt 2: plain expression mode (structural render).
+        wrapped = self._wrap_as_expression(source, cell_name)
         try:
             value = self._eval_expression(wrapped, cell_name)
         except _NotAnExpression:
-            # Fall through to program mode.
             pass
         except _CellError as e:
             return CellResult(error=e.envelope)
         else:
             return CellResult(value_text=self._format_value(value))
 
-        # Attempt 2: program mode. The cell contributes declarations
+        # Attempt 3: program mode. The cell contributes declarations
         # to the accumulator, no value displayed.
         try:
             self._eval_program_fragment(source)
@@ -223,12 +251,98 @@ class GallowglassEvaluator:
             prefix = prefix + '\n'
         return f'{prefix}let {cell_name} = {source}\n'
 
+    def _wrap_as_show_expression(self, source: str, cell_name: str) -> str:
+        """Wrap the cell with a Show-aware reducer.
+
+        The bootstrap codegen dispatches typeclass methods only at
+        constrained-let call sites, so we need a per-cell ``display``
+        wrapper to call ``show``. The wrapper is locally scoped — it
+        doesn't pollute the user's accumulator namespace.
+
+        The synthesised source looks like::
+
+            <accumulated>
+            use Core.Text { Show, show }
+            let _show_<N>_display : ∀ a. Show a => a → Text = λ x → show x
+            let _cell_<N> = <source>
+            let _show_<N> : Text = _show_<N>_display _cell_<N>
+        """
+        prefix = self._accumulated_source
+        if prefix and not prefix.endswith('\n'):
+            prefix = prefix + '\n'
+        display = f'_show_{self._cell_counter}_display'
+        show_name = f'_show_{self._cell_counter}'
+        return (
+            f'{prefix}'
+            f'use Core.Text {{ Show, show }}\n'
+            f'let {display} : ∀ a. Show a => a → Text = λ x → show x\n'
+            f'let {cell_name} = {source}\n'
+            f'let {show_name} : Text = {display} {cell_name}\n'
+        )
+
+    def _eval_show_expression(self, source: str, cell_name: str) -> Any:
+        """Compile a Show-aware wrap and force the rendered Text.
+
+        Returns the forced PLAN value of ``_show_N`` (a Text =
+        ``A(byte_length, content_nat)``) when Show resolves cleanly.
+        Raises ``_NotAnExpression`` if even the wrap doesn't parse,
+        or ``_CellError`` if any pipeline phase fails — including
+        the typecheck failure that signals "this cell's type has no
+        Show instance," which is the common reason to fall through
+        to plain expression mode.
+
+        When the cell's value forces to something that *isn't* a Text
+        pair (the nested-dictionary insertion path the bootstrap
+        codegen doesn't fully implement for constrained instances —
+        e.g. ``Show a => Show Pair`` leaves the inner ``show`` in a
+        partially-applied state), this also raises
+        ``_NotAnExpression`` so the caller falls back to structural
+        render. That keeps user-visible output honest: either Show
+        gave us a clean Text, or we surface the underlying tree.
+        """
+        wrapped = self._wrap_as_show_expression(source, cell_name)
+        filename = f'<cell {cell_name} (show)>'
+        try:
+            tokens = lex(wrapped, filename)
+            program = parse(tokens, filename)
+        except ParseError:
+            raise _NotAnExpression()
+
+        try:
+            resolved, env = resolve(program, self.module,
+                                    self.prelude.module_envs, filename)
+            expr_types = self._typecheck(resolved, env, filename)
+            compiled = self._compile_with_prelude(resolved, expr_types)
+        except (ScopeError, TypecheckError, CodegenError) as e:
+            raise _CellError(_error_envelope(_stage_for(e), e)) from e
+
+        show_fq = f'{self.module}._show_{self._cell_counter}'
+        if show_fq not in compiled:
+            raise _NotAnExpression()
+
+        forced = self._force(compiled[show_fq])
+
+        # Sanity-check the forced shape. A clean Text is
+        # ``A(N(byte_length), N(content_nat))``. Anything else
+        # (typically a half-applied ``show`` from the constrained-
+        # instance codegen gap) means the Show path didn't fully
+        # reduce — fall back to structural render instead of showing
+        # a confusing ``<pin show>`` tree to the user.
+        if not (is_app(forced) and is_nat(forced.fun) and is_nat(forced.arg)):
+            raise _NotAnExpression()
+        return forced
+
     def _eval_expression(self, wrapped_source: str, cell_name: str) -> Any:
         """Compile ``wrapped_source`` and evaluate the cell binding.
 
         Raises ``_NotAnExpression`` if the wrap fails to parse — that's
         the signal to fall back to program mode. Other pipeline errors
         raise ``_CellError`` with a structured envelope.
+
+        Pipeline includes typechecking so class-method calls (``show``,
+        ``eq``, ``compare``, …) get their dictionary args inserted at
+        codegen time. Without the typecheck, ``show 42`` would surface
+        as a codegen ``unbound variable`` error.
         """
         filename = f'<cell {cell_name}>'
         try:
@@ -244,9 +358,10 @@ class GallowglassEvaluator:
         # From here on, errors are real — the wrap parsed, so we
         # genuinely tried to compile and something went wrong.
         try:
-            resolved, _ = resolve(program, self.module,
-                                  self.prelude.module_envs, filename)
-            compiled = self._compile_with_prelude(resolved)
+            resolved, env = resolve(program, self.module,
+                                    self.prelude.module_envs, filename)
+            expr_types = self._typecheck(resolved, env, filename)
+            compiled = self._compile_with_prelude(resolved, expr_types)
         except (ScopeError, TypecheckError, CodegenError) as e:
             raise _CellError(_error_envelope(_stage_for(e), e)) from e
 
@@ -280,9 +395,10 @@ class GallowglassEvaluator:
         try:
             tokens = lex(candidate, filename)
             program = parse(tokens, filename)
-            resolved, _ = resolve(program, self.module,
-                                  self.prelude.module_envs, filename)
-            self._compile_with_prelude(resolved)
+            resolved, env = resolve(program, self.module,
+                                    self.prelude.module_envs, filename)
+            expr_types = self._typecheck(resolved, env, filename)
+            self._compile_with_prelude(resolved, expr_types)
         except (ParseError, ScopeError, TypecheckError, CodegenError) as e:
             raise _CellError(_error_envelope(_stage_for(e), e)) from e
 
@@ -293,7 +409,24 @@ class GallowglassEvaluator:
     # Compile + evaluate helpers
     # ------------------------------------------------------------------
 
-    def _compile_with_prelude(self, resolved) -> dict:
+    def _typecheck(self, resolved, env, filename: str) -> dict:
+        """Typecheck against the prelude priors and return the
+        per-expression type map.
+
+        ``expr_types`` is what codegen needs to insert dictionary
+        arguments at constrained call sites — without it, calls to
+        class methods (``show``, ``eq``, …) surface as ``unbound
+        variable`` codegen errors.
+        """
+        _te, _tc, expr_types = _typecheck_capture(
+            resolved, env, self.module, filename,
+            prior_te=self.prelude.type_env,
+            prior_tc=self.prelude.type_constructors,
+            record_expr_types=True,
+        )
+        return expr_types or {}
+
+    def _compile_with_prelude(self, resolved, expr_types: dict) -> dict:
         """Run codegen against the prelude priors. Returns the
         compiled FQ → PVal dict for the notebook module.
 
@@ -308,6 +441,7 @@ class GallowglassEvaluator:
             pre_class_defaults=self.prelude.class_defaults,
             pre_class_constraints=self.prelude.class_constraints,
             pre_con_info=self.prelude.con_info,
+            expr_types=expr_types,
         )
         return compiler.compile(resolved)
 
@@ -342,18 +476,44 @@ class GallowglassEvaluator:
     # ------------------------------------------------------------------
 
     def _format_value(self, val: Any) -> str:
-        """Render a PLAN value as text/plain.
+        """Render a PLAN value as text/plain (structural fallback).
 
-        Phase G+ work: replace this with a Show-typeclass-driven
-        renderer once M14.5 lands. Until then:
+        Used when the Show-aware path doesn't fire (cell evaluates to
+        a value with no Show instance, such as a function). Renders:
 
-        * ``Nat`` renders as a decimal literal.
-        * ``Pin`` renders as ``<pin {inner}>``.
-        * ``Law`` renders as ``<law arity=N name="...">``.
-        * ``App`` renders as ``(fun arg)``, structural — useful for
-          inspecting constructor results before Show is wired up.
+        * ``Nat`` as a decimal literal.
+        * ``Pin`` as ``<pin {inner}>``.
+        * ``Law`` as ``<law arity=N name="...">``.
+        * ``App`` as ``(fun arg)``, structural.
+
+        Cells whose result type has a Show instance render via
+        ``_render_text_value`` instead — that path produces the
+        user-friendly representation the Show typeclass defines.
         """
         return _render(val, depth=0)
+
+    def _render_text_value(self, text_val: Any) -> str:
+        """Decode a Gallowglass Text value to a Python str.
+
+        Text is encoded as ``A(byte_length, content_nat)`` where
+        ``content_nat`` is the UTF-8 bytes packed little-endian.
+        Phase G #2's BPLAN-backed pack/unpack means the value here
+        is always already in this canonical pair shape after
+        ``bevaluate``. Decoding errors fall back to the structural
+        renderer rather than dropping the result.
+        """
+        if is_app(text_val) and is_nat(text_val.fun) and is_nat(text_val.arg):
+            byte_length = int(text_val.fun)
+            content_nat = int(text_val.arg)
+            if byte_length == 0:
+                return ''
+            try:
+                return content_nat.to_bytes(byte_length, 'little').decode('utf-8')
+            except (OverflowError, UnicodeDecodeError):
+                pass
+        # Unexpected shape — surface structurally rather than silently
+        # dropping the cell result.
+        return self._format_value(text_val)
 
 
 # ---------------------------------------------------------------------------

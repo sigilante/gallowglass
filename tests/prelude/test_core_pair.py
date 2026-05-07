@@ -23,6 +23,9 @@ def evaluate(v):
     return bevaluate(v)
 
 CORE_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'prelude', 'src', 'Core')
+NAT_PATH = os.path.join(CORE_DIR, 'Nat.gls')
+BOOL_PATH = os.path.join(CORE_DIR, 'Bool.gls')
+TEXT_PATH = os.path.join(CORE_DIR, 'Text.gls')
 PAIR_PATH = os.path.join(CORE_DIR, 'Pair.gls')
 MODULE = 'Core.Pair'
 
@@ -32,15 +35,24 @@ MODULE = 'Core.Pair'
 # ---------------------------------------------------------------------------
 
 def _compile_pair():
-    from bootstrap.lexer import lex
-    from bootstrap.parser import parse
-    from bootstrap.scope import resolve
-    from bootstrap.codegen import compile_program
+    """Build the Pair module with its `use` dependencies (Core.Text and
+    its transitive deps) loaded.  Pair gained a `use Core.Text` for the
+    Show / Debug instances; isolated compilation no longer works."""
+    from bootstrap.build import build_modules
+    with open(NAT_PATH) as f:
+        nat_src = f.read()
+    with open(BOOL_PATH) as f:
+        bool_src = f.read()
+    with open(TEXT_PATH) as f:
+        text_src = f.read()
     with open(PAIR_PATH) as f:
-        src = f.read()
-    prog = parse(lex(src, PAIR_PATH), PAIR_PATH)
-    resolved, _ = resolve(prog, MODULE, {}, PAIR_PATH)
-    return compile_program(resolved, MODULE)
+        pair_src = f.read()
+    return build_modules([
+        ('Core.Nat', nat_src),
+        ('Core.Bool', bool_src),
+        ('Core.Text', text_src),
+        ('Core.Pair', pair_src),
+    ])
 
 _PAIR_COMPILED = None
 

@@ -47,6 +47,48 @@ class TestExpressionMode(unittest.TestCase):
         self.assertEqual(r.value_text, '3')
         self.assertIsNone(r.error)
 
+    def test_show_dispatch_for_nat(self):
+        """A Nat result renders via the Show typeclass through the
+        synthesised `display` wrapper, not the structural fallback."""
+        ev = make_evaluator()
+        r = ev.eval_cell('42')
+        self.assertEqual(r.value_text, '42')
+        # Sanity: the structural form would render with `<pin>` etc.
+        self.assertNotIn('<', r.value_text)
+
+    def test_show_dispatch_for_bool(self):
+        ev = make_evaluator()
+        self.assertEqual(ev.eval_cell('True').value_text, 'True')
+        self.assertEqual(ev.eval_cell('False').value_text, 'False')
+
+    def test_show_dispatch_for_text(self):
+        """Show Text quotes the value, distinguishing it from
+        printable Nats and structural representations."""
+        ev = make_evaluator()
+        r = ev.eval_cell('"hello"')
+        self.assertEqual(r.value_text, '"hello"')
+
+    def test_show_falls_back_for_compound_types(self):
+        """`Show a => Show Pair` runs into the bootstrap codegen's
+        nested-dict-insertion gap; the kernel detects "didn't fully
+        reduce" and falls back to structural render rather than
+        showing a half-applied `<pin show>` tree to the user."""
+        ev = make_evaluator()
+        ev.eval_cell('use Core.Pair')
+        r = ev.eval_cell('Pair.MkPair 3 7')
+        # Structural form, not "<pin show> ..." or similar.
+        self.assertNotIn('<pin', r.value_text)
+        self.assertIn('3', r.value_text)
+        self.assertIn('7', r.value_text)
+
+    def test_show_falls_back_for_function(self):
+        """Functions have no Show instance — fall back to structural
+        renderer, which surfaces the law as `<law arity=N name="…">`."""
+        ev = make_evaluator()
+        r = ev.eval_cell('λ n → n + 1')
+        self.assertIn('<law', r.value_text)
+        self.assertIn('arity=1', r.value_text)
+
     def test_precedence(self):
         """`*` binds tighter than `+`."""
         ev = make_evaluator()
