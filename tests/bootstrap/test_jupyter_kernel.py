@@ -134,6 +134,41 @@ class TestTypeDrivenRender(unittest.TestCase):
         r = ev.eval_cell('Cons (Some 1) (Cons None Nil)')
         self.assertEqual(r.value_text, 'Cons (Some 1) (Cons None Nil)')
 
+    def test_mixed_cell_decls_then_expression(self):
+        """Cell containing leading declarations followed by a
+        trailing expression: the decls accumulate silently, the
+        expression result is the cell's output. Matches the
+        Jupyter convention 'assignments are silent, trailing
+        expression echoes'.
+
+        Without this support, the parser's greedy lambda-body rule
+        absorbs the trailing expression into the last decl's body
+        and surfaces a typecheck error like 'cannot unify Nat with
+        (Pair → Nat) → ?9'."""
+        ev = make_evaluator()
+        ev.eval_cell('use Core.Pair unqualified { Pair, MkPair }')
+        src = (
+            'let snd_plus_one : Pair Nat Nat → Nat\n'
+            '  = λ p → match p { | MkPair _ b → b + 1 }\n'
+            'snd_plus_one (MkPair 3 7)'
+        )
+        r = ev.eval_cell(src)
+        self.assertIsNone(r.error,
+                           f'mixed cell errored: {r.error}')
+        self.assertEqual(r.value_text, '8')
+        # Accumulator committed the decl — next cell sees it.
+        self.assertEqual(
+            ev.eval_cell('snd_plus_one (MkPair 9 10)').value_text,
+            '11',
+        )
+
+    def test_mixed_cell_multiple_decls(self):
+        """Multiple decls followed by an expression."""
+        ev = make_evaluator()
+        src = 'let xa = 5\nlet xb = 10\nxa + xb'
+        r = ev.eval_cell(src)
+        self.assertEqual(r.value_text, '15')
+
     def test_user_defined_type_renders(self):
         """A user-defined type with constructors — same machinery as
         the prelude types because the type-driven renderer just

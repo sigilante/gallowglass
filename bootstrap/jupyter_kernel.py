@@ -204,22 +204,11 @@ class GallowglassEvaluator:
         self._cell_counter += 1
         cell_name = f'_cell_{self._cell_counter}'
 
-        # Type-driven expression mode. The cell's inferred type
-        # drives constructor-name lookup and field-type
-        # substitution: ``MkPair 3 7`` renders with the constructor
-        # name, ``Cons 1 Nil`` likewise, primitives (``Nat``,
-        # ``Bool``, ``Text``) get their canonical literal forms
-        # with type-specific colour cues in the HTML output.
-        #
-        # The user-facing ``Show`` typeclass is no longer
-        # auto-applied — the type-driven path subsumes its wins
-        # for primitives (with cleaner per-type colour) and
-        # bypasses its constrained-instance reduction gap for
-        # compound types. ``Show`` instances still exist in the
-        # prelude and fire when the user calls ``show`` explicitly;
-        # we just don't synthesize a ``display _cell`` wrapper for
-        # every cell anymore.
+        # Attempt 1: pure expression. Wrap as ``let _cell_N = <code>``
+        # and compile against the existing accumulator. Type-driven
+        # render gives constructor names + per-type colours.
         wrapped = self._wrap_as_expression(source, cell_name)
+        expr_error: dict | None = None
         try:
             forced, cell_type, type_env, con_info = (
                 self._eval_expression(wrapped, cell_name)
@@ -227,22 +216,40 @@ class GallowglassEvaluator:
         except _NotAnExpression:
             pass
         except _CellError as e:
-            return CellResult(error=e.envelope)
+            # Expression mode parsed but pipeline failed. Save the
+            # error in case the split / program paths also fail —
+            # we'll surface it as the most-informative diagnosis.
+            expr_error = e.envelope
         else:
             text, html_form = self._format_value_both(
                 forced, cell_type, type_env, con_info,
             )
             return CellResult(value_text=text, value_html=html_form)
 
-        # Attempt 3: program mode. The cell contributes declarations
-        # to the accumulator. Display a one-line summary per new
-        # declaration so the user can confirm what the cell defined
-        # — `name : Type` for lets, `type T` for type decls, `use M`
-        # for imports. Without this the cell looks like a no-op.
+        # Attempt 2: decls + trailing expression. Try splitting the
+        # cell at line boundaries (largest decl-prefix first) and
+        # parsing the prefix as a program with the suffix as the
+        # cell's expression. This is the common Jupyter pattern
+        # ``let foo = ...\nfoo + 1`` that pure expression mode
+        # can't handle (let-in requires an explicit `in`) and pure
+        # program mode parses wrong (the lambda body absorbs the
+        # trailing expression as application).
+        split = self._try_decls_with_trailing_expression(source, cell_name)
+        if split is not None:
+            return split
+
+        # Attempt 3: program mode (decls only). The cell contributes
+        # declarations to the accumulator. Display a one-line summary
+        # per new declaration so the user can confirm what the cell
+        # defined — without this the cell looks like a no-op.
         try:
             summaries = self._eval_program_fragment(source)
         except _CellError as e:
-            return CellResult(error=e.envelope)
+            # All three modes failed. Prefer the expression-mode
+            # error if it was a real diagnostic — that's the path
+            # most likely to match what the user intended for a
+            # multi-line cell with trailing values.
+            return CellResult(error=expr_error or e.envelope)
 
         if summaries:
             return CellResult(
@@ -325,6 +332,76 @@ class GallowglassEvaluator:
         cell_type = self._cell_type(type_env, fq)
         forced = self._force(compiled[fq])
         return forced, cell_type, type_env, compiler.con_info
+
+    # ------------------------------------------------------------------
+    # Mixed mode: decls + trailing expression
+    # ------------------------------------------------------------------
+
+    def _try_decls_with_trailing_expression(self, source: str,
+                                             cell_name: str) -> CellResult | None:
+        """Split the cell at a line boundary into a leading
+        declaration block and a trailing expression. Tries the
+        largest-prefix-first so we accumulate as many decls as
+        possible — important for cells that define a function and
+        then call it (``let f = … ; f x``).
+
+        Returns ``None`` when no split parses both halves cleanly.
+        On success, the new decls are committed to the accumulator
+        and the result of the trailing expression becomes the
+        cell's value.
+
+        The "decls + trailing expression" pattern is what Jupyter
+        users intuitively type. Pure expression mode can't handle
+        it (the inner ``let`` would need an explicit ``in``); pure
+        program mode parses the trailing expression as part of the
+        last decl's body via the parser's greedy lambda-body rule
+        and surfaces a typecheck error like "cannot unify Nat with
+        ...".  This split path is the dedicated fix.
+        """
+        lines = source.split('\n')
+        if len(lines) < 2:
+            # Single-line cells can't be "decls + trailing".
+            return None
+
+        # Build the existing-accumulator prefix once; each split
+        # candidate appends its own decls onto it.
+        accum_prefix = self._accumulated_source
+        if accum_prefix and not accum_prefix.endswith('\n'):
+            accum_prefix += '\n'
+
+        # Walk split points from the largest decl-prefix downward.
+        # Skip blank lines: we want the split right *before* the
+        # first non-empty line that starts a trailing expression.
+        for split_idx in range(len(lines) - 1, 0, -1):
+            prefix = '\n'.join(lines[:split_idx]).strip()
+            suffix = '\n'.join(lines[split_idx:]).strip()
+            if not prefix or not suffix:
+                continue
+
+            candidate_decls = accum_prefix + prefix + '\n'
+            wrapped_expr = (
+                f'{candidate_decls}let {cell_name} = {suffix}\n'
+            )
+            try:
+                forced, cell_type, type_env, con_info = (
+                    self._eval_expression(wrapped_expr, cell_name)
+                )
+            except (_NotAnExpression, _CellError):
+                continue
+
+            # Both halves typechecked and the trailing expression
+            # forced cleanly. Commit the new decls and return the
+            # value as the cell's result. Decl summaries are
+            # *not* included in the displayed output for this mode
+            # — Jupyter convention is "assignments are silent,
+            # the trailing expression echoes."
+            self._accumulated_source = candidate_decls
+            text, html_form = self._format_value_both(
+                forced, cell_type, type_env, con_info,
+            )
+            return CellResult(value_text=text, value_html=html_form)
+
+        return None
 
     # ------------------------------------------------------------------
     # Program mode
