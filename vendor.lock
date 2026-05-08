@@ -6,4 +6,5 @@
 #
 # Format: <name> <sha> <url>
 
+marduk f0f01cf77643b0ee1f948a4c9f34b7a10a905de1 https://github.com/sigilante/marduk.git
 reaver f72fe24da8716200dc89d81f32b65b340e6a9924 https://github.com/sol-plunder/reaver.git
