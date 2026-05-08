@@ -69,7 +69,7 @@ def compile_module_bplan():
     global _COMPILED_BPLAN
     if _COMPILED_BPLAN is not None:
         return _COMPILED_BPLAN
-    from dev.harness.bplan import register_jets
+    from dev.harness.eval import register_jets
     compiled = compile_module()  # jets work by object identity; reuse same dict
     register_jets(compiled)
     _COMPILED_BPLAN = compiled
@@ -105,7 +105,7 @@ def eval_plan(val, *args):
 
 def eval_bplan(val, *args):
     """Evaluate using BPLAN harness (arithmetic jets active)."""
-    from dev.harness.bplan import bevaluate
+    from dev.harness.eval import bevaluate
     old = sys.getrecursionlimit()
     sys.setrecursionlimit(max(old, 100000))
     try:

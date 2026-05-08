@@ -18,7 +18,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from bootstrap.build import build_modules
 from bootstrap.pin import build_manifest, compute_pin_id
-from dev.harness.bplan import bevaluate, register_prelude_jets, _bapply
+from dev.harness.eval import bevaluate, register_prelude_jets
+from dev.harness.bplan import _bapply
 from dev.harness.plan import A, N, P, is_pin
 from dev.harness.pin_store import PinStore
 
@@ -170,7 +171,7 @@ class TestPinCycleIntegration(unittest.TestCase):
         for fq in plain:
             self.assertIn(fq, pinned)
             # Unwrap pin, compare content
-            self.assertEqual(pinned[fq].val, plain[fq],
+            self.assertEqual(pinned[fq].item, plain[fq],
                              f"content mismatch for {fq}")
 
 

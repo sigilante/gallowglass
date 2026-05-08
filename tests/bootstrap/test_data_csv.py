@@ -22,7 +22,7 @@ from bootstrap.parser import parse
 from bootstrap.scope import resolve
 from bootstrap.codegen import compile_program
 from dev.harness.plan import A, N, evaluate, is_nat
-from dev.harness.bplan import bevaluate
+from dev.harness.eval import bevaluate
 
 
 def pipeline(src: str, mod: str = 'Test') -> dict:

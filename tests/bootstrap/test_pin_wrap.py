@@ -44,7 +44,7 @@ class TestPinWrappedBuild(unittest.TestCase):
         pinned = build_modules(sources, pin_wrap=True)
         for fq in plain:
             self.assertIn(fq, pinned)
-            self.assertEqual(pinned[fq].val, plain[fq])
+            self.assertEqual(pinned[fq].item, plain[fq])
 
 
 class TestEmitPinned(unittest.TestCase):

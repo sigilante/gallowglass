@@ -141,18 +141,18 @@ def test_roundtrip_simple_app():
     val = A(1, 2)
     result = load_seed(save_seed(val))
     assert is_app(result)
-    assert result.fun == 1
-    assert result.arg == 2
+    assert result.head == 1
+    assert result.tail == 2
 
 def test_roundtrip_nested_app():
     """((1 2) 3) round-trips."""
     val = A(A(1, 2), 3)
     result = load_seed(save_seed(val))
     assert is_app(result)
-    assert is_app(result.fun)
-    assert result.fun.fun == 1
-    assert result.fun.arg == 2
-    assert result.arg == 3
+    assert is_app(result.head)
+    assert result.head.head == 1
+    assert result.head.tail == 2
+    assert result.tail == 3
 
 def test_roundtrip_shared_subterm():
     """Shared subterms are preserved (DAG sharing)."""
@@ -165,8 +165,8 @@ def test_roundtrip_shared_subterm():
     # inner is shared so should be emitted once
     result = load_seed(data)
     assert is_app(result)
-    assert is_app(result.fun)
-    assert is_app(result.arg)
+    assert is_app(result.head)
+    assert is_app(result.tail)
 
 
 # ============================================================

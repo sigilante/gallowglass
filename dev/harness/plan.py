@@ -22,15 +22,35 @@ This is the authoritative local dev evaluator. CI uses Reaver
 
 
 class P:
-    """Pin: content-addressed, globally deduplicated."""
+    """Pin: content-addressed, globally deduplicated.
+
+    Carries Marduk-aligned alias ``.item`` for the inner value. New
+    code should prefer ``.item``; ``.val`` is preserved for backward
+    compat with pre-Marduk tests and helpers and will be removed when
+    the legacy backend retires.
+    """
     __slots__ = ('val',)
     def __init__(self, val): self.val = val
     def __eq__(self, other): return isinstance(other, P) and self.val == other.val
     def __repr__(self): return f'<{self.val}>'
 
+    @property
+    def item(self):
+        """Marduk-aligned name for the pinned value. Equivalent to ``.val``."""
+        return self.val
+
+    type = 'pin'
+
 
 class L:
-    """Law: named pure function {name arity body}."""
+    """Law: named pure function {name arity body}.
+
+    Marduk's smart constructor takes ``Law(name, arity, body)``; this
+    class's ``__init__`` keeps the historical ``L(arity, name, body)``
+    order. Field names match Marduk's accessors (``.name``, ``.body``)
+    except that Marduk uses ``.args`` for arity (the spec spells it
+    that way); ``.args`` is provided as an alias.
+    """
     __slots__ = ('arity', 'name', 'body')
     def __init__(self, arity, name, body):
         self.arity = arity
@@ -41,9 +61,22 @@ class L:
                and self.name == other.name and self.body == other.body
     def __repr__(self): return f'{{{self.name} {self.arity} {self.body}}}'
 
+    @property
+    def args(self):
+        """Marduk-aligned name for the law's arity. Equivalent to ``.arity``."""
+        return self.arity
+
+    type = 'law'
+
 
 class A:
-    """App: function application."""
+    """App: function application.
+
+    Carries Marduk-aligned aliases ``.head`` and ``.tail`` for the
+    function and argument slots. New code should prefer the aligned
+    names; ``.fun`` / ``.arg`` are preserved for backward compat and
+    will be removed when the legacy backend retires.
+    """
     __slots__ = ('fun', 'arg')
     def __init__(self, fun, arg):
         self.fun = fun
@@ -52,31 +85,70 @@ class A:
         return isinstance(other, A) and self.fun == other.fun and self.arg == other.arg
     def __repr__(self): return f'({self.fun} {self.arg})'
 
+    @property
+    def head(self):
+        """Marduk-aligned name for the function side. Equivalent to ``.fun``."""
+        return self.fun
+
+    @property
+    def tail(self):
+        """Marduk-aligned name for the argument side. Equivalent to ``.arg``."""
+        return self.arg
+
+    type = 'app'
+
 
 def N(n):
     """Nat: natural number. Represented as Python int."""
     return n
 
 
+# Type predicates — accept both legacy values (int / P / L / A) and
+# Marduk ``Val`` instances. The cross-backend recognition uses the
+# ``.type`` attribute that legacy P / L / A grew Marduk-aligned and that
+# Marduk's ``Val`` exposes natively. Bare ``int`` is the only legacy
+# value that doesn't carry ``.type`` — handled with an explicit
+# ``isinstance`` check in :func:`is_nat`.
+
 def is_nat(x):
-    return isinstance(x, int)
+    if isinstance(x, int):
+        return True
+    return getattr(x, 'type', None) == 'nat'
 
 
 def is_pin(x):
-    return isinstance(x, P)
+    if isinstance(x, P):
+        return True
+    return getattr(x, 'type', None) == 'pin'
 
 
 def is_law(x):
-    return isinstance(x, L)
+    if isinstance(x, L):
+        return True
+    return getattr(x, 'type', None) == 'law'
 
 
 def is_app(x):
-    return isinstance(x, A)
+    if isinstance(x, A):
+        return True
+    return getattr(x, 'type', None) == 'app'
 
 
 def nat(x):
-    """Extract nat value, defaulting to 0."""
-    return x if is_nat(x) else 0
+    """Extract a nat as a Python int. Returns 0 for non-nats.
+
+    Handles legacy bare ints, legacy ``P(N(k))`` opcode pins (unwraps),
+    and Marduk ``Val`` nats (via ``.nat``).
+    """
+    if isinstance(x, int):
+        return x
+    if getattr(x, 'type', None) == 'nat':
+        # Marduk Val nat
+        return x.nat
+    if isinstance(x, P) and isinstance(x.val, int):
+        # Legacy quoted nat in opcode-pin form
+        return x.val
+    return 0
 
 
 def str_nat(s: str) -> int:

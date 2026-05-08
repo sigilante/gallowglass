@@ -20,7 +20,8 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from dev.harness.plan import A, N, is_app, is_nat
-from dev.harness.bplan import bevaluate, register_prelude_jets, _bapply
+from dev.harness.eval import bevaluate, register_prelude_jets
+from dev.harness.bplan import _bapply
 
 def apply(f, x):
     """Apply using the jet-aware bplan evaluator."""
@@ -64,7 +65,7 @@ def check_text(v, expected: str) -> bool:
     """Return True if PLAN value v is the Text encoding of `expected`."""
     b = expected.encode('utf-8')
     content = int.from_bytes(b, 'little') if b else 0
-    return (is_app(v) and v.fun == len(b) and v.arg == content)
+    return (is_app(v) and v.head == len(b) and v.tail == content)
 
 
 # ---------------------------------------------------------------------------

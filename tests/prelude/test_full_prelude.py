@@ -15,7 +15,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from dev.harness.bplan import bevaluate, register_prelude_jets, _bapply
+from dev.harness.eval import bevaluate, register_prelude_jets
+from dev.harness.bplan import _bapply
 from dev.harness.plan import A, N, is_app
 
 CORE_DIR = os.path.join(os.path.dirname(__file__), '..', '..',
@@ -60,7 +61,7 @@ def mk_text(s: str):
 def check_text(v, expected: str) -> bool:
     b = expected.encode('utf-8')
     content = int.from_bytes(b, 'little') if b else 0
-    return is_app(v) and v.fun == len(b) and v.arg == content
+    return is_app(v) and v.head == len(b) and v.tail == content
 
 
 def mk_nil():

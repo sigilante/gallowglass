@@ -14,7 +14,8 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from dev.harness.plan import A, N, L, P, evaluate as raw_evaluate, make_bplan_law
-from dev.harness.bplan import bevaluate, _bapply
+from dev.harness.eval import bevaluate
+from dev.harness.bplan import _bapply
 
 def apply(f, x):
     return _bapply(f, x)
@@ -110,11 +111,11 @@ class TestCorePairHarness(unittest.TestCase):
         inc_fn = make_bplan_law("Inc", 1)
         result = evaluate(apply(apply(self.fn('map_fst'), inc_fn), mk_pair(N(10), N(20))))
         # Result should be MkPair 11 20 = A(A(0, 11), 20)
-        self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
-        self.assertTrue(hasattr(result.fun, 'fun'), f'Expected nested App, got {result.fun}')
-        self.assertEqual(result.fun.fun, 0)  # tag
-        self.assertEqual(result.fun.arg, 11)  # first incremented
-        self.assertEqual(result.arg, 20)  # second unchanged
+        self.assertTrue(result.type == 'app', f'Expected App, got {result}')
+        self.assertTrue(result.head.type == 'app', f'Expected nested App, got {result.head}')
+        self.assertEqual(result.head.head, 0)  # tag
+        self.assertEqual(result.head.tail, 11)  # first incremented
+        self.assertEqual(result.tail, 20)  # second unchanged
 
     # --- map_snd ---
 
@@ -122,29 +123,29 @@ class TestCorePairHarness(unittest.TestCase):
         """map_snd inc (MkPair 10 20) = MkPair 10 21"""
         inc_fn = make_bplan_law("Inc", 1)
         result = evaluate(apply(apply(self.fn('map_snd'), inc_fn), mk_pair(N(10), N(20))))
-        self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
-        self.assertTrue(hasattr(result.fun, 'fun'), f'Expected nested App, got {result.fun}')
-        self.assertEqual(result.fun.fun, 0)  # tag
-        self.assertEqual(result.fun.arg, 10)  # first unchanged
-        self.assertEqual(result.arg, 21)  # second incremented
+        self.assertTrue(result.type == 'app', f'Expected App, got {result}')
+        self.assertTrue(result.head.type == 'app', f'Expected nested App, got {result.head}')
+        self.assertEqual(result.head.head, 0)  # tag
+        self.assertEqual(result.head.tail, 10)  # first unchanged
+        self.assertEqual(result.tail, 21)  # second incremented
 
     # --- swap ---
 
     def test_swap(self):
         """swap (MkPair 10 20) = MkPair 20 10"""
         result = evaluate(apply(self.fn('swap'), mk_pair(N(10), N(20))))
-        self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
-        self.assertTrue(hasattr(result.fun, 'fun'), f'Expected nested App, got {result.fun}')
-        self.assertEqual(result.fun.fun, 0)  # tag
-        self.assertEqual(result.fun.arg, 20)  # was second
-        self.assertEqual(result.arg, 10)  # was first
+        self.assertTrue(result.type == 'app', f'Expected App, got {result}')
+        self.assertTrue(result.head.type == 'app', f'Expected nested App, got {result.head}')
+        self.assertEqual(result.head.head, 0)  # tag
+        self.assertEqual(result.head.tail, 20)  # was second
+        self.assertEqual(result.tail, 10)  # was first
 
     def test_swap_same(self):
         """swap (MkPair 5 5) = MkPair 5 5"""
         result = evaluate(apply(self.fn('swap'), mk_pair(N(5), N(5))))
-        self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
-        self.assertEqual(result.fun.arg, 5)
-        self.assertEqual(result.arg, 5)
+        self.assertTrue(result.type == 'app', f'Expected App, got {result}')
+        self.assertEqual(result.head.tail, 5)
+        self.assertEqual(result.tail, 5)
 
 
 if __name__ == '__main__':

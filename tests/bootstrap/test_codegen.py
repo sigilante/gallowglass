@@ -145,7 +145,7 @@ def test_text_empty():
     """Empty text literal encodes as A(0, 0)."""
     v = val_of('let main = ""', 'main')
     assert is_app(v), f"expected App, got {v!r}"
-    bl, cn = v.fun, v.arg
+    bl, cn = v.head, v.tail
     assert is_nat(bl) and bl == 0
     assert is_nat(cn) and cn == 0
 
@@ -154,7 +154,7 @@ def test_text_single_char():
     """Single ASCII char: byte_length=1, content_nat=ord(c)."""
     v = val_of('let main = "A"', 'main')
     assert is_app(v)
-    bl, cn = v.fun, v.arg
+    bl, cn = v.head, v.tail
     assert is_nat(bl) and bl == 1
     assert is_nat(cn) and cn == ord('A')  # 65
 
@@ -165,7 +165,7 @@ def test_text_hello():
     expected_cn = int.from_bytes(b, 'little')
     v = val_of('let main = "hello"', 'main')
     assert is_app(v)
-    bl, cn = v.fun, v.arg
+    bl, cn = v.head, v.tail
     assert is_nat(bl) and bl == 5
     assert is_nat(cn) and cn == expected_cn
 
@@ -177,7 +177,7 @@ def test_text_in_lambda_body():
     assert is_law(v)
     result = evaluate(apply(v, N(0)))
     assert is_app(result)
-    bl, cn = result.fun, result.arg
+    bl, cn = result.head, result.tail
     b = "hi".encode('utf-8')
     assert is_nat(bl) and bl == 2
     assert is_nat(cn) and cn == int.from_bytes(b, 'little')
@@ -195,14 +195,14 @@ def test_text_byte_length_accessor():
     src = 'let msg = "hello world"'
     v = val_of(src, 'msg')
     assert is_app(v)
-    assert v.fun == 11  # len("hello world".encode()) == 11
+    assert v.head == 11  # len("hello world".encode()) == 11
 
 
 def test_bytes_literal():
     """Bytes literal x\"48656c6c6f\" ('Hello') encodes as (5, content_nat) pair."""
     v = val_of('let main = x"48656c6c6f"', 'main')
     assert is_app(v)
-    bl, cn = v.fun, v.arg
+    bl, cn = v.head, v.tail
     assert is_nat(bl) and bl == 5   # 5 bytes
     b = bytes.fromhex('48656c6c6f')
     assert is_nat(cn) and cn == int.from_bytes(b, 'little')
@@ -251,8 +251,8 @@ let main = Wrap 42
     v = eval_val(src, 'main')
     # Wrap 42 = A(N(0), N(42))
     assert is_app(v)
-    assert is_nat(v.fun) and v.fun == 0   # tag 0
-    assert is_nat(v.arg) and v.arg == 42
+    assert is_nat(v.head) and v.head == 0   # tag 0
+    assert is_nat(v.tail) and v.tail == 42
 
 
 def test_binary_constructor():
@@ -266,10 +266,10 @@ let main = MkPair 3 7
     v = eval_val(src, 'main')
     # MkPair 3 7 = A(A(N(0), N(3)), N(7))
     assert is_app(v)
-    assert is_nat(v.arg) and v.arg == 7
-    assert is_app(v.fun)
-    assert is_nat(v.fun.arg) and v.fun.arg == 3
-    assert is_nat(v.fun.fun) and v.fun.fun == 0  # tag 0
+    assert is_nat(v.tail) and v.tail == 7
+    assert is_app(v.head)
+    assert is_nat(v.head.tail) and v.head.tail == 3
+    assert is_nat(v.head.head) and v.head.head == 0  # tag 0
 
 
 # ---------------------------------------------------------------------------
@@ -688,10 +688,10 @@ def test_tuple_construction():
     """(3, 7) evaluates to A(A(0, 3), 7)."""
     v = eval_val('let main = (3, 7)', 'main')
     assert is_app(v)
-    assert is_app(v.fun)
-    assert v.fun.fun == 0       # tag 0
-    assert v.fun.arg == 3       # first element
-    assert v.arg == 7           # second element
+    assert is_app(v.head)
+    assert v.head.head == 0       # tag 0
+    assert v.head.tail == 3       # first element
+    assert v.tail == 7           # second element
 
 
 def test_tuple_match():
@@ -1137,8 +1137,8 @@ let func : Nat → Nat
     body = v.body
     assert is_app(body), f'expected App at law body root, got {type(body).__name__}'
     # Outer App's f is A(N(1), rhs), arg is the let body.
-    assert is_app(body.fun) and is_nat(body.fun.fun) and int(body.fun.fun) == 1, \
-        f'expected (1 rhs body) form at law root; got body.fun={body.fun!r}'
+    assert is_app(body.head) and is_nat(body.head.head) and int(body.head.head) == 1, \
+        f'expected (1 rhs body) form at law root; got body.head={body.head!r}'
 
 
 def test_d8_nested_let_in_match_arm_lambda_lifts():
@@ -1277,10 +1277,10 @@ let func : Nat → Nat
     assert is_law(v)
     body = v.body
     # Outer: (1 rhs1 inner)
-    assert is_app(body) and is_app(body.fun) and is_nat(body.fun.fun) and int(body.fun.fun) == 1
-    inner = body.arg
+    assert is_app(body) and is_app(body.head) and is_nat(body.head.head) and int(body.head.head) == 1
+    inner = body.tail
     # Inner: (1 rhs2 final)
-    assert is_app(inner) and is_app(inner.fun) and is_nat(inner.fun.fun) and int(inner.fun.fun) == 1
+    assert is_app(inner) and is_app(inner.head) and is_nat(inner.head.head) and int(inner.head.head) == 1
 
 
 def test_d8_nested_let_does_not_emit_one_form():
@@ -1298,9 +1298,9 @@ let func : Nat → Nat
     def has_one_form(v) -> bool:
         from dev.harness.plan import is_app, is_nat
         if is_app(v):
-            if is_app(v.fun) and is_nat(v.fun.fun) and int(v.fun.fun) == 1:
+            if is_app(v.head) and is_nat(v.head.head) and int(v.head.head) == 1:
                 return True
-            return has_one_form(v.fun) or has_one_form(v.arg)
+            return has_one_form(v.head) or has_one_form(v.tail)
         return False
     assert is_law(v)
     assert not has_one_form(v.body), \
@@ -1839,12 +1839,12 @@ def _walk_plan(val, fn):
     """Walk every node in a PLAN value; call fn on each."""
     fn(val)
     if is_pin(val):
-        _walk_plan(val.val, fn)
+        _walk_plan(val.item, fn)
     elif is_law(val):
         _walk_plan(val.body, fn)
     elif is_app(val):
-        _walk_plan(val.fun, fn)
-        _walk_plan(val.arg, fn)
+        _walk_plan(val.head, fn)
+        _walk_plan(val.tail, fn)
 
 
 def _law_body_constants(law):
@@ -1886,10 +1886,10 @@ def _law_body_constants(law):
             return  # nested laws are scanned via _scan_law
         if is_app(v):
             # Detect quote shape A(N(0), N(k)) at this node:
-            # v.fun = N(0), v.arg = N(k)  →  quote of literal k
-            is_quote = (is_nat(v.fun) and v.fun == 0)
-            scan(v.fun, parent_is_quote_outer=False)
-            scan(v.arg, parent_is_quote_outer=is_quote)
+            # v.head = N(0), v.tail = N(k)  →  quote of literal k
+            is_quote = (is_nat(v.head) and v.head == 0)
+            scan(v.head, parent_is_quote_outer=False)
+            scan(v.tail, parent_is_quote_outer=is_quote)
     scan(law.body, parent_is_quote_outer=False)
     return found
 
@@ -1902,10 +1902,10 @@ def _scan_law(val, found_per_law):
             found_per_law.append((val.name, val.arity, leaks))
         _scan_law(val.body, found_per_law)
     elif is_pin(val):
-        _scan_law(val.val, found_per_law)
+        _scan_law(val.item, found_per_law)
     elif is_app(val):
-        _scan_law(val.fun, found_per_law)
-        _scan_law(val.arg, found_per_law)
+        _scan_law(val.head, found_per_law)
+        _scan_law(val.tail, found_per_law)
 
 
 def test_literal_in_body_is_quote_wrapped():
@@ -1924,10 +1924,10 @@ let constant : Nat → Nat
     # Fixed codegen:     body = A(N(0), N(100)) (quote form)
     assert is_law(val), f'expected Law, got {type(val).__name__}'
     body = val.body
-    assert is_app(body) and is_nat(body.fun) and body.fun == 0, \
+    assert is_app(body) and is_nat(body.head) and body.head == 0, \
         f'literal 100 in body should be quote-wrapped A(N(0), N(100)); got {body!r}'
-    assert is_nat(body.arg) and body.arg == 100, \
-        f'inner of quote should be N(100); got {body.arg!r}'
+    assert is_nat(body.tail) and body.tail == 100, \
+        f'inner of quote should be N(100); got {body.tail!r}'
 
 
 def test_constructor_tag_in_body_is_quoted_recursively():

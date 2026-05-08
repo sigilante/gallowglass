@@ -542,7 +542,7 @@ class TestUTF8Encoding:
         """Text with u-umlaut (2 bytes in UTF-8)."""
         vv = val_of('let main = "\u00fc"', 'main')
         assert is_app(vv)
-        bl, cn = vv.fun, vv.arg
+        bl, cn = vv.head, vv.tail
         bb = "\u00fc".encode('utf-8')
         assert bl == len(bb), f"expected byte_length {len(bb)}, got {bl}"
         assert cn == int.from_bytes(bb, 'little')
@@ -551,7 +551,7 @@ class TestUTF8Encoding:
         """Text with mixed ASCII and multibyte."""
         vv = val_of('let main = "a\u00fc"', 'main')
         assert is_app(vv)
-        bl, cn = vv.fun, vv.arg
+        bl, cn = vv.head, vv.tail
         bb = "a\u00fc".encode('utf-8')
         assert bl == len(bb), f"expected byte_length {len(bb)}, got {bl}"
         assert cn == int.from_bytes(bb, 'little')
@@ -560,7 +560,7 @@ class TestUTF8Encoding:
         """Text with CJK character (3 bytes in UTF-8)."""
         vv = val_of('let main = "\u4e2d"', 'main')
         assert is_app(vv)
-        bl, cn = vv.fun, vv.arg
+        bl, cn = vv.head, vv.tail
         bb = "\u4e2d".encode('utf-8')
         assert bl == len(bb)
         assert cn == int.from_bytes(bb, 'little')
@@ -569,7 +569,7 @@ class TestUTF8Encoding:
         """Text with emoji (4 bytes in UTF-8)."""
         vv = val_of('let main = "\U0001f389"', 'main')
         assert is_app(vv)
-        bl, cn = vv.fun, vv.arg
+        bl, cn = vv.head, vv.tail
         bb = "\U0001f389".encode('utf-8')
         assert bl == len(bb)
         assert cn == int.from_bytes(bb, 'little')
@@ -578,7 +578,7 @@ class TestUTF8Encoding:
         """Text with unicode arrow."""
         vv = val_of('let main = "\u2192"', 'main')
         assert is_app(vv)
-        bl, cn = vv.fun, vv.arg
+        bl, cn = vv.head, vv.tail
         bb = "\u2192".encode('utf-8')
         assert bl == len(bb)
         assert cn == int.from_bytes(bb, 'little')
@@ -589,7 +589,7 @@ class TestUTF8Encoding:
         assert is_law(vv)
         result = evaluate(apply(vv, N(0)))
         assert is_app(result)
-        bl, cn = result.fun, result.arg
+        bl, cn = result.head, result.tail
         bb = "\u00fc".encode('utf-8')
         assert bl == len(bb)
         assert cn == int.from_bytes(bb, 'little')
@@ -598,7 +598,7 @@ class TestUTF8Encoding:
         """Bytes literal with null byte."""
         vv = val_of('let main = x"0048"', 'main')
         assert is_app(vv)
-        bl, cn = vv.fun, vv.arg
+        bl, cn = vv.head, vv.tail
         bb = bytes.fromhex('0048')
         assert bl == len(bb), f"expected {len(bb)}, got {bl}"
         assert cn == int.from_bytes(bb, 'little')
@@ -607,7 +607,7 @@ class TestUTF8Encoding:
         """Bytes literal with high-bit bytes."""
         vv = val_of('let main = x"FF80"', 'main')
         assert is_app(vv)
-        bl, cn = vv.fun, vv.arg
+        bl, cn = vv.head, vv.tail
         bb = bytes.fromhex('FF80')
         assert bl == len(bb)
         assert cn == int.from_bytes(bb, 'little')

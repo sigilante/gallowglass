@@ -26,7 +26,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from dev.harness.plan import A, N, evaluate, is_nat, is_app
-from dev.harness.bplan import bevaluate
+from dev.harness.eval import bevaluate
 
 MODULE = 'Compiler'
 SRC_PATH = os.path.join(os.path.dirname(__file__), '..', '..',
@@ -43,7 +43,7 @@ def compile_module():
     from bootstrap.parser import parse
     from bootstrap.scope import resolve
     from bootstrap.codegen import compile_program
-    from dev.harness.bplan import register_jets
+    from dev.harness.eval import register_jets
     with open(SRC_PATH) as f:
         src = f.read()
     prog = parse(lex(src, SRC_PATH), SRC_PATH)

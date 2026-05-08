@@ -16,7 +16,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from dev.harness.plan import A, N, L, P, make_bplan_law
 from dev.harness.plan import evaluate as plan_evaluate, apply as plan_apply
-from dev.harness.bplan import bevaluate, _bapply
+from dev.harness.eval import bevaluate
+from dev.harness.bplan import _bapply
 
 def apply(f, x):
     return _bapply(f, x)
@@ -136,17 +137,17 @@ class TestCoreResultHarness(unittest.TestCase):
         inc_fn = make_bplan_law("Inc", 1)
         result = evaluate(apply(apply(self.fn('map_ok'), inc_fn), mk_ok(N(10))))
         # Result should be Ok 11 = A(0, 11)
-        self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
-        self.assertEqual(result.fun, 0)  # tag Ok
-        self.assertEqual(result.arg, 11)
+        self.assertTrue(result.type == 'app', f'Expected App, got {result}')
+        self.assertEqual(result.head, 0)  # tag Ok
+        self.assertEqual(result.tail, 11)
 
     def test_map_ok_on_err(self):
         """map_ok inc (Err 99) = Err 99"""
         inc_fn = make_bplan_law("Inc", 1)
         result = evaluate(apply(apply(self.fn('map_ok'), inc_fn), mk_err(N(99))))
-        self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
-        self.assertEqual(result.fun, 1)  # tag Err
-        self.assertEqual(result.arg, 99)
+        self.assertTrue(result.type == 'app', f'Expected App, got {result}')
+        self.assertEqual(result.head, 1)  # tag Err
+        self.assertEqual(result.tail, 99)
 
     # --- map_err ---
 
@@ -154,17 +155,17 @@ class TestCoreResultHarness(unittest.TestCase):
         """map_err inc (Err 10) = Err 11"""
         inc_fn = make_bplan_law("Inc", 1)
         result = evaluate(apply(apply(self.fn('map_err'), inc_fn), mk_err(N(10))))
-        self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
-        self.assertEqual(result.fun, 1)  # tag Err
-        self.assertEqual(result.arg, 11)
+        self.assertTrue(result.type == 'app', f'Expected App, got {result}')
+        self.assertEqual(result.head, 1)  # tag Err
+        self.assertEqual(result.tail, 11)
 
     def test_map_err_on_ok(self):
         """map_err inc (Ok 42) = Ok 42"""
         inc_fn = make_bplan_law("Inc", 1)
         result = evaluate(apply(apply(self.fn('map_err'), inc_fn), mk_ok(N(42))))
-        self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
-        self.assertEqual(result.fun, 0)  # tag Ok
-        self.assertEqual(result.arg, 42)
+        self.assertTrue(result.type == 'app', f'Expected App, got {result}')
+        self.assertEqual(result.head, 0)  # tag Ok
+        self.assertEqual(result.tail, 42)
 
     # --- bind_result ---
 
@@ -176,9 +177,9 @@ class TestCoreResultHarness(unittest.TestCase):
         inc_call = A(A(0, _B), A(A(0, A(0, _strnat('Inc'))), 1))
         ok_inc = L(1, 0, A(A(0, A(0, 0)), inc_call))
         result = evaluate(apply(apply(self.fn('bind_result'), mk_ok(N(10))), ok_inc))
-        self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
-        self.assertEqual(result.fun, 0)  # tag Ok
-        self.assertEqual(result.arg, 11)
+        self.assertTrue(result.type == 'app', f'Expected App, got {result}')
+        self.assertEqual(result.head, 0)  # tag Ok
+        self.assertEqual(result.tail, 11)
 
     def test_bind_result_err(self):
         """bind_result (Err 99) f = Err 99 (f not called)"""
@@ -188,9 +189,9 @@ class TestCoreResultHarness(unittest.TestCase):
         inc_call = A(A(0, _B), A(A(0, A(0, _strnat('Inc'))), 1))
         ok_inc = L(1, 0, A(A(0, A(0, 0)), inc_call))
         result = evaluate(apply(apply(self.fn('bind_result'), mk_err(N(99))), ok_inc))
-        self.assertTrue(hasattr(result, 'fun'), f'Expected App, got {result}')
-        self.assertEqual(result.fun, 1)  # tag Err
-        self.assertEqual(result.arg, 99)
+        self.assertTrue(result.type == 'app', f'Expected App, got {result}')
+        self.assertEqual(result.head, 1)  # tag Err
+        self.assertEqual(result.tail, 99)
 
     # --- Eq Result ---
 

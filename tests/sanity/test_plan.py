@@ -28,14 +28,14 @@ def test_opcode_0_pin():
     """Opcode 0 (via P(0)): pins a value."""
     result = apply(P(0), 42)
     assert is_pin(result), f"Expected pin, got {result}"
-    assert result.val == 42
+    assert result.item == 42
 
 def test_opcode_0_pin_law():
     """Pinning a law preserves it."""
     l = L(1, 1, 1)
     result = apply(P(0), l)
     assert is_pin(result)
-    assert result.val == l
+    assert result.item == l
 
 
 # ============================================================
@@ -103,7 +103,7 @@ def test_bplan_pin():
     """Pin is a BPLAN named primitive (replaces opcode-pin Pin in user code)."""
     result = _bplan_call('Pin', 42)
     assert is_pin(result)
-    assert result.val == 42
+    assert result.item == 42
 
 
 # ============================================================

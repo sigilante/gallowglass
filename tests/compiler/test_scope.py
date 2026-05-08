@@ -30,7 +30,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from dev.harness.plan import A, evaluate
-from dev.harness.bplan import bevaluate
+from dev.harness.eval import bevaluate
 
 MODULE = 'Compiler'
 SRC_PATH = os.path.join(os.path.dirname(__file__), '..', '..',
@@ -47,7 +47,7 @@ def compile_module_bplan():
     from bootstrap.parser import parse
     from bootstrap.scope import resolve
     from bootstrap.codegen import compile_program
-    from dev.harness.bplan import register_jets
+    from dev.harness.eval import register_jets
     with open(SRC_PATH) as f:
         src = f.read()
     prog = parse(lex(src, SRC_PATH), SRC_PATH)
@@ -59,7 +59,7 @@ def compile_module_bplan():
 
 
 def eval_bplan(val, *args):
-    from dev.harness.bplan import bevaluate
+    from dev.harness.eval import bevaluate
     old = sys.getrecursionlimit()
     sys.setrecursionlimit(max(old, 100000))
     try:
@@ -160,11 +160,11 @@ def decode_expr_var(bc, expr_val):
     evar_n_fn = bc.get('Compiler.cg_var_name')
     # Use expr_tag == 0 and extract field via EVar accessor
     # EVar n = A(A(N(0), n), n) in constructor encoding? No:
-    # EVar n is unary tag=0: A(N(0), n), so .arg = n
+    # EVar n is unary tag=0: A(N(0), n), so .tail = n
     ev = bevaluate(expr_val)
     from dev.harness.plan import is_app, is_nat
-    if is_app(ev) and is_nat(ev.fun) and ev.fun == 0:
-        return ev.arg
+    if is_app(ev) and is_nat(ev.head) and ev.head == 0:
+        return ev.tail
     return None
 
 
@@ -227,7 +227,7 @@ class TestSrCollectGlobals(unittest.TestCase):
         # In our encoding: Some v = A(N(1), v) (unary tag=1)
         # None = N(0) (nullary tag=0)
         if is_app(ev):
-            return ev.arg  # the value inside Some
+            return ev.tail  # the value inside Some
         return None
 
     def test_collects_dlet_name(self):
@@ -375,16 +375,16 @@ class TestResolveProgram(unittest.TestCase):
         """Extract head from Cons h t = A(A(N(1), h), t)."""
         from dev.harness.plan import is_app, is_nat
         ev = bevaluate(val)
-        if is_app(ev) and is_app(ev.fun) and is_nat(ev.fun.fun) and ev.fun.fun == 1:
-            return ev.fun.arg
+        if is_app(ev) and is_app(ev.head) and is_nat(ev.head.head) and ev.head.head == 1:
+            return ev.head.tail
         return None
 
     def _list_tail(self, val):
         """Extract tail from Cons h t = A(A(N(1), h), t)."""
         from dev.harness.plan import is_app, is_nat
         ev = bevaluate(val)
-        if is_app(ev) and is_app(ev.fun) and is_nat(ev.fun.fun) and ev.fun.fun == 1:
-            return ev.arg
+        if is_app(ev) and is_app(ev.head) and is_nat(ev.head.head) and ev.head.head == 1:
+            return ev.tail
         return None
 
     def test_identity_on_dtype(self):
@@ -412,7 +412,7 @@ class TestResolveProgram(unittest.TestCase):
         ])
         resolved = eval_bplan(self.resolve, decls, self.nn_M)
         # Extract body of first decl using direct PLAN structural access
-        # Cons h t = A(A(N(1), h), t); h = .fun.arg
+        # Cons h t = A(A(N(1), h), t); h = .head.tail
         first_decl = self._list_head(resolved)
         self.assertIsNotNone(first_decl)
         body = decode_decl_let_body(self.bc, first_decl)

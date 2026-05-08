@@ -47,7 +47,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from dev.harness.plan import A, P, L, N, is_nat, is_app, is_pin, is_law, evaluate
-from dev.harness.bplan import bevaluate
+from dev.harness.eval import bevaluate
 
 MODULE = 'Compiler'
 SRC_PATH = os.path.join(os.path.dirname(__file__), '..', '..',
@@ -78,7 +78,7 @@ def compile_module_bplan():
     global _COMPILED_BPLAN
     if _COMPILED_BPLAN is not None:
         return _COMPILED_BPLAN
-    from dev.harness.bplan import register_jets
+    from dev.harness.eval import register_jets
     compiled = compile_module()
     register_jets(compiled)
     _COMPILED_BPLAN = compiled
@@ -141,10 +141,10 @@ def plan2pv(val, bc, cache=None):
         r = A(bc['Compiler.PNat'], val)
     elif is_app(val):
         r = A(A(bc['Compiler.PApp'],
-               plan2pv(val.fun, bc, cache)),
-              plan2pv(val.arg, bc, cache))
+               plan2pv(val.head, bc, cache)),
+              plan2pv(val.tail, bc, cache))
     elif is_pin(val):
-        r = A(bc['Compiler.PPin'], plan2pv(val.val, bc, cache))
+        r = A(bc['Compiler.PPin'], plan2pv(val.item, bc, cache))
     elif is_law(val):
         body_pv = plan2pv(val.body, bc, cache)
         pair = A(A(bc['Compiler.MkPair'], val.arity), body_pv)
@@ -168,10 +168,10 @@ def gls_bytes_decode(ev):
     content_nat is the little-endian encoding of the byte sequence.
     Returns None if ev is not a valid Bytes value.
     """
-    if (is_app(ev) and is_app(ev.fun)
-            and is_nat(ev.fun.fun) and ev.fun.fun == 0):
-        length = ev.fun.arg
-        content = ev.arg
+    if (is_app(ev) and is_app(ev.head)
+            and is_nat(ev.head.head) and ev.head.head == 0):
+        length = ev.head.tail
+        content = ev.tail
         if is_nat(length) and is_nat(content):
             if length == 0:
                 return b''

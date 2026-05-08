@@ -44,7 +44,7 @@ from bootstrap.scope import resolve
 from bootstrap.codegen import compile_program
 from bootstrap.build import build_with_prelude
 from bootstrap.emit_pla import emit_program
-from dev.harness.bplan import bevaluate, register_jets, register_prelude_jets
+from dev.harness.eval import bevaluate, register_jets, register_prelude_jets
 from dev.harness.plan import is_nat
 
 
