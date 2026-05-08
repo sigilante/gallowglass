@@ -169,18 +169,30 @@ def _legacy_backend():
 
 
 def _marduk_backend():
-    """Placeholder for the post-swap Marduk backend.
-
-    Fails fast with a clear message until the migration commits wire
-    up :mod:`bootstrap.build` (or its successor) onto Marduk's
-    ``evaluate``. Keeping the scaffold here means the benchmark script
-    stays the canonical front-end across the swap.
-    """
-    raise NotImplementedError(
-        "marduk backend not wired yet — re-run after the gallowglass→Marduk "
-        "swap lands. The legacy backend is captured by ``--backend=legacy`` "
-        "(default)."
+    """Marduk backend — runs the same compiled output through
+    :mod:`dev.harness.marduk`. Requires marduk installed locally
+    (``pip install -e vendor/marduk/packages/marduk``)."""
+    from bootstrap.build import build_with_prelude
+    from dev.harness.marduk import (
+        bevaluate, register_jets, register_prelude_jets,
     )
+
+    def compile(name: str, source: str) -> dict:
+        module = source_to_module_name(source)
+        return build_with_prelude(module, source)
+
+    def evaluate(compiled: dict, fq: str) -> int:
+        register_jets(compiled)
+        register_prelude_jets(compiled)
+        v = compiled[fq]
+        result = bevaluate(v)
+        if result.type != "nat":
+            raise RuntimeError(
+                f"expected Nat result for {fq}, got type={result.type!r}"
+            )
+        return result.nat
+
+    return compile, evaluate
 
 
 BACKENDS: dict[str, Callable[[], tuple[Callable, Callable]]] = {

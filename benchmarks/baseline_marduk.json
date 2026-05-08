@@ -1,0 +1,81 @@
+{
+  "backend": "marduk",
+  "runs": 5,
+  "workloads": {
+    "calculator.example1": {
+      "compile_seconds": {
+        "max": 0.023523,
+        "median": 0.02138,
+        "min": 0.021102,
+        "n": 5
+      },
+      "eval_seconds": {
+        "max": 0.002341,
+        "median": 0.002243,
+        "min": 0.001947,
+        "n": 5
+      },
+      "value": 14
+    },
+    "calculator.example2": {
+      "compile_seconds": {
+        "max": 0.023502,
+        "median": 0.021517,
+        "min": 0.021155,
+        "n": 5
+      },
+      "eval_seconds": {
+        "max": 0.002115,
+        "median": 0.001916,
+        "min": 0.001814,
+        "n": 5
+      },
+      "value": 4
+    },
+    "calculator.example3": {
+      "compile_seconds": {
+        "max": 0.024084,
+        "median": 0.021231,
+        "min": 0.020673,
+        "n": 5
+      },
+      "eval_seconds": {
+        "max": 0.006427,
+        "median": 0.006015,
+        "min": 0.005732,
+        "n": 5
+      },
+      "value": 21
+    },
+    "csv_table.row_count_result": {
+      "compile_seconds": {
+        "max": 0.023877,
+        "median": 0.021678,
+        "min": 0.021263,
+        "n": 5
+      },
+      "eval_seconds": {
+        "max": 0.002976,
+        "median": 0.0011,
+        "min": 0.00101,
+        "n": 5
+      },
+      "value": 3
+    },
+    "csv_table.top_score_result": {
+      "compile_seconds": {
+        "max": 0.024901,
+        "median": 0.022379,
+        "min": 0.021634,
+        "n": 5
+      },
+      "eval_seconds": {
+        "max": 0.009064,
+        "median": 0.008418,
+        "min": 0.008161,
+        "n": 5
+      },
+      "value": 95
+    }
+  }
+}
