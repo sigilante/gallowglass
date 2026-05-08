@@ -1,0 +1,81 @@
+{
+  "backend": "legacy",
+  "runs": 5,
+  "workloads": {
+    "calculator.example1": {
+      "compile_seconds": {
+        "max": 0.024744,
+        "median": 0.021439,
+        "min": 0.020442,
+        "n": 5
+      },
+      "eval_seconds": {
+        "max": 0.001395,
+        "median": 0.001357,
+        "min": 0.001306,
+        "n": 5
+      },
+      "value": 14
+    },
+    "calculator.example2": {
+      "compile_seconds": {
+        "max": 0.023233,
+        "median": 0.021566,
+        "min": 0.020723,
+        "n": 5
+      },
+      "eval_seconds": {
+        "max": 0.002172,
+        "median": 0.001925,
+        "min": 0.00188,
+        "n": 5
+      },
+      "value": 4
+    },
+    "calculator.example3": {
+      "compile_seconds": {
+        "max": 0.024751,
+        "median": 0.021432,
+        "min": 0.021126,
+        "n": 5
+      },
+      "eval_seconds": {
+        "max": 0.003584,
+        "median": 0.00336,
+        "min": 0.003333,
+        "n": 5
+      },
+      "value": 21
+    },
+    "csv_table.row_count_result": {
+      "compile_seconds": {
+        "max": 0.026719,
+        "median": 0.024261,
+        "min": 0.021517,
+        "n": 5
+      },
+      "eval_seconds": {
+        "max": 0.000181,
+        "median": 0.000156,
+        "min": 0.00015,
+        "n": 5
+      },
+      "value": 3
+    },
+    "csv_table.top_score_result": {
+      "compile_seconds": {
+        "max": 0.023103,
+        "median": 0.021494,
+        "min": 0.020693,
+        "n": 5
+      },
+      "eval_seconds": {
+        "max": 0.001605,
+        "median": 0.001554,
+        "min": 0.001546,
+        "n": 5
+      },
+      "value": 95
+    }
+  }
+}
