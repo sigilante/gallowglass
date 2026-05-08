@@ -568,6 +568,47 @@ class Compiler:
         body = bapp(gateway_pin, inner)
         return P(L(prim_arity, name_nat, body))
 
+    # ------------------------------------------------------------------
+    # BPLAN-named alternatives to direct <0>/<1>/<2> opcode dispatch.
+    #
+    # Codegen historically built saturated calls on Pin'd-nat opcodes —
+    # `A(...A(A(A(A(A(A(P(N(2)), p), l), a), z), m), o)` for Elim — which
+    # rely on the legacy backend's `_OP_ARITY` table treating
+    # `<1>` as arity 3 (Law) and `<2>` as arity 6 (Elim). The Marduk
+    # spec-faithful core treats every Pin'd-nat as arity 1 with inner-op
+    # tag dispatch, so those legacy direct-dispatch forms don't evaluate
+    # under Marduk.
+    #
+    # The helpers below produce equivalent values via BPLAN-named ops
+    # ("Pin", "Law", "Elim"), which both backends already dispatch
+    # identically through `op 66` / `<66>`. The runtime values are
+    # bit-different from the legacy direct-dispatch shape but
+    # operationally equivalent — the legacy backend's `_b_elim` calls
+    # the same `match` primitive `<2>` direct dispatch would.
+    # ------------------------------------------------------------------
+
+    _ELIM_NAME_NAT = encode_name('Elim')
+    _LAW_NAME_NAT  = encode_name('Law')
+    _PIN_NAME_NAT  = encode_name('Pin')
+
+    @classmethod
+    def _elim_app(cls, p, l, a, z, m, o):
+        """Build a Val ``(<BPLAN> ("Elim" p l a z m o))`` for top-level
+        construction (not inside a law body)."""
+        inner = A(A(A(A(A(A(N(cls._ELIM_NAME_NAT), p), l), a), z), m), o)
+        return A(cls._BPLAN_PIN, inner)
+
+    @classmethod
+    def _elim_body(cls, p, l, a, z, m, o):
+        """Body-syntax expression that, when kal-evaluated, builds
+        ``(<BPLAN> ("Elim" p l a z m o))`` from in-scope body
+        expressions for each arg. Each arg is itself a body
+        expression (slot ref, quoted constant, or nested apply)."""
+        name_quoted = A(N(0), N(cls._ELIM_NAME_NAT))
+        bplan_quoted = A(N(0), cls._BPLAN_PIN)
+        inner = bapp(name_quoted, p, l, a, z, m, o)
+        return bapp(bplan_quoted, inner)
+
     @staticmethod
     def _make_core_text_primitives() -> dict:
         """
@@ -600,7 +641,10 @@ class Compiler:
 
         def make_text_field_law(field_selector) -> Any:
             """Build a 1-arg law that extracts a field from a Text App value."""
-            body = bapp(P(N(2)), const0_1, const0_3, field_selector, zero_lit, const0_1, N(1))
+            body = Compiler._elim_body(
+                const0_1, const0_3, field_selector,
+                zero_lit, const0_1, N(1),
+            )
             return P(L(1, encode_name('text_field'), body))
 
         # mk_text: arity-2, body = bapp(N(1), N(2)) = (0 1 2) in law body
@@ -1753,9 +1797,10 @@ class Compiler:
         # selected Pin to a dummy argument enters its body and evaluates the
         # corresponding branch.
         if env.arity == 0:
-            selected = A(A(A(A(A(A(P(N(2)), P(self._ID_LAW)),
-                                P(self._ID_LAW)), P(self._ID_LAW)),
-                            else_thunk), A(const2_pin, then_thunk)), cond_body)
+            selected = self._elim_app(
+                P(self._ID_LAW), P(self._ID_LAW), P(self._ID_LAW),
+                else_thunk, A(const2_pin, then_thunk), cond_body,
+            )
             return A(selected, N(0))
         else:
             selected = self._make_op2_dispatch(else_thunk,
@@ -1846,22 +1891,19 @@ class Compiler:
         """
         Build an Elim dispatch: if scrutinee==0 return zero_val, else apply succ_body to pred.
 
-        Uses canonical opcode 2 (Elim, formerly Case_) with 6 separate args:
-        (p, l, a, z, m, o). p/l/a handlers are identity (unused for Nat scrutinee).
+        Uses BPLAN-named ``Elim`` (6-arity) — (p, l, a, z, m, o). The
+        p/l/a handlers are identity (unused when the scrutinee is a Nat).
         """
         id_pin = P(self._ID_LAW)
         if env.arity == 0:
-            return A(A(A(A(A(A(P(N(2)), id_pin), id_pin), id_pin),
-                        zero_val), succ_body), scrutinee_body)
-        else:
-            step = P(N(2))
-            step = bapp(step, id_pin)
-            step = bapp(step, id_pin)
-            step = bapp(step, id_pin)
-            step = bapp(step, zero_val)
-            step = bapp(step, succ_body)
-            step = bapp(step, scrutinee_body)
-            return step
+            return self._elim_app(
+                id_pin, id_pin, id_pin,
+                zero_val, succ_body, scrutinee_body,
+            )
+        return self._elim_body(
+            id_pin, id_pin, id_pin,
+            zero_val, succ_body, scrutinee_body,
+        )
 
     def _build_nat_dispatch(self, arms_sorted, wild_body, wild_var, scrutinee, env, name_hint):
         """
@@ -2096,9 +2138,6 @@ class Compiler:
         # Sort by tag
         con_arms.sort(key=lambda t: t[0].tag)
         max_tag = con_arms[-1][0].tag
-
-        op1 = P(N(1))  # reflect opcode
-        op2 = P(N(2))  # nat iteration opcode
 
         def extract_tag(val: Any) -> Any:
             """
@@ -2644,23 +2683,23 @@ class Compiler:
     def _make_reflect_dispatch(self, app_handler: Any, z_body: Any, m_body: Any,
                                 scrutinee: Any, env: Env) -> Any:
         """
-        Build a Case_ (opcode 3) dispatch on scrutinee's constructor type.
+        Build an ``Elim`` dispatch on scrutinee's constructor type via
+        the BPLAN-named ``Elim`` op:
 
-        (3 id id app_handler z_body m_body scrutinee)
+        (<BPLAN> ("Elim" id id app_handler z_body m_body scrutinee))
+
+        p/l handlers are identity (unused when the scrutinee is App or Nat).
         """
         id_pin = P(self._ID_LAW)
         if env.arity == 0:
-            return A(A(A(A(A(A(P(N(2)), id_pin), id_pin), app_handler),
-                        z_body), m_body), scrutinee)
-        else:
-            step = P(N(2))
-            step = bapp(step, id_pin)
-            step = bapp(step, id_pin)
-            step = bapp(step, app_handler)
-            step = bapp(step, z_body)
-            step = bapp(step, m_body)
-            step = bapp(step, scrutinee)
-            return step
+            return self._elim_app(
+                id_pin, id_pin, app_handler,
+                z_body, m_body, scrutinee,
+            )
+        return self._elim_body(
+            id_pin, id_pin, app_handler,
+            z_body, m_body, scrutinee,
+        )
 
     def _build_tag_chain(self, tag_val_pairs: list, wild_body, wild_var,
                                          scrutinee: Any, env: Env, name_hint: str,
@@ -2761,24 +2800,23 @@ class Compiler:
     def _build_elim_app_dispatch(self, zero_val: Any, app_handler: Any,
                                     scrutinee: Any, env: Env) -> Any:
         """
-        Build Case_ dispatch where the App branch uses app_handler.
-        z = zero_val (for Nat 0), a = app_handler, m = const(0) (shouldn't fire), p/l = id.
+        Build an ``Elim`` dispatch where the App branch uses
+        ``app_handler``. ``z = zero_val`` (for Nat 0),
+        ``a = app_handler``, ``m = const(0)`` (shouldn't fire),
+        ``p/l = id``.
         """
         id_pin = P(self._ID_LAW)
         const2_pin = P(self._CONST2_LAW)
         m_body = bapp(const2_pin, A(N(0), N(0))) if env.arity > 0 else A(const2_pin, N(0))
         if env.arity == 0:
-            return A(A(A(A(A(A(P(N(2)), id_pin), id_pin), app_handler),
-                        zero_val), m_body), scrutinee)
-        else:
-            step = P(N(2))
-            step = bapp(step, id_pin)
-            step = bapp(step, id_pin)
-            step = bapp(step, app_handler)
-            step = bapp(step, zero_val)
-            step = bapp(step, m_body)
-            step = bapp(step, scrutinee)
-            return step
+            return self._elim_app(
+                id_pin, id_pin, app_handler,
+                zero_val, m_body, scrutinee,
+            )
+        return self._elim_body(
+            id_pin, id_pin, app_handler,
+            zero_val, m_body, scrutinee,
+        )
 
     def _compile_fallback_match(self, scrutinee: Any, arms: list, env: Env, name_hint: str, loc=None) -> Any:
         """Match with only wildcard/variable patterns — just use the first arm's body."""

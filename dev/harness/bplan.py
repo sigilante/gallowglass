@@ -213,12 +213,31 @@ def _bop(opcode, e):
     # land here already forced; for the BPLAN path, evaluate the inner
     # App once more via the BPLAN evaluator to thread jets through any
     # nested PLAN-recursive computations the BPLAN op might inspect.
-    from dev.harness.plan import _BPLAN_OPCODE, _RPLAN_OPCODE, _bplan_op, _rplan_stub, _unapp
+    from dev.harness.plan import _BPLAN_OPCODE, _RPLAN_OPCODE, _bplan_op, _rplan_stub, _unapp, nat_str
     if opcode == _BPLAN_OPCODE:
         # The single arg is the App ("Name" arg1 ... argN).  bevaluate
         # forces it; unapp flattens to [name, args...] for dispatch.
         inner = bevaluate(e[0])
-        return _bplan_op(_unapp(inner))
+        parts = _unapp(inner)
+        # Route Pin / Law / Elim through bplan's jet-aware constructors
+        # rather than plan.py's evaluate-based equivalents. The named
+        # alternatives are how codegen now emits these (Pin/Law/Elim
+        # direct-opcode <0>/<1>/<2> dispatch is no longer used per the
+        # ABI alignment with marduk); without this routing, recursive
+        # match scrutinees would force via plan.evaluate (no jets) and
+        # blow the PLAN recursion limit on arithmetic-heavy code.
+        if parts and is_nat(parts[0]):
+            name = nat_str(parts[0])
+            args = parts[1:]
+            if name == 'Elim' and len(args) == 6:
+                return _bmatch(args[0], args[1], args[2],
+                               args[3], args[4], args[5])
+            if name == 'Law' and len(args) == 3:
+                a, n, b = args
+                return L(a if is_nat(a) else 0, n, b)
+            if name == 'Pin' and len(args) == 1:
+                return P(args[0])
+        return _bplan_op(parts)
     if opcode == _RPLAN_OPCODE:
         return _rplan_stub(_unapp(e[0]))
     raise ValueError(f'_bop: unknown opcode {opcode}')
