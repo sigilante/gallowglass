@@ -121,10 +121,12 @@ def check_bytes(compiled, result, expected_str):
     """
     Assert that a PLAN Bytes value (MkPair len content) encodes expected_str.
     Uses bytes_length and bytes_content — both O(1) field extractions.
+    Uses eval_bplan so that Marduk-backend results (Marduk Vals) are handled
+    correctly; eval_plan uses the legacy evaluator which can't process Marduk Vals.
     """
     expected = expected_str.encode('utf-8')
-    length = eval_plan(compiled['Compiler.bytes_length'], result)
-    content = eval_plan(compiled['Compiler.bytes_content'], result)
+    length = eval_bplan(compiled['Compiler.bytes_length'], result)
+    content = eval_bplan(compiled['Compiler.bytes_content'], result)
     assert length == len(expected), \
         f'Length mismatch: got {length}, expected {len(expected)} for {expected_str!r}'
     if expected:

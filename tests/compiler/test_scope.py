@@ -29,7 +29,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from dev.harness.plan import A, evaluate
+from dev.harness.plan import A, evaluate, nat as _get_nat
 from dev.harness.eval import bevaluate
 
 MODULE = 'Compiler'
@@ -154,17 +154,14 @@ B = ASTBuilder()
 def decode_expr_var(bc, expr_val):
     """Extract the Nat from an EVar PLAN value, or None if not EVar."""
     tag_fn = bc['Compiler.expr_tag']
-    tag = eval_plan(tag_fn, expr_val)
-    if tag != 0:
+    tag = eval_bplan(tag_fn, expr_val)
+    if _get_nat(tag) != 0:
         return None
-    evar_n_fn = bc.get('Compiler.cg_var_name')
-    # Use expr_tag == 0 and extract field via EVar accessor
-    # EVar n = A(A(N(0), n), n) in constructor encoding? No:
     # EVar n is unary tag=0: A(N(0), n), so .tail = n
     ev = bevaluate(expr_val)
     from dev.harness.plan import is_app, is_nat
-    if is_app(ev) and is_nat(ev.head) and ev.head == 0:
-        return ev.tail
+    if is_app(ev) and is_nat(ev.head) and _get_nat(ev.head) == 0:
+        return _get_nat(bevaluate(ev.tail))
     return None
 
 
@@ -227,7 +224,7 @@ class TestSrCollectGlobals(unittest.TestCase):
         # In our encoding: Some v = A(N(1), v) (unary tag=1)
         # None = N(0) (nullary tag=0)
         if is_app(ev):
-            return ev.tail  # the value inside Some
+            return bevaluate(ev.tail)  # the value inside Some (force lazy stored value)
         return None
 
     def test_collects_dlet_name(self):
@@ -285,7 +282,7 @@ class TestSrRewriteExpr(unittest.TestCase):
         return eval_bplan(self.rewrite, expr, B.Nil(), gtab)
 
     def _expr_tag(self, expr_val):
-        return eval_plan(self.bc['Compiler.expr_tag'], expr_val)
+        return _get_nat(eval_bplan(self.bc['Compiler.expr_tag'], expr_val))
 
     def test_enat_passes_through(self):
         """ENat 42 is unchanged."""

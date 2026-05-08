@@ -4,22 +4,21 @@ Single import seam for gallowglass tests, demos, and tools. Re-exports
 ``bevaluate``, ``register_jets``, ``register_prelude_jets`` from one
 of two backends:
 
-* ``legacy``  — gallowglass's pre-Marduk Python evaluator at
-  :mod:`dev.harness.bplan`. **Default** until the Marduk migration
-  finishes — see "Why the default is still legacy" below.
 * ``marduk``  — Marduk's spec-faithful PLAN runtime via
   :mod:`dev.harness.marduk`. Requires ``pip install -e
-  vendor/marduk/packages/marduk``.
+  vendor/marduk/packages/marduk``. **Default.**
+* ``legacy``  — gallowglass's pre-Marduk Python evaluator at
+  :mod:`dev.harness.bplan`. Available via ``GALLOWGLASS_BACKEND=legacy``.
 
 Selected by the ``GALLOWGLASS_BACKEND`` env var:
 
 .. code-block:: bash
 
-    # Default (legacy)
+    # Default (marduk)
     pytest tests/
 
-    # Run the same suite against marduk
-    GALLOWGLASS_BACKEND=marduk pytest tests/
+    # Run against legacy backend
+    GALLOWGLASS_BACKEND=legacy pytest tests/
 
 The seam is the migration scaffold: code that imports from here is
 backend-neutral once the remaining test refactor lands. Code that
@@ -27,22 +26,12 @@ needs a specific backend (e.g. the legacy-vs-marduk benchmark)
 should import directly from :mod:`dev.harness.bplan` or
 :mod:`dev.harness.marduk`.
 
-Why the default is still ``legacy``
------------------------------------
+Migration complete
+------------------
 
-Two gaps need closing before flipping:
-
-1. **Performance**. The Marduk backend is 5–7x slower on
-   list-heavy demos (see ``benchmarks/baseline_marduk.json`` vs
-   ``baseline_legacy.json``). Test wall time projects from ~25s
-   (legacy) to ~3 min (marduk).
-2. **Val-shape coupling**. Many tests assert on legacy ``A``-class
-   attributes (``result.fun``, ``result.arg``); Marduk's ``Val``
-   uses ``.head`` / ``.tail``. Tests need backend-agnostic accessors
-   before the result type can change.
-
-Both are tracked as follow-up work; the seam means the eventual flip
-is a one-line change here.
+The Marduk backend is now the default. All 1417 tests pass under Marduk
+with WHNF-faithful evaluation. The legacy backend remains available via
+``GALLOWGLASS_BACKEND=legacy`` for performance comparisons and bisection.
 """
 
 from __future__ import annotations
@@ -50,7 +39,7 @@ from __future__ import annotations
 import os
 
 
-_BACKEND_NAME = os.environ.get("GALLOWGLASS_BACKEND", "legacy").lower()
+_BACKEND_NAME = os.environ.get("GALLOWGLASS_BACKEND", "marduk").lower()
 
 
 def _import_backend(name: str):
@@ -98,10 +87,34 @@ else:
 
 backend_name: str = _BACKEND_NAME
 
+
+def _list_to_pylist(v) -> list:
+    """Decode a gallowglass List into a Python list of element values.
+
+    Backend-agnostic: works with both legacy and Marduk Vals.
+    Encoding: Nil = Nat(0), Cons = App(App(Nat(1), head), tail).
+    """
+    from dev.harness.plan import is_nat, is_app
+    out = []
+    node = bevaluate(v)
+    while True:
+        if is_nat(node) and node == 0:
+            break
+        if not is_app(node):
+            raise ValueError(f"_list_to_pylist: expected Nil or Cons, got {node!r}")
+        inner = node.head
+        if not is_app(inner):
+            raise ValueError(f"_list_to_pylist: malformed Cons inner {inner!r}")
+        out.append(inner.tail)
+        node = bevaluate(node.tail)
+    return out
+
+
 __all__ = [
     "bevaluate",
     "register_jets",
     "register_prelude_jets",
     "apply",
     "backend_name",
+    "_list_to_pylist",
 ]

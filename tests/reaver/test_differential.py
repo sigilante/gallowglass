@@ -45,7 +45,7 @@ from bootstrap.codegen import compile_program
 from bootstrap.build import build_with_prelude
 from bootstrap.emit_pla import emit_program
 from dev.harness.eval import bevaluate, register_jets, register_prelude_jets
-from dev.harness.plan import is_nat
+from dev.harness.plan import is_nat, nat as _nat_int
 
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -107,7 +107,7 @@ def _harness_eval(compiled: dict, fq_name: str) -> int:
         raise AssertionError(
             f'harness expected Nat result for {fq_name}, got {type(result).__name__}: {result!r}'
         )
-    return int(result)
+    return _nat_int(result)
 
 
 def _run_reaver(plan_text: str, module: str = 'demo', timeout: int = 60) -> str:

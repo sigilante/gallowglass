@@ -139,7 +139,7 @@ class TestCoreResultHarness(unittest.TestCase):
         # Result should be Ok 11 = A(0, 11)
         self.assertTrue(result.type == 'app', f'Expected App, got {result}')
         self.assertEqual(result.head, 0)  # tag Ok
-        self.assertEqual(result.tail, 11)
+        self.assertEqual(evaluate(result.tail), 11)
 
     def test_map_ok_on_err(self):
         """map_ok inc (Err 99) = Err 99"""
@@ -157,7 +157,7 @@ class TestCoreResultHarness(unittest.TestCase):
         result = evaluate(apply(apply(self.fn('map_err'), inc_fn), mk_err(N(10))))
         self.assertTrue(result.type == 'app', f'Expected App, got {result}')
         self.assertEqual(result.head, 1)  # tag Err
-        self.assertEqual(result.tail, 11)
+        self.assertEqual(evaluate(result.tail), 11)
 
     def test_map_err_on_ok(self):
         """map_err inc (Ok 42) = Ok 42"""
@@ -179,7 +179,7 @@ class TestCoreResultHarness(unittest.TestCase):
         result = evaluate(apply(apply(self.fn('bind_result'), mk_ok(N(10))), ok_inc))
         self.assertTrue(result.type == 'app', f'Expected App, got {result}')
         self.assertEqual(result.head, 0)  # tag Ok
-        self.assertEqual(result.tail, 11)
+        self.assertEqual(evaluate(result.tail), 11)
 
     def test_bind_result_err(self):
         """bind_result (Err 99) f = Err 99 (f not called)"""

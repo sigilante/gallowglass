@@ -52,6 +52,7 @@ try:
         register_jet as _m_register_jet,
         clear_jets as _m_clear_jets,
     )
+    from marduk.runtime.jets import register_named_jet as _m_register_named_jet
 except ImportError as e:  # pragma: no cover — surface a clear setup hint
     raise ImportError(
         "marduk is not installed. From the gallowglass repo root: "
@@ -79,15 +80,16 @@ def convert(val: Any, _cache: dict[int, _MVal] | None = None) -> _MVal:
     Memoizes on Python identity within a single conversion to preserve
     structural sharing in that pass.
 
-    **Per-call cache only.** A module-global cache would seem to
-    enable jet-registry hits across calls, but Marduk's evaluator
-    mutates ``Val.box`` in-place during evaluation — cached Vals
-    become stale once any prior evaluation has touched them. Per-call
-    semantics keep correctness; the cost is that
-    :func:`register_prelude_jets` can't reliably register against
-    converted Laws (each conversion produces a fresh ``box`` id).
-    Prelude jets are therefore no-op under Marduk; prelude operations
-    run via the spec-faithful interpreter."""
+    **Per-call cache only.** App Vals are memo-updated in place by E()
+    during evaluation — a globally cached App would appear pre-forced on
+    its second use, corrupting the graph. Law body App Vals are reachable
+    via quotes in R(), and E()'s trampoline can alias and then mutate
+    them transitively. Per-call semantics keep the graph fresh for each
+    bevaluate() call.
+
+    Jet registration does not use Val identity (see register_prelude_jets).
+    It uses (name_nat, arity) content keys, which are stable across calls
+    without caching."""
     # Already a Marduk Val? Return as-is. Means callers can pass in a
     # value of either flavor and get back something Marduk can evaluate.
     if isinstance(val, _MVal):
@@ -133,31 +135,37 @@ def convert(val: Any, _cache: dict[int, _MVal] | None = None) -> _MVal:
 # ---------------------------------------------------------------------------
 
 def _register_table(table: dict, compiled: dict) -> None:
-    """For each ``(fq_name, (arity, fn))`` in ``table``, register a jet
-    on the Marduk-converted law for the matching ``fq_name`` in
-    ``compiled``. Vals not present in ``compiled`` are skipped silently
-    — the legacy harness does the same.
+    """Register each ``(fq_name, (arity, fn))`` in ``table`` as a named
+    content-addressed jet against the compiled Law for ``fq_name``.
 
-    Caveat: a jet's signature is the legacy ``fn(*evaluated_args)`` where
-    ``evaluated_args`` are *unwrapped* (legacy ``_unwrap`` strips
-    ``P(N(k))`` opcode pins to bare ints). Marduk passes raw ``Val``
-    args; the jet wrapper here forces each arg via Marduk's
-    ``evaluate`` and unwraps Pin'd-nat constants to bare ints to
-    match the legacy contract.
+    Uses ``(name_nat, arity, body_hash)`` as the key — the same approach
+    as ``register_prelude_jets`` — so jets fire reliably across multiple
+    ``bevaluate`` calls regardless of Val identity. Val identity changes
+    on every call because Marduk's evaluator mutates ``Val.box`` in place;
+    content-based keys are stable.
+
+    Vals not present in ``compiled`` are skipped silently (same as the
+    legacy harness). ``fn`` is adapted from the legacy
+    ``fn(*ints)`` convention to Marduk's ``fn(*Val)`` calling convention
+    via ``_wrap_legacy_jet``.
     """
     for fq_name, (arity, fn) in table.items():
         legacy_val = compiled.get(fq_name)
         if legacy_val is None:
             continue
         marduk_val = convert(legacy_val)
-        # The compiled value is either L or P(L); dig down to the inner Law.
         if marduk_val.type == "pin" and marduk_val.item.type == "law":
-            target = marduk_val.item
+            marduk_law = marduk_val.item
         elif marduk_val.type == "law":
-            target = marduk_val
+            marduk_law = marduk_val
         else:
             continue
-        _m_register_jet(target, _wrap_legacy_jet(fn))
+        if marduk_law.name.type != "nat" or marduk_law.args.type != "nat":
+            continue
+        name_nat = marduk_law.name.nat
+        actual_arity = marduk_law.args.nat
+        body_hash = hash(repr(marduk_law.body))
+        _m_register_named_jet(name_nat, actual_arity, _wrap_legacy_jet(fn), body_hash)
 
 
 def _wrap_legacy_jet(fn):
@@ -198,31 +206,75 @@ def register_jets(compiled: dict) -> None:
 # ---------------------------------------------------------------------------
 # Marduk-native prelude jets
 #
-# The legacy bplan ``_PRELUDE_JETS`` table mixes two categories:
+# Jets are needed for two categories of prelude Laws:
 #
-# * Arithmetic (``Core.Nat.add``, ``mul``, ``Core.Text.sub``, ...): the
-#   gallowglass wrapper Law's body invokes a BPLAN primitive
-#   (``("B" ("Add" m n))`` etc). Marduk's BPLAN op table at
-#   ``marduk.runtime.bplan`` already implements those natively, so the
-#   wrapper Law lands at fast Python without any jet bridging needed.
-#   We deliberately do NOT register jets for these — bridging would
-#   add wrapper overhead without gaining anything.
+# * Arithmetic (``Core.Nat.add``, ``mul``, ``Core.Text.pow2``, ...):
+#   these are Peano-recursive Gallowglass laws, NOT thin wrappers around
+#   BPLAN primitives. ``add m n`` takes n recursive law evaluations;
+#   ``mul m n`` takes n recursive calls to ``add``; ``pow2 40`` calls
+#   ``mul 2 (pow2 39)`` = ``mul 2 (2^39)`` which requires 2^39 recursive
+#   law evaluations — blowing the 50,000-frame Python stack limit.
+#   Jets collapse these to O(1) Python arithmetic.
 #
 # * Structural (``Core.List.map``, ``foldl``, ``foldr``, ``filter``,
 #   ``length``, ``append``, ``concat_list``, plus
 #   ``Core.Text.Prim.mk_text`` / ``text_len`` / ``text_nat``): these
 #   walk the gallowglass Cons / Text encoding and have no BPLAN
 #   primitive equivalent. Without jets, Marduk runs them through the
-#   spec-faithful interpreter — correct but slow on long lists. The
-#   implementations below port the legacy bplan jets to Marduk's
-#   Val API so saturating one of these laws calls native Python
-#   instead of walking the body.
+#   spec-faithful interpreter — correct but slow on long lists.
 #
 # Encoding recap (identical between backends):
 #   List a:  Nil   = Nat(0)
 #            Cons  = App(App(Nat(1), head), tail)
 #   Text:    App(Nat(byte_length), Nat(content_nat))
 # ---------------------------------------------------------------------------
+
+
+def _force_nat_m(v: _MVal) -> int:
+    _m_evaluate(v)
+    return v.nat if v.type == "nat" else 0
+
+
+def _add_jet_m(m: _MVal, n: _MVal) -> _MVal:
+    return _MNat(_force_nat_m(m) + _force_nat_m(n))
+
+
+def _mul_jet_m(m: _MVal, n: _MVal) -> _MVal:
+    return _MNat(_force_nat_m(m) * _force_nat_m(n))
+
+
+def _pred_jet_m(n: _MVal) -> _MVal:
+    return _MNat(max(0, _force_nat_m(n) - 1))
+
+
+def _is_zero_jet_m(n: _MVal) -> _MVal:
+    return _MNat(1 if _force_nat_m(n) == 0 else 0)
+
+
+def _nat_eq_jet_m(m: _MVal, n: _MVal) -> _MVal:
+    return _MNat(1 if _force_nat_m(m) == _force_nat_m(n) else 0)
+
+
+def _nat_lt_jet_m(m: _MVal, n: _MVal) -> _MVal:
+    return _MNat(1 if _force_nat_m(m) < _force_nat_m(n) else 0)
+
+
+def _sat_sub_jet_m(m: _MVal, n: _MVal) -> _MVal:
+    return _MNat(max(0, _force_nat_m(m) - _force_nat_m(n)))
+
+
+def _pow2_jet_m(n: _MVal) -> _MVal:
+    return _MNat(1 << _force_nat_m(n))
+
+
+def _div_nat_jet_m(a: _MVal, b: _MVal) -> _MVal:
+    av, bv = _force_nat_m(a), _force_nat_m(b)
+    return _MNat(av // bv if bv else 0)
+
+
+def _mod_nat_jet_m(a: _MVal, b: _MVal) -> _MVal:
+    av, bv = _force_nat_m(a), _force_nat_m(b)
+    return _MNat(av % bv if bv else 0)
 
 def _is_nil_m(v: _MVal) -> bool:
     return v.type == "nat" and v.nat == 0
@@ -346,6 +398,19 @@ def _text_nat_jet_m(t: _MVal) -> _MVal:
 
 
 _PRELUDE_JETS_MARDUK = {
+    # Core.Nat arithmetic — Peano recursive; must be jetted or pow2(40)
+    # blows the Python stack (2^39 recursive law evaluations).
+    "Core.Nat.add":     (2, _add_jet_m),
+    "Core.Nat.mul":     (2, _mul_jet_m),
+    "Core.Nat.pred":    (1, _pred_jet_m),
+    "Core.Nat.is_zero": (1, _is_zero_jet_m),
+    "Core.Nat.nat_eq":  (2, _nat_eq_jet_m),
+    "Core.Nat.nat_lt":  (2, _nat_lt_jet_m),
+    # Core.Text arithmetic helpers (same Peano issue via text_concat/pow2)
+    "Core.Text.sub":     (2, _sat_sub_jet_m),
+    "Core.Text.pow2":    (1, _pow2_jet_m),
+    "Core.Text.div_nat": (2, _div_nat_jet_m),
+    "Core.Text.mod_nat": (2, _mod_nat_jet_m),
     # Lists
     "Core.List.map":         (2, _list_map_jet_m),
     "Core.List.foldl":       (3, _list_foldl_jet_m),
@@ -362,25 +427,47 @@ _PRELUDE_JETS_MARDUK = {
 
 
 def register_prelude_jets(compiled: dict) -> None:
-    """Currently a no-op under Marduk.
+    """Register Marduk-native prelude jets keyed by Law content.
 
-    The legacy gallowglass jet table couples Python-fn implementations
-    to specific Law identities via the registry's ``id(law.box)``
-    key. Mirroring that under Marduk requires a global identity-cached
-    converter — but Marduk's evaluator mutates ``Val.box`` in place,
-    so a global cache becomes corrupt as soon as anything is forced.
-    The fundamentals don't compose: cached identity + in-place
-    mutation = stale data on the second use.
+    Key is ``(name_nat, arity, body_hash)`` derived from the compiled
+    Law's declared name, arity, and body structure. All three are stable
+    across bevaluate() calls — the same Law always produces the same PLAN
+    body structure regardless of which Python Val object the converter
+    creates for it.
 
-    The Marduk-native list/text jet implementations are kept (see
-    ``_PRELUDE_JETS_MARDUK`` below) for a future fix that resolves
-    this — likely by NOT mutating in-place during evaluation, or by
-    tying jet registration to Law-content rather than Law-identity.
-    Until then, prelude-heavy code runs through Marduk's
-    spec-faithful interpreter — slower than the legacy backend but
-    correct.
+    The body hash uses ``hash(repr(marduk_law.body))`` computed from a
+    fresh Marduk conversion at registration time. At lookup time,
+    ``lookup_jet`` computes the same hash from the Law the evaluator
+    reaches. Because both use the same Marduk Val repr format, the hashes
+    match for the same PLAN body.
+
+    The body hash is necessary: some prelude Laws share name and arity
+    (e.g. Core.Text.Prim.text_len and text_nat both compile to name
+    "text_field" with arity 1 but different bodies). Name+arity alone
+    would be ambiguous; adding body_hash makes the key unique.
+
+    Does NOT clear existing jet registrations; caller is responsible for
+    ordering (register_jets clears, register_prelude_jets adds).
     """
-    return
+    for fq_name, (arity, fn) in _PRELUDE_JETS_MARDUK.items():
+        legacy_val = compiled.get(fq_name)
+        if legacy_val is None:
+            continue
+        # Convert to Marduk to get name_nat, arity, and body repr in
+        # the same format the evaluator will use at lookup time.
+        marduk_val = convert(legacy_val)
+        if marduk_val.type == "pin" and marduk_val.item.type == "law":
+            marduk_law = marduk_val.item
+        elif marduk_val.type == "law":
+            marduk_law = marduk_val
+        else:
+            continue
+        if marduk_law.name.type != "nat" or marduk_law.args.type != "nat":
+            continue
+        name_nat = marduk_law.name.nat
+        actual_arity = marduk_law.args.nat
+        body_hash = hash(repr(marduk_law.body))
+        _m_register_named_jet(name_nat, actual_arity, fn, body_hash)
 
 
 # ---------------------------------------------------------------------------

@@ -214,7 +214,7 @@ class TestCoreListJets(unittest.TestCase):
         unjetted = evaluate(apply(apply(map_fn, idfn), xs))
         # Both should be the same Cons-structured list
         # Decode both to Python ints for comparison
-        from dev.harness.bplan import _list_to_pylist
+        from dev.harness.eval import _list_to_pylist
         self.assertEqual(_list_to_pylist(jetted), [1, 2, 3])
         self.assertEqual(_list_to_pylist(unjetted), [1, 2, 3])
 
@@ -249,7 +249,7 @@ class TestCoreListJets(unittest.TestCase):
         pred = _A(nat_lt, N(0))
         xs = mk_list(0, 1, 0, 2)
         result = bevaluate(_bapply(_bapply(filter_fn, pred), xs))
-        from dev.harness.bplan import _list_to_pylist
+        from dev.harness.eval import _list_to_pylist
         self.assertEqual(_list_to_pylist(result), [1, 2])
 
     def test_jet_handles_empty_list(self):
@@ -260,7 +260,7 @@ class TestCoreListJets(unittest.TestCase):
         nil = mk_nil()
 
         # map id Nil = Nil
-        from dev.harness.bplan import _list_to_pylist
+        from dev.harness.eval import _list_to_pylist
         self.assertEqual(_list_to_pylist(
             bevaluate(_bapply(_bapply(self.fn('map'), idfn), nil))), [])
         # foldl add 0 Nil = 0
@@ -299,24 +299,24 @@ class TestCoreListLengthAppendConcat(unittest.TestCase):
     def test_append_empty_left(self):
         result = bevaluate(_bapply(_bapply(self.fn('append'),
                                             mk_nil()), mk_list(1, 2)))
-        from dev.harness.bplan import _list_to_pylist
+        from dev.harness.eval import _list_to_pylist
         self.assertEqual(_list_to_pylist(result), [1, 2])
 
     def test_append_empty_right(self):
         result = bevaluate(_bapply(_bapply(self.fn('append'),
                                             mk_list(1, 2)), mk_nil()))
-        from dev.harness.bplan import _list_to_pylist
+        from dev.harness.eval import _list_to_pylist
         self.assertEqual(_list_to_pylist(result), [1, 2])
 
     def test_append_two_lists(self):
         result = bevaluate(_bapply(_bapply(self.fn('append'),
                                             mk_list(1, 2)), mk_list(3, 4)))
-        from dev.harness.bplan import _list_to_pylist
+        from dev.harness.eval import _list_to_pylist
         self.assertEqual(_list_to_pylist(result), [1, 2, 3, 4])
 
     def test_concat_list_empty(self):
         result = bevaluate(_bapply(self.fn('concat_list'), mk_nil()))
-        from dev.harness.bplan import _list_to_pylist
+        from dev.harness.eval import _list_to_pylist
         self.assertEqual(_list_to_pylist(result), [])
 
     def test_concat_list_flatten(self):
@@ -326,7 +326,7 @@ class TestCoreListLengthAppendConcat(unittest.TestCase):
         l3 = mk_list(4, 5, 6)
         outer = A(A(1, l1), A(A(1, l2), A(A(1, l3), mk_nil())))
         result = bevaluate(_bapply(self.fn('concat_list'), outer))
-        from dev.harness.bplan import _list_to_pylist
+        from dev.harness.eval import _list_to_pylist
         self.assertEqual(_list_to_pylist(result), [1, 2, 3, 4, 5, 6])
 
     def test_length_jet_matches_unjetted(self):

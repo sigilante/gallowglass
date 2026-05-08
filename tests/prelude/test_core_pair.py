@@ -114,7 +114,7 @@ class TestCorePairHarness(unittest.TestCase):
         self.assertTrue(result.type == 'app', f'Expected App, got {result}')
         self.assertTrue(result.head.type == 'app', f'Expected nested App, got {result.head}')
         self.assertEqual(result.head.head, 0)  # tag
-        self.assertEqual(result.head.tail, 11)  # first incremented
+        self.assertEqual(evaluate(result.head.tail), 11)  # first incremented
         self.assertEqual(result.tail, 20)  # second unchanged
 
     # --- map_snd ---
@@ -127,7 +127,7 @@ class TestCorePairHarness(unittest.TestCase):
         self.assertTrue(result.head.type == 'app', f'Expected nested App, got {result.head}')
         self.assertEqual(result.head.head, 0)  # tag
         self.assertEqual(result.head.tail, 10)  # first unchanged
-        self.assertEqual(result.tail, 21)  # second incremented
+        self.assertEqual(evaluate(result.tail), 21)  # second incremented
 
     # --- swap ---
 
