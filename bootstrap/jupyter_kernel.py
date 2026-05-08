@@ -734,7 +734,7 @@ def _kernel_main() -> None:
             'pygments_lexer': 'haskell',  # close enough for syntax highlighting
         }
         banner = (
-            'Gallowglass kernel (Python BPLAN backend). '
+            'Gallowglass kernel (Marduk/PLAN backend). '
             'Declarations accumulate; final expressions render as cell results.'
         )
 
@@ -845,7 +845,7 @@ def _install_kernelspec(user: bool = True, prefix: str | None = None) -> str:
     ))
 
     spec = {
-        'argv': [sys.executable, '-m', 'bootstrap.jupyter_kernel', '-f', '{connection_file}'],
+        'argv': [sys.executable, '-m', 'gallowglass_kernel', '-f', '{connection_file}'],
         'display_name': 'Gallowglass',
         'language': 'gallowglass',
         'env': {
