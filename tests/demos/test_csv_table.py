@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from dev.harness.plan import A, evaluate
 from dev.harness.eval import bevaluate, register_prelude_jets
-from dev.harness.bplan import _bapply
+from dev.harness.eval import apply as _bapply
 
 SRC_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'demos', 'csv_table.gls')
 MODULE = 'CsvTable'

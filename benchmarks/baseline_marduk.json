@@ -4,75 +4,75 @@
   "workloads": {
     "calculator.example1": {
       "compile_seconds": {
-        "max": 0.023426,
-        "median": 0.023096,
-        "min": 0.020718,
+        "max": 0.026802,
+        "median": 0.024017,
+        "min": 0.021204,
         "n": 5
       },
       "eval_seconds": {
-        "max": 0.002249,
-        "median": 0.001877,
-        "min": 0.001704,
+        "max": 0.001906,
+        "median": 0.001206,
+        "min": 0.001184,
         "n": 5
       },
       "value": 14
     },
     "calculator.example2": {
       "compile_seconds": {
-        "max": 0.022827,
-        "median": 0.020941,
-        "min": 0.020403,
+        "max": 0.023948,
+        "median": 0.02207,
+        "min": 0.021505,
         "n": 5
       },
       "eval_seconds": {
-        "max": 0.001918,
-        "median": 0.001741,
-        "min": 0.001625,
+        "max": 0.001612,
+        "median": 0.001331,
+        "min": 0.001121,
         "n": 5
       },
       "value": 4
     },
     "calculator.example3": {
       "compile_seconds": {
-        "max": 0.023089,
-        "median": 0.020879,
-        "min": 0.020645,
+        "max": 0.022951,
+        "median": 0.021828,
+        "min": 0.021229,
         "n": 5
       },
       "eval_seconds": {
-        "max": 0.004554,
-        "median": 0.00438,
-        "min": 0.004283,
+        "max": 0.004837,
+        "median": 0.004635,
+        "min": 0.004602,
         "n": 5
       },
       "value": 21
     },
     "csv_table.row_count_result": {
       "compile_seconds": {
-        "max": 0.023769,
-        "median": 0.021971,
-        "min": 0.021252,
+        "max": 0.024682,
+        "median": 0.023266,
+        "min": 0.022328,
         "n": 5
       },
       "eval_seconds": {
-        "max": 0.003087,
-        "median": 0.001041,
-        "min": 0.001032,
+        "max": 0.00036,
+        "median": 0.000331,
+        "min": 0.000327,
         "n": 5
       },
       "value": 3
     },
     "csv_table.top_score_result": {
       "compile_seconds": {
-        "max": 0.023602,
-        "median": 0.022132,
-        "min": 0.021771,
+        "max": 0.025258,
+        "median": 0.022656,
+        "min": 0.021248,
         "n": 5
       },
       "eval_seconds": {
-        "max": 0.006101,
-        "median": 0.005962,
-        "min": 0.005749,
+        "max": 0.00768,
+        "median": 0.00703,
+        "min": 0.006323,
         "n": 5
       },
       "value": 95

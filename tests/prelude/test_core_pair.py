@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from dev.harness.plan import A, N, L, P, evaluate as raw_evaluate, make_bplan_law
 from dev.harness.eval import bevaluate
-from dev.harness.bplan import _bapply
+from dev.harness.eval import apply as _bapply
 
 def apply(f, x):
     return _bapply(f, x)

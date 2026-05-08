@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from dev.harness.plan import A, N, evaluate, apply, is_app
 from dev.harness.eval import bevaluate, register_prelude_jets
-from dev.harness.bplan import _bapply
+from dev.harness.eval import apply as _bapply
 
 CORE_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'prelude', 'src', 'Core')
 NAT_PATH = os.path.join(CORE_DIR, 'Nat.gls')

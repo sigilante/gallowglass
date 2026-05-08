@@ -75,16 +75,33 @@ __all__ = [
 def convert(val: Any, _cache: dict[int, _MVal] | None = None) -> _MVal:
     """Convert a legacy gallowglass Val into a Marduk ``Val``.
 
-    Memoizes on Python identity so the converted graph preserves the
-    sharing the legacy graph had — important for the jet registry
-    (which is keyed on ``id(law.box)``)."""
+    Idempotent: passing in a Marduk ``Val`` returns it unchanged.
+    Memoizes on Python identity within a single conversion to preserve
+    structural sharing in that pass.
+
+    **Per-call cache only.** A module-global cache would seem to
+    enable jet-registry hits across calls, but Marduk's evaluator
+    mutates ``Val.box`` in-place during evaluation — cached Vals
+    become stale once any prior evaluation has touched them. Per-call
+    semantics keep correctness; the cost is that
+    :func:`register_prelude_jets` can't reliably register against
+    converted Laws (each conversion produces a fresh ``box`` id).
+    Prelude jets are therefore no-op under Marduk; prelude operations
+    run via the spec-faithful interpreter."""
+    # Already a Marduk Val? Return as-is. Means callers can pass in a
+    # value of either flavor and get back something Marduk can evaluate.
+    if isinstance(val, _MVal):
+        return val
+
     if _cache is None:
         _cache = {}
     cached = _cache.get(id(val))
     if cached is not None:
         return cached
 
-    if is_nat(val):
+    if isinstance(val, int):
+        # Bare Python int — only legacy nats use this representation;
+        # Marduk wraps via ``Nat``.
         out: _MVal = _MNat(val)
     elif is_pin(val):
         out = _MPin(convert(val.val, _cache))
@@ -95,9 +112,13 @@ def convert(val: Any, _cache: dict[int, _MVal] | None = None) -> _MVal:
             convert(val.body, _cache),
         )
     elif is_app(val):
+        # Use ``.head``/``.tail`` accessors which the alias work on
+        # legacy ``A`` makes available alongside the original
+        # ``.fun``/``.arg``. This route also handles any future Val
+        # shape that exposes the Marduk-aligned names.
         out = _MApp(
-            convert(val.fun, _cache),
-            convert(val.arg, _cache),
+            convert(val.head, _cache),
+            convert(val.tail, _cache),
         )
     else:
         raise TypeError(
@@ -174,10 +195,192 @@ def register_jets(compiled: dict) -> None:
     _register_table(_COMPILER_JETS, compiled)
 
 
+# ---------------------------------------------------------------------------
+# Marduk-native prelude jets
+#
+# The legacy bplan ``_PRELUDE_JETS`` table mixes two categories:
+#
+# * Arithmetic (``Core.Nat.add``, ``mul``, ``Core.Text.sub``, ...): the
+#   gallowglass wrapper Law's body invokes a BPLAN primitive
+#   (``("B" ("Add" m n))`` etc). Marduk's BPLAN op table at
+#   ``marduk.runtime.bplan`` already implements those natively, so the
+#   wrapper Law lands at fast Python without any jet bridging needed.
+#   We deliberately do NOT register jets for these — bridging would
+#   add wrapper overhead without gaining anything.
+#
+# * Structural (``Core.List.map``, ``foldl``, ``foldr``, ``filter``,
+#   ``length``, ``append``, ``concat_list``, plus
+#   ``Core.Text.Prim.mk_text`` / ``text_len`` / ``text_nat``): these
+#   walk the gallowglass Cons / Text encoding and have no BPLAN
+#   primitive equivalent. Without jets, Marduk runs them through the
+#   spec-faithful interpreter — correct but slow on long lists. The
+#   implementations below port the legacy bplan jets to Marduk's
+#   Val API so saturating one of these laws calls native Python
+#   instead of walking the body.
+#
+# Encoding recap (identical between backends):
+#   List a:  Nil   = Nat(0)
+#            Cons  = App(App(Nat(1), head), tail)
+#   Text:    App(Nat(byte_length), Nat(content_nat))
+# ---------------------------------------------------------------------------
+
+def _is_nil_m(v: _MVal) -> bool:
+    return v.type == "nat" and v.nat == 0
+
+
+def _is_cons_m(v: _MVal) -> bool:
+    if v.type != "app":
+        return False
+    inner = v.head
+    if inner.type != "app":
+        return False
+    tag = inner.head
+    return tag.type == "nat" and tag.nat == 1
+
+
+def _list_to_pylist_m(v: _MVal) -> list[_MVal]:
+    """Decode a Marduk-shaped List into a Python list of Vals.
+
+    Mirrors :func:`dev.harness.bplan._list_to_pylist` but uses Marduk's
+    ``.head``/``.tail`` accessors. Forces the spine one Cons cell at
+    a time so lazy ``Cons head tail`` chains evaluate progressively
+    rather than triggering recursive forcing of the entire tail."""
+    out: list[_MVal] = []
+    _m_evaluate(v)
+    while not _is_nil_m(v):
+        if not _is_cons_m(v):
+            raise ValueError(f"List jet: not a List spine node {v!r}")
+        out.append(v.head.tail)        # head field of the Cons
+        v = v.tail                      # tail field
+        _m_evaluate(v)
+    return out
+
+
+def _pylist_to_list_m(items: list[_MVal]) -> _MVal:
+    """Build a Marduk List from a Python list of Vals."""
+    result: _MVal = _MNat(0)
+    for item in reversed(items):
+        result = _MApp(_MApp(_MNat(1), item), result)
+    return result
+
+
+def _apply_m(fn: _MVal, x: _MVal) -> _MVal:
+    """Apply ``fn`` to ``x`` and force to WHNF."""
+    out = _MApp(fn, x)
+    _m_evaluate(out)
+    return out
+
+
+def _list_map_jet_m(fn: _MVal, xs: _MVal) -> _MVal:
+    items = _list_to_pylist_m(xs)
+    return _pylist_to_list_m([_apply_m(fn, x) for x in items])
+
+
+def _list_foldl_jet_m(fn: _MVal, init: _MVal, xs: _MVal) -> _MVal:
+    acc = init
+    for x in _list_to_pylist_m(xs):
+        acc = _apply_m(_apply_m(fn, acc), x)
+    return acc
+
+
+def _list_foldr_jet_m(fn: _MVal, init: _MVal, xs: _MVal) -> _MVal:
+    items = _list_to_pylist_m(xs)
+    acc = init
+    for x in reversed(items):
+        acc = _apply_m(_apply_m(fn, x), acc)
+    return acc
+
+
+def _list_filter_jet_m(fn: _MVal, xs: _MVal) -> _MVal:
+    items = _list_to_pylist_m(xs)
+    out: list[_MVal] = []
+    for x in items:
+        keep = _apply_m(fn, x)
+        if keep.type == "nat" and keep.nat != 0:
+            out.append(x)
+    return _pylist_to_list_m(out)
+
+
+def _list_length_jet_m(xs: _MVal) -> _MVal:
+    return _MNat(len(_list_to_pylist_m(xs)))
+
+
+def _list_append_jet_m(xs: _MVal, ys: _MVal) -> _MVal:
+    return _pylist_to_list_m(
+        _list_to_pylist_m(xs) + _list_to_pylist_m(ys)
+    )
+
+
+def _list_concat_jet_m(xss: _MVal) -> _MVal:
+    items: list[_MVal] = []
+    for sub in _list_to_pylist_m(xss):
+        items.extend(_list_to_pylist_m(sub))
+    return _pylist_to_list_m(items)
+
+
+def _mk_text_jet_m(length: _MVal, content: _MVal) -> _MVal:
+    _m_evaluate(length); _m_evaluate(content)
+    l = length.nat if length.type == "nat" else 0
+    c = content.nat if content.type == "nat" else 0
+    return _MApp(_MNat(l), _MNat(c))
+
+
+def _text_len_jet_m(t: _MVal) -> _MVal:
+    _m_evaluate(t)
+    if t.type == "app":
+        head = t.head
+        _m_evaluate(head)
+        if head.type == "nat":
+            return _MNat(head.nat)
+    return _MNat(0)
+
+
+def _text_nat_jet_m(t: _MVal) -> _MVal:
+    _m_evaluate(t)
+    if t.type == "app":
+        tail = t.tail
+        _m_evaluate(tail)
+        if tail.type == "nat":
+            return _MNat(tail.nat)
+    return _MNat(0)
+
+
+_PRELUDE_JETS_MARDUK = {
+    # Lists
+    "Core.List.map":         (2, _list_map_jet_m),
+    "Core.List.foldl":       (3, _list_foldl_jet_m),
+    "Core.List.foldr":       (3, _list_foldr_jet_m),
+    "Core.List.filter":      (2, _list_filter_jet_m),
+    "Core.List.length":      (1, _list_length_jet_m),
+    "Core.List.append":      (2, _list_append_jet_m),
+    "Core.List.concat_list": (1, _list_concat_jet_m),
+    # Text primitives
+    "Core.Text.Prim.mk_text":  (2, _mk_text_jet_m),
+    "Core.Text.Prim.text_len": (1, _text_len_jet_m),
+    "Core.Text.Prim.text_nat": (1, _text_nat_jet_m),
+}
+
+
 def register_prelude_jets(compiled: dict) -> None:
-    """Install the Core.{Nat,Text,List} prelude jets against
-    ``compiled``. Additive — does not clear prior registrations."""
-    _register_table(_PRELUDE_JETS, compiled)
+    """Currently a no-op under Marduk.
+
+    The legacy gallowglass jet table couples Python-fn implementations
+    to specific Law identities via the registry's ``id(law.box)``
+    key. Mirroring that under Marduk requires a global identity-cached
+    converter — but Marduk's evaluator mutates ``Val.box`` in place,
+    so a global cache becomes corrupt as soon as anything is forced.
+    The fundamentals don't compose: cached identity + in-place
+    mutation = stale data on the second use.
+
+    The Marduk-native list/text jet implementations are kept (see
+    ``_PRELUDE_JETS_MARDUK`` below) for a future fix that resolves
+    this — likely by NOT mutating in-place during evaluation, or by
+    tying jet registration to Law-content rather than Law-identity.
+    Until then, prelude-heavy code runs through Marduk's
+    spec-faithful interpreter — slower than the legacy backend but
+    correct.
+    """
+    return
 
 
 # ---------------------------------------------------------------------------

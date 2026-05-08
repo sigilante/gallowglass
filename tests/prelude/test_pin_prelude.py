@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from bootstrap.build import build_modules
 from bootstrap.pin import build_manifest, compute_pin_id
 from dev.harness.eval import bevaluate, register_prelude_jets
-from dev.harness.bplan import _bapply
+from dev.harness.eval import apply as _bapply
 from dev.harness.plan import A, N, P, is_pin
 from dev.harness.pin_store import PinStore
 

@@ -71,11 +71,37 @@ bevaluate = _backend.bevaluate
 register_jets = _backend.register_jets
 register_prelude_jets = _backend.register_prelude_jets
 
+
+# ``apply`` — backend-agnostic application helper.
+#
+# Tests historically imported ``_bapply`` from :mod:`dev.harness.bplan`
+# directly to build saturated applications without involving an
+# evaluator yet. Under the Marduk backend that path doesn't work:
+# legacy ``_bapply`` for an arity-1 application *eagerly* runs the
+# function through the legacy interpreter, which has no prelude jets
+# registered under Marduk default and blows the recursion ceiling on
+# anything text-heavy. Use ``apply(f, x)`` instead — it builds an
+# unforced ``App`` in the active backend's value space.
+if _BACKEND_NAME == "marduk":
+    from dev.harness.marduk import convert as _convert
+    from marduk import App as _MApp
+
+    def apply(f, x):
+        return _MApp(_convert(f), _convert(x))
+
+else:
+    from dev.harness.bplan import _bapply as _legacy_bapply
+
+    def apply(f, x):
+        return _legacy_bapply(f, x)
+
+
 backend_name: str = _BACKEND_NAME
 
 __all__ = [
     "bevaluate",
     "register_jets",
     "register_prelude_jets",
+    "apply",
     "backend_name",
 ]
