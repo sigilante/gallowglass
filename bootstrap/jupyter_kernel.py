@@ -2,7 +2,7 @@
 Gallowglass Jupyter kernel — A1 architecture (Python harness backend).
 
 A Jupyter kernel that evaluates Gallowglass cells in-process via the
-Python BPLAN harness (``dev.harness.bplan.bevaluate``). Sits next to
+Python harness (``dev.harness.eval.bevaluate``). Sits next to
 ``bootstrap/mcp_server.py`` and shares the same prelude-loading and
 snippet-compile machinery.
 
@@ -21,7 +21,7 @@ Architecture
     bootstrap.{lexer, parser, scope, codegen}
             │
             ▼
-    dev.harness.bplan.bevaluate
+    dev.harness.eval.bevaluate
             │
             ▼
     PLAN values rendered as Jupyter display data
@@ -61,8 +61,8 @@ Limitations (Phase G+ open work)
 * Result formatting is text/plain only. ``Nat`` renders as decimal;
   other PLAN values render as a structural debug-ish form. A real
   ``Show`` typeclass-driven renderer is M14.5 on the roadmap.
-* The Python BPLAN harness has a ~100K recursion ceiling; cells
-  whose evaluation exceeds that surface as ``RecursionError``.
+* The Python harness has a recursion ceiling; cells whose evaluation
+  exceeds that surface as ``RecursionError``.
 * No tab completion or doc inspection yet — the MCP server's
   ``infer_type`` / ``render_fragment`` would be the natural
   backends for those.
@@ -95,7 +95,7 @@ from bootstrap.codegen import Compiler, CodegenError
 from bootstrap.typecheck import TypecheckError
 
 from dev.harness.plan import P, is_nat, is_pin, is_law, is_app
-from dev.harness.bplan import bevaluate, register_prelude_jets
+from dev.harness.eval import bevaluate, register_prelude_jets
 
 # Prelude loading + typecheck-capture both reuse the MCP server's
 # snapshot machinery — both tools want the same "compile prelude once,
@@ -153,12 +153,10 @@ class GallowglassEvaluator:
                  prelude: PreludeSnapshot | None = None):
         self.module = module
         self.prelude = prelude if prelude is not None else load_prelude()
-        # Register Core.Nat / Core.Text / Core.List jets in the BPLAN
-        # harness's identity-keyed registry. Without this, calls to
-        # `Nat.mul`/etc. recurse through bevaluate's kal walker (~7K
+        # Register Core.Nat / Core.Text / Core.List jets. Without this,
+        # calls to `Nat.mul`/etc. recurse through the evaluator (~7K
         # Python frames per user-level recursion); with jets they
-        # dispatch to native Python in one frame. Idempotent: the
-        # registry de-duplicates on Python id of the underlying Law.
+        # dispatch to native Python in one frame.
         register_prelude_jets(self.prelude.compiled)
         # Accumulator of source from prior cells. Declarations only —
         # expression-mode cells are wrapped on the fly and never enter

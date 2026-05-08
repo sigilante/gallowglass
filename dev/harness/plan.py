@@ -151,6 +151,32 @@ def nat(x):
     return 0
 
 
+def pin_item(x):
+    """Return the item inside a Pin, backend-agnostically.
+
+    Legacy ``P`` stores it as ``.val``; Marduk ``Val`` stores it as
+    ``.item``. Returns ``None`` for non-pins.
+    """
+    if isinstance(x, P):
+        return x.val
+    if getattr(x, 'type', None) == 'pin':
+        return x.item
+    return None
+
+
+def law_arity(x) -> int:
+    """Return the arity of a Law as a Python int, backend-agnostically.
+
+    Legacy ``L`` stores arity as ``.arity`` (already an int); Marduk
+    ``Val`` stores it as ``.args`` (a Nat Val). Returns 0 for non-laws.
+    """
+    if isinstance(x, L):
+        return x.arity
+    if getattr(x, 'type', None) == 'law':
+        return nat(x.args)
+    return 0
+
+
 def str_nat(s: str) -> int:
     """Encode s as a little-endian nat (Reaver's strNat)."""
     return int.from_bytes(s.encode('utf-8'), 'little')

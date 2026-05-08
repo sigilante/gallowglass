@@ -44,7 +44,8 @@ from bootstrap.typecheck import (
     TMeta, TCon, TArr, TApp, TTup, TBound, TComp, Scheme,
     pp_type,
 )
-from dev.harness.plan import is_nat, is_pin, is_law, is_app
+from dev.harness.plan import is_nat, is_pin, is_law, is_app, nat as _nat, pin_item as _pin_item, law_arity as _law_arity
+from dev.harness.eval import bevaluate as _force
 
 
 MAX_DEPTH = 32
@@ -329,10 +330,10 @@ def _walk_atomic(value: Any, type_name: str, fmt: Formatter):
     short = type_name.rsplit('.', 1)[-1]
 
     if short == 'Nat' and is_nat(value):
-        return fmt.nat(int(value))
+        return fmt.nat(_nat(value))
 
     if short == 'Bool' and is_nat(value):
-        return fmt.bool_(int(value) != 0)
+        return fmt.bool_(_nat(value) != 0)
 
     if short == 'Text':
         decoded = _decode_text(value)
@@ -346,10 +347,10 @@ def _decode_text(value: Any) -> str | None:
     """Decode a ``Text = A(byte_length, content_nat)`` to its Python
     str. Returns ``None`` if the value isn't in the expected pair
     shape."""
-    if not (is_app(value) and is_nat(value.fun) and is_nat(value.arg)):
+    if not (is_app(value) and is_nat(value.head) and is_nat(value.tail)):
         return None
-    byte_length = int(value.fun)
-    content = int(value.arg)
+    byte_length = _nat(value.head)
+    content = _nat(value.tail)
     if byte_length == 0:
         return ''
     try:
@@ -361,7 +362,7 @@ def _decode_text(value: Any) -> str | None:
 def _value_name(value: Any) -> str:
     """Best-effort: extract the name from a Law or Pin'd Law."""
     if is_pin(value):
-        return _value_name(value.val)
+        return _value_name(_pin_item(value))
     if is_law(value):
         return _decode_strnat(value.name)
     return ''
@@ -370,7 +371,7 @@ def _value_name(value: Any) -> str:
 def _decode_strnat(n: Any) -> str:
     if not is_nat(n) or n == 0:
         return ''
-    n_int = int(n)
+    n_int = _nat(n)
     try:
         raw = n_int.to_bytes((n_int.bit_length() + 7) // 8, 'little')
         return raw.decode('utf-8')
@@ -403,12 +404,12 @@ def _walk_adt(value: Any, outer_type: Any, ctors: list, fmt: Formatter,
     # compiler's globals as ``Pin(Nat)``. After ``bevaluate`` the
     # Pin survives, so we strip one layer here before checking for
     # the bare-Nat shape.
-    if is_pin(value) and is_nat(value.val):
-        value = value.val
+    if is_pin(value) and is_nat(_pin_item(value)):
+        value = _pin_item(value)
 
     # Nullary case: value is a bare Nat (the tag).
     if is_nat(value):
-        tag = int(value)
+        tag = _nat(value)
         ci = _find_ctor(ctors, tag, arity=0)
         if ci is not None:
             return fmt.ctor_name(_short_name(ci.fq_name))
@@ -418,10 +419,10 @@ def _walk_adt(value: Any, outer_type: Any, ctors: list, fmt: Formatter,
     if is_app(value):
         spine_args, head = _unspine(value)
         # Same Pin-unwrap discipline at the spine head.
-        if is_pin(head) and is_nat(head.val):
-            head = head.val
+        if is_pin(head) and is_nat(_pin_item(head)):
+            head = _pin_item(head)
         if is_nat(head):
-            tag = int(head)
+            tag = _nat(head)
             ci = _find_ctor(ctors, tag, arity=len(spine_args))
             if ci is not None:
                 return _walk_ctor_application(
@@ -451,12 +452,12 @@ def _walk_ctor_application(ci, field_values: list, outer_type: Any,
     from the outer type's instantiation."""
     field_types = _instantiate_field_types(ci.fq_name, outer_type, type_env)
     if field_types is None or len(field_types) != len(field_values):
-        rendered_fields = [_walk_structural(v, fmt, depth + 1)
+        rendered_fields = [_walk_structural(_force(v), fmt, depth + 1)
                            for v in field_values]
     else:
         rendered_fields = []
         for fv, fty in zip(field_values, field_types):
-            rendered_fields.append(_walk(fv, fty, fmt,
+            rendered_fields.append(_walk(_force(fv), fty, fmt,
                                          type_env=type_env, con_info=con_info,
                                          depth=depth + 1))
 
@@ -582,11 +583,11 @@ def _unapply(ty: Any) -> tuple:
 
 
 def _unspine(value: Any) -> tuple:
-    args: list = [value.arg]
-    node = value.fun
+    args: list = [value.tail]
+    node = value.head
     while is_app(node):
-        args.insert(0, node.arg)
-        node = node.fun
+        args.insert(0, node.tail)
+        node = node.head
     return args, node
 
 
@@ -605,16 +606,16 @@ def _walk_structural(value: Any, fmt: Formatter, depth: int) -> Rendered:
     if depth > MAX_DEPTH:
         return fmt.truncated()
     if is_nat(value):
-        return fmt.nat(int(value))
+        return fmt.nat(_nat(value))
     if is_pin(value):
-        inner = _walk_structural(value.val, fmt, depth + 1)
+        inner = _walk_structural(_pin_item(value), fmt, depth + 1)
         return fmt.pin_fallback(inner)
     if is_law(value):
-        return fmt.law_fallback(_decode_strnat(value.name), int(value.arity))
+        return fmt.law_fallback(_decode_strnat(value.name), _law_arity(value))
     if is_app(value):
         return fmt.app_fallback(
-            _walk_structural(value.fun, fmt, depth + 1),
-            _walk_structural(value.arg, fmt, depth + 1),
+            _walk_structural(value.head, fmt, depth + 1),
+            _walk_structural(value.tail, fmt, depth + 1),
         )
     return Rendered(repr(value))
 
