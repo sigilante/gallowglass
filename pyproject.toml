@@ -8,17 +8,16 @@ version = "0.1.0"
 description = "Jupyter kernel for the Gallowglass programming language (PLAN target)."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
 authors = [
     { name = "Neal Davis", email = "davisneale@gmail.com" },
 ]
 keywords = ["gallowglass", "plan", "jupyter", "kernel", "language"]
 classifiers = [
     "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
     "Framework :: Jupyter",
     "Intended Audience :: Developers",
     "Intended Audience :: Education",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Topic :: Software Development :: Compilers",
