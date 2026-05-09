@@ -20,13 +20,16 @@ jobs:
           python-version: '3.12'
 
       - name: Install pytest
-        run: pip install pytest
+        run: pip install pytest blake3
 
       - name: Set up vendored upstreams (vendor.lock)
         run: ./tools/vendor.sh
 
       - name: Verify vendor pins
         run: ./tools/vendor.sh verify
+
+      - name: Install marduk from vendor
+        run: pip install -e vendor/marduk/packages/marduk
 
       - name: Run all Python-only tests
         run: python3 -m pytest tests/bootstrap/ tests/compiler/ tests/prelude/ tests/sanity/ tests/demos/ -v --tb=short
@@ -58,13 +61,16 @@ jobs:
           python-version: '3.12'
 
       - name: Install pytest
-        run: pip install pytest
+        run: pip install pytest blake3
 
       - name: Set up vendored upstreams (vendor.lock)
         run: ./tools/vendor.sh
 
       - name: Verify vendor pins
         run: ./tools/vendor.sh verify
+
+      - name: Install marduk from vendor
+        run: pip install -e vendor/marduk/packages/marduk
 
       - name: Install Nix
         uses: cachix/install-nix-action@v27
