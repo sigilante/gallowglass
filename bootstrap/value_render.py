@@ -278,6 +278,17 @@ def render_typed_html(value: Any, ty: Any, *,
 
 def _render_with(value: Any, ty: Any, fmt: Formatter,
                  *, type_env: dict, con_info: dict, depth: int) -> str:
+    # Top-level plain-text output for a Text result: show the raw string
+    # without quotes.  Embedded Text fields and HTML output keep the
+    # quoted/styled form so the structure reads correctly.
+    ty_stripped = _strip_meta_and_comp(ty)
+    if (depth == 0
+            and not isinstance(fmt, HtmlFormatter)
+            and isinstance(ty_stripped, TCon)
+            and ty_stripped.name.rsplit('.', 1)[-1] == 'Text'):
+        decoded = _decode_text(value)
+        if decoded is not None:
+            return decoded
     rendered = _walk(value, ty, fmt, type_env=type_env,
                       con_info=con_info, depth=depth)
     return fmt.wrap_top(rendered.text)
@@ -346,11 +357,22 @@ def _walk_atomic(value: Any, type_name: str, fmt: Formatter):
 def _decode_text(value: Any) -> str | None:
     """Decode a ``Text = A(byte_length, content_nat)`` to its Python
     str. Returns ``None`` if the value isn't in the expected pair
-    shape."""
-    if not (is_app(value) and is_nat(value.head) and is_nat(value.tail)):
+    shape.
+
+    bevaluate (via _force) reduces the outer App to WHNF but leaves
+    the argument unevaluated when the head is a stuck Nat.  Force both
+    sub-values explicitly so text built from text_concat / show_nat
+    chains decodes correctly rather than falling back to structural
+    rendering.
+    """
+    if not is_app(value):
         return None
-    byte_length = _nat(value.head)
-    content = _nat(value.tail)
+    head = _force(value.head)
+    tail = _force(value.tail)
+    if not (is_nat(head) and is_nat(tail)):
+        return None
+    byte_length = _nat(head)
+    content = _nat(tail)
     if byte_length == 0:
         return ''
     try:

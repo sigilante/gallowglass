@@ -62,11 +62,12 @@ class TestExpressionMode(unittest.TestCase):
         self.assertEqual(ev.eval_cell('False').value_text, 'False')
 
     def test_show_dispatch_for_text(self):
-        """Show Text quotes the value, distinguishing it from
-        printable Nats and structural representations."""
+        """Top-level Text displays as raw content (no surrounding quotes)
+        so that show/as_text calls used as display expressions render
+        directly rather than adding a redundant quoting layer."""
         ev = make_evaluator()
         r = ev.eval_cell('"hello"')
-        self.assertEqual(r.value_text, '"hello"')
+        self.assertEqual(r.value_text, 'hello')
 
     def test_show_falls_back_for_compound_types(self):
         """`Show a => Show Pair` runs into the bootstrap codegen's
