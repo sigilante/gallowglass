@@ -128,5 +128,10 @@ class TestLesson05IntervalArithmetic(_TutorialNotebookTestMixin, unittest.TestCa
     BUILD = '_build_lesson_05.py'
 
 
+class TestLesson06QuantumStates(_TutorialNotebookTestMixin, unittest.TestCase):
+    NOTEBOOK = '06-quantum-states.ipynb'
+    BUILD = '_build_lesson_06.py'
+
+
 if __name__ == '__main__':
     unittest.main()
