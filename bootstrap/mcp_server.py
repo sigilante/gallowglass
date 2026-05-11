@@ -30,6 +30,25 @@ Tools (decisions per the planning conversation):
     render_fragment(source: str, fn_name: str, budget: int | None = None,
                     module: str = "Snippet")
         Wraps ``glass_ir.render_fragment``. Returns ``{ ir, deps }`` for a
+        named definition in *source*. Requires source; see lookup_fragment
+        for source-free prelude lookups.
+
+    lookup_fragment(name: str, source: str = "", module: str = "Snippet",
+                    budget: int = 4096)
+        Look up a Glass IR fragment by name. Prelude names (Core.*) are
+        served from the pre-built static fragment store — no source needed.
+        User-defined names require source text. Returns ``{ ir, source }``.
+
+    get_context(names: list[str], source: str = "", module: str = "Snippet",
+                budget: int = 8192)
+        Fetch Glass IR fragments for multiple names within a shared token
+        budget. Each name gets a proportional share. Returns
+        ``{ fragments, total_tokens, budget, complete }``.
+
+    render_fragment(source: str, fn_name: str, budget: int | None = None,
+                    module: str = "Snippet")
+        (legacy path — prefer lookup_fragment for prelude names)
+        Wraps ``glass_ir.render_fragment``. Returns ``{ ir, deps }`` for a
         single definition with its pin-hash dep list. When ``budget`` is
         an int, the fragment is truncated to fit (cheapest cut first:
         deepest ``@![pin#...]`` lines, then a body marker).
@@ -478,6 +497,111 @@ def _enforce_budget(ir: str, budget: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# lookup_fragment / get_context — name-first Glass IR retrieval
+# ---------------------------------------------------------------------------
+
+_PRELUDE_GLASS_IR_DIR = os.path.join(
+    os.path.dirname(__file__), '..', 'prelude', 'glass_ir'
+)
+
+
+def _fragment_for_name(name: str, source: str, module: str,
+                        budget: int) -> dict | None:
+    """Return {'ir': str, 'source': 'prelude'|'snippet'} for *name*.
+
+    Tries the prelude static fragment store first (no compile needed).
+    Falls back to on-demand render from *source* if provided.
+    Returns None when the name cannot be found.
+    """
+    # Prelude static lookup: Core.List.map → Core_List_map.gls
+    frag_path = os.path.join(_PRELUDE_GLASS_IR_DIR,
+                             name.replace('.', '_') + '.gls')
+    if os.path.isfile(frag_path):
+        ir = open(frag_path).read()
+        if _count_tokens(ir) > budget:
+            ir = _enforce_budget(ir, budget)
+        return {'ir': ir, 'source': 'prelude'}
+
+    # On-demand render from provided source text.
+    if not source:
+        return None
+    short = name.rsplit('.', 1)[-1]
+    result = _do_render_fragment(source, module, short, budget)
+    if 'error' in result:
+        return None
+    return {'ir': result['ir'], 'source': 'snippet'}
+
+
+def tool_lookup_fragment(args: dict) -> dict:
+    """Look up a Glass IR fragment by name.
+
+    For prelude names (Core.*) no source is needed.
+    For user-defined names, supply the relevant source text.
+    """
+    name = args.get('name', '').strip()
+    source = args.get('source', '')
+    module = args.get('module', 'Snippet')
+    budget = args.get('budget', 4096)
+    if not name:
+        return {'error': {'stage': 'lookup', 'message': 'name is required'}}
+    result = _fragment_for_name(name, source, module, budget)
+    if result is None:
+        return {
+            'error': {
+                'stage': 'lookup',
+                'message': (
+                    f"'{name}' not found in prelude. "
+                    "For user-defined names supply 'source'."
+                ),
+            }
+        }
+    return result
+
+
+def tool_get_context(args: dict) -> dict:
+    """Retrieve Glass IR fragments for a list of names within a token budget.
+
+    Each name gets a proportional share of the budget (total / n).
+    Fragments are returned in the requested order; names that cannot be
+    resolved are included with found=false and ir=null.
+    """
+    names = args.get('names', [])
+    source = args.get('source', '')
+    module = args.get('module', 'Snippet')
+    total_budget = args.get('budget', 8192)
+
+    if not names:
+        return {'error': {'stage': 'lookup', 'message': 'names list is required'}}
+
+    per_budget = max(256, total_budget // len(names))
+    fragments: list[dict] = []
+    tokens_used = 0
+
+    for name in names:
+        remaining = total_budget - tokens_used
+        if remaining <= 0:
+            fragments.append({'name': name, 'ir': None, 'found': False,
+                               'reason': 'budget exhausted'})
+            continue
+        frag = _fragment_for_name(name, source, module,
+                                  min(per_budget, remaining))
+        if frag is None:
+            fragments.append({'name': name, 'ir': None, 'found': False})
+        else:
+            toks = _count_tokens(frag['ir'])
+            tokens_used += toks
+            fragments.append({'name': name, 'ir': frag['ir'],
+                               'found': True, 'source': frag['source']})
+
+    return {
+        'fragments': fragments,
+        'total_tokens': tokens_used,
+        'budget': total_budget,
+        'complete': all(f['found'] for f in fragments),
+    }
+
+
+# ---------------------------------------------------------------------------
 # MCP wiring — stdio transport, tool registration.
 # ---------------------------------------------------------------------------
 
@@ -562,6 +686,73 @@ TOOL_DEFS = [
             'required': ['source', 'fn_name'],
         },
     },
+    {
+        'name': 'lookup_fragment',
+        'description': (
+            'Look up a Glass IR fragment by fully-qualified name. '
+            'For prelude names (Core.*) no source is required — the '
+            'pre-built fragment is returned instantly. '
+            'For user-defined names, supply the relevant source text.'
+        ),
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'name': {
+                    'type': 'string',
+                    'description': (
+                        'Fully-qualified or short name, e.g. '
+                        '"Core.List.foldl" or "foldl"'
+                    ),
+                },
+                'source': {
+                    'type': 'string',
+                    'description': (
+                        'Gallowglass source text containing the definition '
+                        '(required for non-prelude names).'
+                    ),
+                    'default': '',
+                },
+                'module': {'type': 'string', 'default': 'Snippet'},
+                'budget': {
+                    'type': 'integer',
+                    'description': 'Token budget for the fragment.',
+                    'default': 4096,
+                },
+            },
+            'required': ['name'],
+        },
+    },
+    {
+        'name': 'get_context',
+        'description': (
+            'Retrieve Glass IR fragments for a list of names within a '
+            'shared token budget. Each name gets a proportional share. '
+            'Names not found are included with found=false. '
+            'Use this before writing code that calls several prelude functions.'
+        ),
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'names': {
+                    'type': 'array',
+                    'items': {'type': 'string'},
+                    'description': 'Names to fetch, in priority order.',
+                },
+                'source': {
+                    'type': 'string',
+                    'description': 'Source context for user-defined names.',
+                    'default': '',
+                },
+                'module': {'type': 'string', 'default': 'Snippet'},
+                'budget': {
+                    'type': 'integer',
+                    'description': 'Total token budget across all fragments.',
+                    'default': 8192,
+                },
+            },
+            'required': ['names'],
+        },
+    },
 ]
 
 
@@ -570,6 +761,8 @@ _TOOL_FUNCS = {
     'infer_type': tool_infer_type,
     'explain_effect_row': tool_explain_effect_row,
     'render_fragment': tool_render_fragment,
+    'lookup_fragment': tool_lookup_fragment,
+    'get_context': tool_get_context,
 }
 
 

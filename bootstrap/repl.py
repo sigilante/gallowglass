@@ -36,11 +36,12 @@ _BANNER = (
 _HELP = """\
 Gallowglass REPL
 
-  :type <name>   print the type of a name currently in scope
-  :load <path>   load and evaluate a .gls source file
-  :reset         discard accumulated declarations (prelude stays)
-  :quit          exit  (also Ctrl-D)
-  :help          this message
+  :type  <name>   print the type of a name currently in scope
+  :glass <name>   show the Glass IR fragment for a name (elaborated form)
+  :load  <path>   load and evaluate a .gls source file
+  :reset          discard accumulated declarations (prelude stays)
+  :quit           exit  (also Ctrl-D)
+  :help           this message
 
 Input:
   Expressions submit on Enter:
@@ -69,7 +70,7 @@ _DECL_PREFIXES = (
 )
 
 _META_COMMANDS = [
-    ':type', ':load', ':reset', ':quit', ':help',
+    ':type', ':glass', ':load', ':reset', ':quit', ':help',
     ':r', ':q', ':h',
 ]
 
@@ -151,6 +152,18 @@ def _cmd_type(ev: GallowglassEvaluator, args: str) -> None:
         print(f'{name} : {scheme}')
 
 
+def _cmd_glass(ev: GallowglassEvaluator, args: str) -> None:
+    name = args.strip()
+    if not name:
+        print(':glass requires a name', file=sys.stderr)
+        return
+    ir = ev.render_glass(name)
+    if ir is None:
+        print(f'{name} not found', file=sys.stderr)
+    else:
+        print(ir)
+
+
 def _cmd_load(ev: GallowglassEvaluator, args: str) -> None:
     path = args.strip()
     if not path:
@@ -199,6 +212,8 @@ def main() -> None:
                 print(_HELP)
             elif cmd == ':type':
                 _cmd_type(ev, rest)
+            elif cmd == ':glass':
+                _cmd_glass(ev, rest)
             elif cmd == ':load':
                 _cmd_load(ev, rest)
             else:

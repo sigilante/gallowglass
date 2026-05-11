@@ -99,6 +99,7 @@ class TestMcpStdio(unittest.TestCase):
             self.assertEqual(tool_names, {
                 'compile_snippet', 'infer_type',
                 'explain_effect_row', 'render_fragment',
+                'lookup_fragment', 'get_context',
             })
 
             # 3. tools/call compile_snippet

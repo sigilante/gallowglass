@@ -270,6 +270,70 @@ class GallowglassEvaluator:
         self._accumulated_source = ''
         self._type_env = dict(self.prelude.type_env)
 
+    def render_glass(self, name: str, budget: int = 4096) -> str | None:
+        """Return the Glass IR fragment for *name*, or None if not found.
+
+        Prelude names are served from the pre-built fragment files in
+        ``prelude/glass_ir/``.  User-defined names are compiled on demand
+        from the accumulated source and rendered via ``glass_ir.render_fragment``.
+        """
+        import os
+        from bootstrap.glass_ir import (
+            render_fragment as gi_render_fragment,
+            collect_pin_deps,
+        )
+        from bootstrap.pin import compute_pin_id
+        from bootstrap import ast as _ast
+
+        # --- Prelude lookup: try static fragment file first ---------------
+        glass_dir = os.path.join(os.path.dirname(__file__),
+                                 '..', 'prelude', 'glass_ir')
+        frag_file = os.path.join(glass_dir, name.replace('.', '_') + '.gls')
+        if os.path.isfile(frag_file):
+            text = open(frag_file).read()
+            if len(text.split()) > budget:
+                from bootstrap.mcp_server import _enforce_budget
+                text = _enforce_budget(text, budget)
+            return text
+
+        # --- User-defined: re-compile accumulated source ------------------
+        src = self._accumulated_source
+        if not src.strip():
+            return None
+
+        # Strip module prefix if the caller passed a FQ name.
+        short = name.split('.')[-1]
+        filename = '<glass>'
+        try:
+            tokens = lex(src, filename)
+            program = parse(tokens, filename)
+            resolved, env = resolve(program, self.module,
+                                    self.prelude.module_envs, filename)
+            type_env, expr_types = self._typecheck(resolved, env, filename)
+            compiler, compiled = self._compile_with_prelude(resolved, expr_types)
+
+            decl = next(
+                (d for d in resolved.decls
+                 if isinstance(d, _ast.DeclLet) and d.name in (name, short)),
+                None,
+            )
+            if decl is None:
+                return None
+
+            fq = f'{self.module}.{decl.name}'
+            snippet_pins = {f: compute_pin_id(v) for f, v in compiled.items()}
+            combined_pins = {**self.prelude.pin_ids, **snippet_pins}
+            manifest = {'module': self.module, 'pins': combined_pins}
+
+            pin_id = snippet_pins.get(fq)
+            deps = collect_pin_deps(fq, decl, self.module, manifest)
+            return gi_render_fragment(
+                fq, decl, pin_id=pin_id, module=self.module, deps=deps,
+                budget=budget, type_env=type_env,
+            )
+        except Exception:
+            return None
+
     def query_type(self, name: str) -> str | None:
         """Return the pretty-printed type scheme for *name*, or None.
 
