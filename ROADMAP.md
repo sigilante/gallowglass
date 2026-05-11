@@ -335,33 +335,36 @@ typeclass laws verification, effect polymorphism in constraints.
 
 ---
 
-## M14 — Core Prelude
+## ✅ M14 — Core Prelude
 
 Goal: complete the core library to the level where real programs can be written.
 
-### M14.1 — Complete existing classes
+### ✅ M14.1 — Complete existing classes
 
-`Ord`: add `compare`, `gt`, `gte`, `min`, `max` (needs M13.1 default methods for
-the ones derivable from `lt`). `Eq`: add `neq` default. Move `div_nat`/`mod_nat`
-from Text to Nat where they belong.
+`Ord` default methods (`gt`, `gte`, `min`, `max`) implemented via `lt`. `Eq` `neq`
+default. `div_nat`/`mod_nat` in `Core.Nat`. 167 prelude tests passing.
 
-### M14.2 — Missing core types
+### ✅ M14.2 — Missing core types
 
-`Result a b` (`Ok a | Err b`). `Pair a b` with `fst`, `snd`.
+`Result a b` (`Ok a | Err b`) with `is_ok`, `is_err`, `with_ok`, `with_err`,
+`map_ok`, `map_err`, `bind_result`. `Pair a b` with `fst`, `snd`, `map_fst`,
+`map_snd`, `swap`.
 
-### M14.3 — Collection instances
+### ✅ M14.3 — Collection instances
 
-`Show Option`, `Show List`, `Eq Option`, `Eq List`, `Eq Result`. Needs M13.2
-polymorphic instances.
+`Show`/`Debug`/`Eq` for `Option`, `List`, `Result`, `Pair`. All via polymorphic
+instances (M13.2). `show_list_go`/`debug_list_go` explicit-comparator helpers
+work around the constrained-method self-ref limitation.
 
-### M14.4 — Missing combinators
+### ✅ M14.4 — Missing combinators
 
-`fix` as a standalone combinator, `fst`, `snd`, pipe `|>`, function composition `·`.
+`fixpoint` (named to avoid conflict with `fix` keyword), `fst`/`snd` (in `Core.Pair`),
+`pipe` (`|>` desugars to this), `compose` (`·` desugars to this).
 
-### M14.5 — `Debug` class
+### ✅ M14.5 — `Debug` class
 
-Spec mandates Show/Debug distinction. Minimal implementation: same output as Show
-initially but distinct class identity and instances.
+`class Debug a { debug : a → Text }` in `Core.Text`. Instances for `Nat`, `Bool`,
+`Option`, `List`, `Result`, `Pair`. Constructor-syntax output distinct from `Show`.
 
 ### ✅ M14.6 — Cross-module prelude refactor
 

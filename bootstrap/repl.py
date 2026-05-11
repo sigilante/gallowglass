@@ -12,14 +12,18 @@ Input rules
 
 Meta-commands (prefix ``:``)
 ----------------------------
-    :reset    — discard all accumulated declarations (keep prelude)
-    :quit     — exit
-    :help     — print this message
+    :type <name>   — print the type of a name in scope
+    :load <path>   — load and evaluate a .gls source file
+    :reset         — discard all accumulated declarations (keep prelude)
+    :quit          — exit
+    :help          — print this message
 """
 
 from __future__ import annotations
 
-import readline  # noqa: F401  — side-effect: enables history + line editing
+import os
+import re
+import readline
 import sys
 
 from bootstrap.jupyter_kernel import GallowglassEvaluator, CellResult
@@ -32,9 +36,11 @@ _BANNER = (
 _HELP = """\
 Gallowglass REPL
 
-  :reset   discard accumulated declarations (prelude stays)
-  :quit    exit  (also Ctrl-D)
-  :help    this message
+  :type <name>   print the type of a name currently in scope
+  :load <path>   load and evaluate a .gls source file
+  :reset         discard accumulated declarations (prelude stays)
+  :quit          exit  (also Ctrl-D)
+  :help          this message
 
 Input:
   Expressions submit on Enter:
@@ -45,11 +51,11 @@ Input:
     gg> let double : Nat → Nat
     ..    = λ n → add n n
     ..
-    double defined
+    double : Nat → Nat
 
-  Multi-line expressions — wrap in a let, then evaluate the name:
+  Multi-line expressions — wrap in a let, evaluate the name:
     gg> let result =
-    ..      match foo { | Bar → 1 | Baz → 2 }
+    ..      match opt { | None → 0 | Some x → x }
     ..
     gg> result
 """
@@ -62,10 +68,31 @@ _DECL_PREFIXES = (
     'use ', 'use\t',
 )
 
+_META_COMMANDS = [
+    ':type', ':load', ':reset', ':quit', ':help',
+    ':r', ':q', ':h',
+]
+
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
+
 
 def _is_decl_start(line: str) -> bool:
     stripped = line.lstrip()
     return any(stripped.startswith(p) for p in _DECL_PREFIXES)
+
+
+def _make_completer(ev: GallowglassEvaluator):
+    """Return a readline completer bound to the evaluator's live scope."""
+    def completer(text: str, state: int) -> str | None:
+        if text.startswith(':'):
+            matches = [c for c in _META_COMMANDS if c.startswith(text)]
+        else:
+            matches = [n for n in ev.names_in_scope() if n.startswith(text)]
+        try:
+            return matches[state]
+        except IndexError:
+            return None
+    return completer
 
 
 def _read_cell() -> str | None:
@@ -104,21 +131,50 @@ def _read_cell() -> str | None:
 
 
 def _format_error(err: dict) -> str:
-    etype = err.get('etype', 'Error')
-    val = err.get('evalue', '')
     tb = err.get('traceback', [])
     if tb:
-        # Strip ANSI escapes from the traceback for plain terminal output.
-        import re
-        ansi = re.compile(r'\x1b\[[0-9;]*m')
-        lines = [ansi.sub('', ln) for ln in tb]
-        return '\n'.join(lines)
+        return '\n'.join(_ANSI_RE.sub('', ln) for ln in tb)
+    etype = err.get('etype', 'Error')
+    val = err.get('evalue', '')
     return f'{etype}: {val}' if val else etype
+
+
+def _cmd_type(ev: GallowglassEvaluator, args: str) -> None:
+    name = args.strip()
+    if not name:
+        print(':type requires a name', file=sys.stderr)
+        return
+    scheme = ev.query_type(name)
+    if scheme is None:
+        print(f'{name} is not in scope', file=sys.stderr)
+    else:
+        print(f'{name} : {scheme}')
+
+
+def _cmd_load(ev: GallowglassEvaluator, args: str) -> None:
+    path = args.strip()
+    if not path:
+        print(':load requires a file path', file=sys.stderr)
+        return
+    path = os.path.expanduser(path)
+    try:
+        src = open(path).read()
+    except OSError as e:
+        print(f'cannot read {path}: {e}', file=sys.stderr)
+        return
+    result: CellResult = ev.eval_cell(src)
+    if result.error:
+        print(_format_error(result.error), file=sys.stderr)
+    elif result.value_text:
+        print(result.value_text)
 
 
 def main() -> None:
     print(_BANNER)
     ev = GallowglassEvaluator()
+
+    readline.set_completer(_make_completer(ev))
+    readline.parse_and_bind('tab: complete')
 
     while True:
         src = _read_cell()
@@ -131,7 +187,9 @@ def main() -> None:
 
         # Meta-commands.
         if src.startswith(':'):
-            cmd = src.split()[0]
+            parts = src.split(None, 1)
+            cmd = parts[0]
+            rest = parts[1] if len(parts) > 1 else ''
             if cmd in (':quit', ':q'):
                 break
             elif cmd in (':reset', ':r'):
@@ -139,6 +197,10 @@ def main() -> None:
                 print('(declarations cleared)')
             elif cmd in (':help', ':h', ':?'):
                 print(_HELP)
+            elif cmd == ':type':
+                _cmd_type(ev, rest)
+            elif cmd == ':load':
+                _cmd_load(ev, rest)
             else:
                 print(f"unknown command {cmd!r}  (:help for commands)")
             continue
@@ -149,7 +211,7 @@ def main() -> None:
             print(_format_error(result.error), file=sys.stderr)
         elif result.value_text:
             print(result.value_text)
-        # decls_only + no value_text → silent (e.g. blank cell)
+        # decls_only + no value_text → silent
 
 
 if __name__ == '__main__':

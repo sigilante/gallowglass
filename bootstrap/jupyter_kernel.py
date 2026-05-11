@@ -166,6 +166,9 @@ class GallowglassEvaluator:
         # never decremented, so each cell has a unique identifier even
         # across re-evaluations.
         self._cell_counter: int = 0
+        # Accumulated type env: prelude types + every successfully
+        # compiled declaration so far. Updated by _eval_program_fragment.
+        self._type_env: dict = dict(self.prelude.type_env)
 
     # ------------------------------------------------------------------
     # Public entry
@@ -265,6 +268,35 @@ class GallowglassEvaluator:
         external reference remains stable.
         """
         self._accumulated_source = ''
+        self._type_env = dict(self.prelude.type_env)
+
+    def query_type(self, name: str) -> str | None:
+        """Return the pretty-printed type scheme for *name*, or None.
+
+        Tries the notebook-qualified FQ name first, then searches for
+        any binding whose short name matches (for prelude names).
+        """
+        from bootstrap.typecheck import pp_scheme
+        fq_direct = f'{self.module}.{name}'
+        if fq_direct in self._type_env:
+            return pp_scheme(self._type_env[fq_direct])
+        for fq, scheme in self._type_env.items():
+            if fq.rsplit('.', 1)[-1] == name:
+                return pp_scheme(scheme)
+        return None
+
+    def names_in_scope(self) -> list[str]:
+        """Return sorted unqualified names in the current type env.
+
+        Excludes internal synthesised names (those starting with ``_``).
+        Used by the REPL's tab completer.
+        """
+        seen: set[str] = set()
+        for fq in self._type_env:
+            short = fq.rsplit('.', 1)[-1]
+            if not short.startswith('_'):
+                seen.add(short)
+        return sorted(seen)
 
     # ------------------------------------------------------------------
     # Expression mode
@@ -437,9 +469,9 @@ class GallowglassEvaluator:
         except (ParseError, ScopeError, TypecheckError, CodegenError) as e:
             raise _CellError(_error_envelope(_stage_for(e), e)) from e
 
-        # All phases succeeded — commit the new source. Then derive
-        # the cell's contributions for display.
+        # All phases succeeded — commit the new source and type env.
         self._accumulated_source = candidate
+        self._type_env = type_env
         return self._summarise_cell_decls(source, type_env)
 
     def _summarise_cell_decls(self, source: str, type_env: dict) -> list[str]:
