@@ -206,11 +206,10 @@ class TestPhaseG2Smoke(unittest.TestCase):
 
     def test_main_reaver_empty_source_runs(self):
         """Invoke `main_reaver` with empty stdin.  The pure `main`
-        pipeline runs on `MkPair 0 0`, returns `MkPair 0 0`, and
-        `bytesBar_encode (MkPair 0 0) = bex 0 = 1`.  `Output 1` writes
-        zero bytes (Reaver's `natBytes 1` is empty — the topmost byte
-        is the marker).  The test asserts the process exits cleanly
-        with empty stdout.
+        pipeline runs on `MkPair 0 0`, parses zero declarations, and
+        `emit_program` emits just the `@boot\\n` prelude (6 bytes) so
+        the result loads under Reaver alongside Reaver's named primitives.
+        The test asserts the process exits cleanly with `b'@boot\\n'`.
         """
         stdout, stderr, exit_code = _run_compiler(b'')
         self.assertEqual(
@@ -218,12 +217,10 @@ class TestPhaseG2Smoke(unittest.TestCase):
             f'main_reaver on empty stdin failed (exit {exit_code}):\n'
             f'stderr-tail={stderr[-1500:]!r}',
         )
-        # Stdout from `Output 1` is zero bytes (natBytes drops the
-        # marker byte).  Anything else means main_reaver fell into an
-        # unexpected branch.
+        # `emit_program []` returns the `@boot\n` prelude bytes.
         self.assertEqual(
-            stdout, b'',
-            f'expected empty stdout for empty source, got {stdout!r}\n'
+            stdout, b'@boot\n',
+            f"expected b'@boot\\n' for empty source, got {stdout!r}\n"
             f'stderr-tail={stderr[-500:]!r}',
         )
 
@@ -284,13 +281,16 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         self._assert_byte_identical('let xx = 42')
 
     def test_identity_function(self):
-        """``let id = fn x -> x`` — Law emit; validates lambda codegen.
+        """``let id = fn x → x`` — Law emit; validates lambda codegen.
 
         ``id`` encodes to strNat 25705 (little-endian 'i'=0x69, 'd'=0x64),
         keeping nat comparisons cheap.  Exercises the full lambda/Law emit
         path without triggering multi-billion-step nat_eq calls.
+
+        Uses Unicode arrow ``→`` (E2 86 92) — Compiler.gls's lexer only
+        recognises the Unicode form; ASCII ``->`` is a future-work item.
         """
-        self._assert_byte_identical('let id = fn x -> x')
+        self._assert_byte_identical('let id = fn x → x')
 
 
 if __name__ == '__main__':

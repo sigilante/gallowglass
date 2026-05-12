@@ -1433,9 +1433,11 @@ let parse_qual_name_go : List Token → Pair Nat Nat → Pair Nat (List Token)
 let parse_qual_name : List Token → Pair Nat (List Token)
   = λ toks →
       match (tok_eat_ident toks) {
-        | MkPair 0 _ → MkPair 0 toks
         | MkPair head_nat rest →
-            parse_qual_name_go rest (MkPair (nat_byte_len head_nat) head_nat)
+            match head_nat {
+              | 0 → MkPair 0 toks
+              | _ → parse_qual_name_go rest (MkPair (nat_byte_len head_nat) head_nat)
+            }
       }
 
 -- =====================================================================
@@ -1974,17 +1976,23 @@ let parse_match_arms_pe : List (Pair Nat (List Nat)) → (List Token → Pair Ex
       }
 
 -- parse_lambda_params: collect TkIdent params until TkArrow
+-- Two arms with the same constructor (MkPair) but a literal in the first
+-- field aren't disambiguated by the bootstrap codegen — extract `n` first,
+-- then dispatch on it.  Same workaround used in parse_decl.
 let parse_lambda_params : List Token → Pair (List Nat) (List Token)
   = λ toks →
       match (tok_eat_ident toks) {
-        | MkPair 0 _ → MkPair Nil toks
         | MkPair n rest →
-            match (tok_is rest TkArrow) {
-              | 0 →
-                  match (parse_lambda_params rest) {
-                    | MkPair ps rest2 → MkPair (Cons n ps) rest2
+            match n {
+              | 0 → MkPair Nil toks
+              | _ →
+                  match (tok_is rest TkArrow) {
+                    | 0 →
+                        match (parse_lambda_params rest) {
+                          | MkPair ps rest2 → MkPair (Cons n ps) rest2
+                        }
+                    | k → MkPair (Cons n Nil) rest
                   }
-              | k → MkPair (Cons n Nil) rest
             }
       }
 
@@ -6158,6 +6166,31 @@ let nat_to_decimal_go : Nat → Bytes
             (bytes_singleton (add 0x30 (mod_nat n 10)))
     }
 
+-- name_to_symbol_go: walk bytes of a FQ name nat, replacing each `.`
+-- (0x2E) with `_` (0x5F) so the result is a valid Plan Asm bare symbol.
+-- Mirrors `bootstrap/emit_pla.py::_fq_to_symbol`.  The replacement is
+-- done by adding (0x5F - 0x2E) = 0x31 at position i — equivalent because
+-- the bytes are encoded in non-overlapping bit ranges.
+let name_to_symbol_go : Nat → Nat → Nat → Nat
+  = λ n i len →
+      match (Reaver.BPLAN.eq i len) {
+        | 0 →
+            let byte = bit_and (shift_right n (mul 8 i)) 255 in
+            let n2   = match (Reaver.BPLAN.eq byte 0x2E) {
+                         | 0 → n
+                         | _ → add n (shift_left 0x31 (mul 8 i))
+                       } in
+            name_to_symbol_go n2 (Core.PLAN.inc i) len
+        | _ → n
+      }
+
+-- name_to_symbol: emit the FQ name nat as a Plan Asm bare symbol byte
+-- string.  Equivalent to Python `_fq_to_symbol(fq).encode()`.
+let name_to_symbol : Nat → Bytes
+  = λ n →
+      let len = nat_byte_len n in
+      MkPair len (name_to_symbol_go n 0 len)
+
 -- nat_to_decimal: convert Nat to decimal Bytes, handling 0 → "0"
 let nat_to_decimal : Nat → Bytes
   = λ n → match n {
@@ -6387,6 +6420,9 @@ let emit_body_val : (PlanVal → Bytes) → PlanVal → Nat → Bytes
 -- Output: "(#law "name_decimal" sig\n  body_asm)"
 -- 0x23='#'  0x6C='l'  0x61='a'  0x77='w'  0x22='"'  0x0A='\n'
 -- ---------------------------------------------------------------------------
+-- emit_plaw: emit `(#law "name_decimal" sig body)` on a single line.
+-- Mirrors `bootstrap/emit_pla.py::_emit_law` — no newline/indent between
+-- sig and body so the output is byte-identical to the Python bootstrap.
 let emit_plaw : (PlanVal → Bytes) → Nat → Nat → PlanVal → Bytes
   = λ ep name arity body →
       let name_str =
@@ -6405,10 +6441,8 @@ let emit_plaw : (PlanVal → Bytes) → Nat → Nat → PlanVal → Bytes
         (bytes_concat name_str
           (bytes_concat (bytes_singleton 0x20)
             (bytes_concat sig
-              (bytes_concat (bytes_singleton 0x0A)
-                (bytes_concat (bytes_singleton 0x20)
-                  (bytes_concat (bytes_singleton 0x20)
-                    (bytes_concat body_asm (bytes_singleton 0x29))))))))
+              (bytes_concat (bytes_singleton 0x20)
+                (bytes_concat body_asm (bytes_singleton 0x29))))))
 
 -- ---------------------------------------------------------------------------
 -- emit_pval_dispatch: top-level emitter dispatch (no self-recursion).
@@ -6431,14 +6465,14 @@ let emit_pval : PlanVal → Bytes
   = λ pval → emit_pval_dispatch emit_pval pval
 
 -- ---------------------------------------------------------------------------
--- emit_bind: emit one top-level (#bind "name_decimal" expr_asm)\n
+-- emit_bind: emit one top-level (#bind symbol expr_asm)\n
 -- 0x23='#'  0x62='b'  0x69='i'  0x6E='n'  0x64='d'
+-- Name is emitted as a Plan Asm bare symbol (raw byte string), with any
+-- `.` separators rewritten to `_` — matches `bootstrap/emit_pla.py`.
 -- ---------------------------------------------------------------------------
 let emit_bind : Nat → PlanVal → Bytes
   = λ name pval →
-      let name_str =
-        bytes_concat (bytes_singleton 0x22)
-          (bytes_concat (nat_to_decimal name) (bytes_singleton 0x22)) in
+      let name_str = name_to_symbol name in
       let bind_kw =
         bytes_concat (bytes_singleton 0x28)
           (bytes_concat (bytes_singleton 0x23)
@@ -6459,6 +6493,18 @@ let emit_bind : Nat → PlanVal → Bytes
 -- Input:  List (Pair Nat PlanVal) — output of compile_program
 -- Output: Bytes — UTF-8 Plan Assembler text, one (#bind ...) per definition
 -- ---------------------------------------------------------------------------
+-- "@boot\n" prelude — brings in Reaver's named primitives (Elim etc.) so
+-- bare references to those resolve at load time.  6 bytes: 0x40 '@', 0x62 'b',
+-- 0x6F 'o', 0x6F 'o', 0x74 't', 0x0A '\n'.
+let emit_boot_prelude : Bytes
+  = bytes_concat
+      (bytes_singleton 0x40)
+      (bytes_concat (bytes_singleton 0x62)
+        (bytes_concat (bytes_singleton 0x6F)
+          (bytes_concat (bytes_singleton 0x6F)
+            (bytes_concat (bytes_singleton 0x74)
+              (bytes_singleton 0x0A)))))
+
 let emit_program : List (Pair Nat PlanVal) → Bytes
   = λ defs →
       foldl
@@ -6467,7 +6513,7 @@ let emit_program : List (Pair Nat PlanVal) → Bytes
             | MkPair name pval →
                 bytes_concat acc (emit_bind name pval)
           })
-        (MkPair 0 0)
+        emit_boot_prelude
         defs
 
 -- =====================================================================

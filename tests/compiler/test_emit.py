@@ -395,15 +395,16 @@ class TestEmitPval(unittest.TestCase):
         self._check(self._pnat(9), '9')
 
     def test_plaw(self):
-        """emit_pval (PLaw 0 (MkPair 1 (PNat 1))) → '(#law \"0\" (_0 _1)\n  _1)'
+        """emit_pval (PLaw 0 (MkPair 1 (PNat 1))) → '(#law \"0\" (_0 _1) _1)'
 
         Identity law: name=0, arity=1, body=PNat(1) (first argument).
         sig = emit_law_sig 1 = "(_0 _1)"
         body_asm = emit_body_val ep (PNat 1) 1 = emit_debruijn_ref 1 = "_1"
-        Result: '(#law "0" (_0 _1)\n  _1)'
+        Result: '(#law "0" (_0 _1) _1)' — single-line, matching the Python
+        bootstrap's emit_pla output exactly.
         """
         pval = self._plaw(0, 1, self._pnat(1))
-        self._check(pval, '(#law "0" (_0 _1)\n  _1)')
+        self._check(pval, '(#law "0" (_0 _1) _1)')
 
     def test_papp(self):
         """emit_pval (PApp (PNat 0) (PNat 5)) → '(0 5)'"""
