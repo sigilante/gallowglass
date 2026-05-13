@@ -2594,16 +2594,35 @@ let is_ext_type_body_stop : Nat → Nat
         | k → 1
       }
 
--- tok_skip_ext_type_body: skip past type tokens until next ident or } or EOF
--- Uses tok_eat_ident (1 App arm) + is_ext_type_body_stop (nat_eq) to avoid
--- multi-nullary-arm pred_env bug.
+-- tok_skip_ext_type_body: skip the type-tokens of an external-decl item.
+--
+-- Stops at the next item's name (an ident followed by `:`) or at the
+-- closing `}` / EOF.  Idents that are part of the current item's type
+-- (e.g., `Nat` in `sub : Nat → Nat → Nat`) are NOT stops — they get
+-- skipped over and the walk continues.
+--
+-- Previous version stopped at the FIRST ident regardless, which mis-
+-- treated every type-Ident as the next item's name and produced
+-- garbage items + an out-of-position toks cursor.  Reproduction:
+-- `external mod Reaver.BPLAN { sub : Nat → Nat → Nat }` (or any
+-- multi-Ident type signature).  Mirrors Python parser.py:518-522
+-- in spirit (Python actually parses the type; we just need to skip).
 let tok_skip_ext_type_body : List Token → List Token
   = λ toks →
       match (tok_eat_ident toks) {
-        | MkPair n _ →
+        | MkPair n rest →
             match (nat_eq n 0) {
-              | 0 → toks
+              | 0 →
+                  -- Found an ident.  If the token after it is `:`, this
+                  -- ident is the next item's NAME — stop here so
+                  -- parse_ext_items eats it next.  Otherwise it's a
+                  -- type token (e.g., `Nat`); advance past and continue.
+                  match (tok_is rest TkColon) {
+                    | 0 → tok_skip_ext_type_body rest
+                    | _ → toks
+                  }
               | k →
+                  -- Non-ident token; stop at `}` / EOF, else advance.
                   match (is_ext_type_body_stop (tok_peek toks)) {
                     | 0 → tok_skip_ext_type_body (tok_tail toks)
                     | k → toks
@@ -2619,15 +2638,17 @@ let tok_skip_ext_type : List Token → List Token
         | k → tok_skip_ext_type_body (tok_tail toks)
       }
 
--- parse_ext_items: parse  name : Type  items inside external mod { }
--- Uses tok_is chain instead of multi-nullary constructor match to avoid pred_env bug.
+-- parse_ext_items: parse  name : Type  items inside external mod { }.
+-- Stops at `}` or EOF.  Previous version had the inner EOF arms swapped —
+-- the `| 0 →` (NOT EOF) arm returned Nil instead of continuing, so any
+-- non-empty external mod body produced an empty items list AND left the
+-- token cursor mid-body, triggering sentinel DLet runs in parse_program.
 let parse_ext_items : List Token → Pair (List Nat) (List Token)
   = λ toks →
       match (tok_is toks TkRBrace) {
         | 0 →
             match (tok_is toks TkEof) {
-              | 0 → MkPair Nil toks
-              | k →
+              | 0 →
                   match (tok_eat_ident toks) {
                     | MkPair name toks1 →
                         match name {
@@ -2638,6 +2659,7 @@ let parse_ext_items : List Token → Pair (List Nat) (List Token)
                             }
                         }
                   }
+              | k → MkPair Nil toks
             }
         | k → MkPair Nil toks
       }

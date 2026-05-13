@@ -355,6 +355,29 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         """
         self._assert_byte_identical('let mm = match 0 { | _ → 9 }')
 
+    def test_external_mod_decl(self):
+        """``external mod X { sub : Nat }`` — single-item external module.
+
+        Pinned two bugs in the self-host parser that were not exercised
+        by any pre-Phase-H fixture:
+
+        * `parse_ext_items` had inverted EOF arms: the `| 0 →` (not-EOF)
+          arm returned Nil and the `| k →` (is-EOF) arm continued
+          parsing.  Any non-empty external mod body produced an empty
+          items list and left the token cursor mid-body, triggering
+          sentinel `(#bind Compiler_ 0)` runs in `parse_program`.
+
+        * `tok_skip_ext_type_body` stopped at the FIRST ident after `:`
+          regardless of what followed it, so a type like `Nat → Nat`
+          treated `Nat` as the next item's name.  Now stops only when
+          the ident is followed by `:` (the start of the next item).
+
+        Reproduces with any external mod containing items —
+        ``external mod`` is heavily used in Compiler.gls itself,
+        so this break would block any compile-self attempt.
+        """
+        self._assert_byte_identical('external mod X { sub : Nat }')
+
     def test_match_multi_arm(self):
         """``let classify = λ n → match n { | 0 → 10 | 1 → 20 | 2 → 30 | _ → 99 }``.
 
