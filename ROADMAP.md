@@ -854,39 +854,28 @@ the paths a real `Compiler.gls` compile would hit.
 
 ### Concrete deliverables remaining
 
-1. **Op2/Elim BPLAN-66 dispatch wrap + trampoline.**  Python's `_compile_if`
-   / `_make_op2_dispatch` produce
-   `((#pin 66) (Elim p l a z m val)) 0` — a BPLAN-named dispatch row
-   with a trailing `N(0)` trampoline that fires the selected (thunk'd)
-   branch.  The self-host's `cg_build_op2` currently emits a raw
-   `(Elim p l a z m val)` spine without the wrap, the thunk wrapping,
-   or the trampoline.  This affects *every* `match` and `if` expression
-   in the emitted output — currently the largest single byte-identity
-   gap.  Rewrites needed:
-   * `cg_build_op2` → emit BPLAN-66-wrapped Elim spine with `Elim` head
-     (mirrors `_elim_app` / `_elim_body`).
-   * `cg_compile_if` → lambda-lift both branches into 1-arg Pin'd thunk
-     laws (mirrors Python's `_make_pred_succ_law` use); add trailing
-     `N(0)` trampoline.
-   * `cg_compile_match` and other `cg_build_op2` callers → same thunk
-     + trampoline treatment as the dispatch result is consumed.
+1. **~~Op2/Elim BPLAN-66 dispatch wrap + trampoline.~~**  Done in commit
+   `65efbc4`.  `cg_build_op2` and `cg_build_reflect_dispatch` now emit
+   `((#pin 66) (Elim id id id z m scr))` mirroring `_elim_app` /
+   `_elim_body`; `cg_compile_if` lambda-lifts both branches into 1-arg
+   Pin'd thunks via `cg_make_pred_succ_law` (already in place from prior
+   work) and adds the `N(0)` trampoline.  Match-dispatch call sites are
+   unchanged because Python's `_build_nat_dispatch` doesn't trampoline
+   either — only `_compile_if` does.
 
-2. **Cross-binding symbol dedup at emit time.**  Python's `emit_top`
-   uses `_maybe_symbol(v)` to detect when a value is one of the
-   registered top-level bindings (by `id()`), then emits the bare
-   symbol (`Compiler_Foo`) instead of inlining the law body.  Without
-   the equivalent in the self-host, every body that references another
-   top-level binding emits the *full* law tree — for `Compiler.gls`
-   itself, the output explodes from ~1 MB to gigabytes and Reaver
-   can't load it.  Implementation options:
-   * Add a `PNamed name val` PlanVal variant.  Clean but invasive.
-     `cg_var_from_env` emits `PNamed fq_name val`; `emit_pval_dispatch`
-     renders `PNamed` as the symbol bytes.
-   * Pass the compiled bindings list to emit_pval and check value
-     identity at emit time.  Cheap if we add a hash side table; needs
-     a hashing pass over compiled values first.
-   * Hybrid: tag global references via a sentinel `PApp (PNat 0) (PNat
-     name)` shape that the emitter recognises and renders as the symbol.
+   Follow-up gap (separate task): `cg_make_pred_succ_law` hardcodes the
+   lifted-law name nat to `0`, while Python uses
+   `encode_name(name_hint + '_succ')`.  Pre-existing — affects every
+   `match` and now every `if` byte-identity comparison against Python.
+
+2. **~~Cross-binding symbol dedup at emit time.~~**  Done in commit
+   `3f0766c` via the `PNamed Nat PlanVal` variant.  `cg_var_from_env`
+   tags every global ref through the new `cg_tag_global` helper: Pin'd
+   values tag their inner (emit produces `(#pin Foo)`); bare Law/App
+   values tag at the top (emit produces `Foo`); Nat globals are left
+   alone (matches Python's `_maybe_symbol` exclusion).  All non-emit
+   helpers (`planval_is_nat`, etc.) fall through their wildcard arms
+   and treat `PNamed` as opaque — the tag is purely an emit marker.
 
 3. **Language coverage fixtures.**  Each language feature gets a small
    dedicated G3-style fixture in `tests/reaver/test_selfhost.py` so
