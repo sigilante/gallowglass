@@ -3348,17 +3348,18 @@ let planval_get_pin_inner : PlanVal → PlanVal
 -- Layer 2: PLAN value builders
 -- -------------------------------------------------------------------
 
--- cg_quote_nat: literal k inside law body with given arity
--- k <= arity → quote form PApp(PNat 0)(PNat k); else PNat k
+-- cg_quote_nat: literal nat k compiled in a law-body (arity > 0) or top-level
+-- (arity = 0) context.  In body context the result is ALWAYS the quote form
+-- PApp(PNat 0)(PNat k) — never bare PNat — because the Plan Assembler emits
+-- every bare body-context PNat as `_k` (a de Bruijn slot ref).  A bare-nat-
+-- as-literal would silently mis-emit as a slot ref for the value k.
+-- Mirrors bootstrap/codegen.py::_compile_nat_literal (the "always-quote-wrap"
+-- discipline from PR #48; see the docstring there for the full rationale).
 let cg_quote_nat : Nat → Nat → PlanVal
   = λ k arity →
       match (nat_eq arity 0) {
-        | 0 →
-            match (lte k arity) {
-              | 0 → PNat k
-              | _ → PApp (PNat 0) (PNat k)
-            }
-        | _ → PNat k
+        | 0 → PApp (PNat 0) (PNat k)   -- body context: always quote
+        | _ → PNat k                    -- top level: bare nat is safe
       }
 
 -- cg_bapp: A(A(N(0), f), x) — application inside a law body
@@ -4249,8 +4250,23 @@ let cg_apply_free_locals : PlanVal → List Nat → CEnv → PlanVal
             }
       }
 
+-- cg_concat_under: local mirror of name_concat_under (defined far below) for
+-- use by cg_make_pred_succ_law.  Bootstrap SCC ordering is lexicographic and
+-- doesn't permit forward references across SCCs, so this duplicate exists to
+-- keep the lifted-law name computation byte-identical to Python's
+-- encode_name(hint + "_succ") without reordering the file.
+let cg_concat_under : Nat → Nat → Nat
+  = λ a_name b_name →
+      let blen = nat_byte_len a_name in
+      let under = shift_left 0x5F (mul 8 blen) in
+      let b_shifted = shift_left b_name (mul 8 (add blen 1)) in
+      add (add a_name under) b_shifted
+
 -- cg_make_pred_succ_law: 1-arg succ function binding wild_var to predecessor
--- Captures free locals and self_ref via lambda lifting
+-- Captures free locals and self_ref via lambda lifting.
+-- The lifted law's name nat is `<hint>_succ` (= encode_name(hint + "_succ")),
+-- matching bootstrap/codegen.py::_make_pred_succ_law line 3138.  When hint=0
+-- (no enclosing name) the result is just "_succ" (a leading underscore).
 let cg_make_pred_succ_law : Expr → Nat → CEnv
                            → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
                            → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
@@ -4271,7 +4287,9 @@ let cg_make_pred_succ_law : Expr → Nat → CEnv
       let env3 = cenv_new_param env2 wild_var in
       let body_val = ce wild_body env3 ctab 0 in
       let arity = cenv_arity env3 in
-      let lifted_law = PPin (PLaw 0 (MkPair arity body_val)) in
+      let nn_succ = 1667462515 in  -- = encode_name("succ")
+      let law_name = cg_concat_under hint nn_succ in
+      let lifted_law = PPin (PLaw law_name (MkPair arity body_val)) in
       let result0 = match (nat_eq uses_self 0) {
                       | 0 →
                           match (nat_eq (cenv_arity env) 0) {
@@ -5037,9 +5055,17 @@ let cg_compile_if : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat →
                   -- thunk body never references this name; it exists only to
                   -- keep the law a Pin until selected and applied.
                   let nn_if_thunk = 29516431216706826313644203871 in
+                  -- Per-branch name hints `<hint>_then` / `<hint>_else` —
+                  -- cg_make_pred_succ_law appends "_succ", yielding
+                  -- `<hint>_then_succ` / `<hint>_else_succ` for the lifted
+                  -- law names, matching Python's _compile_if.
+                  let nn_then = 1852139636 in  -- = encode_name("then")
+                  let nn_else = 1702063205 in  -- = encode_name("else")
+                  let then_hint = cg_concat_under hint nn_then in
+                  let else_hint = cg_concat_under hint nn_else in
                   let cond_v = ce cond env ctab hint in
-                  let then_thunk = cg_make_pred_succ_law then_ nn_if_thunk env ce ctab hint in
-                  let else_thunk = cg_make_pred_succ_law else_ nn_if_thunk env ce ctab hint in
+                  let then_thunk = cg_make_pred_succ_law then_ nn_if_thunk env ce ctab then_hint in
+                  let else_thunk = cg_make_pred_succ_law else_ nn_if_thunk env ce ctab else_hint in
                   let const2_pin = PPin const2_law in
                   let const_then = cg_apply const2_pin then_thunk (cenv_arity env) in
                   let dispatch = cg_build_op2 else_thunk const_then cond_v (cenv_arity env) in
