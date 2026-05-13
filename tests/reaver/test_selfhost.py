@@ -342,6 +342,33 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         """
         self._assert_byte_identical('let ap = fn ff -> fn xx -> ff xx')
 
+    def test_if_expression(self):
+        """``let mm = if 1 then 5 else 10`` — pins Phase H #1 + #2 end-to-end.
+
+        Exercises the full BPLAN-66-wrapped Elim dispatch:
+
+          * ``cg_build_op2`` emits ``((#pin 66) (Elim id id id z m scr))``
+            with the BPLAN ``'B'`` gateway pin and the name nat for
+            ``Elim`` as the inner head (commit 65efbc4).
+          * ``cg_compile_if`` lambda-lifts both branches into Pin'd 1-arg
+            thunk laws via ``cg_make_pred_succ_law`` and appends the
+            ``N(0)`` trampoline (commit 65efbc4).
+          * ``cg_make_pred_succ_law`` names each lifted law
+            ``<hint>_then_succ`` / ``<hint>_else_succ`` via
+            ``cg_concat_under`` (commit 457e5a5), matching Python's
+            ``encode_name(name_hint + '_succ')``.
+          * ``cg_quote_nat`` always quote-wraps body-context literals so
+            the thunk bodies emit ``5`` / ``10`` as quoted constants, not
+            as ``_5`` / ``_10`` slot refs (commit 457e5a5).
+          * Cross-binding refs to ``id_law`` and ``const2_law`` flow
+            through the new ``PNamed`` variant rather than inlining
+            (commit 3f0766c).
+
+        Locks in roughly 300 bytes of byte-identity across every
+        Phase H foundational fix.
+        """
+        self._assert_byte_identical('let mm = if 1 then 5 else 10')
+
     @unittest.expectedFailure
     def test_same_constructor_literal_field_collapses(self):
         """`match (MkPair 0 99) { | MkPair 0 _ -> 1 | MkPair n _ -> 2 }` —
