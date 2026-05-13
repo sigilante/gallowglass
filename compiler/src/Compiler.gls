@@ -3369,29 +3369,47 @@ let cg_apply : PlanVal → PlanVal → Nat → PlanVal
 let cg_ensure_pin : PlanVal → PlanVal
   = λ v → match v { | PPin _ → v | _ → PPin v }
 
--- cg_build_op2: Case_(id, id, id, z, m, scr) — nat dispatch
--- arity=0 → top-level (direct Apps); arity>0 → law body (bapp)
+-- cg_build_op2: BPLAN-66-wrapped Elim dispatch — ((#pin 66) (Elim id id id z m scr))
+-- Mirrors bootstrap/codegen.py::_elim_app (arity=0) / _elim_body (arity>0).
+-- The Pin'd nat 66 is BPLAN's named-op gateway ('B'); the inner head is the
+-- name nat for "Elim", which Reaver's `op 66` dispatch decodes back to the
+-- 6-arg Elim primitive. Reaver's runtime hardcodes `arity (P _ _ _) = 1`, so
+-- the legacy `(#pin 2) ...` direct-dispatch form would fire after one arg.
 let cg_build_op2 : PlanVal → PlanVal → PlanVal → Nat → PlanVal
   = λ z m scr arity →
-      let op3 = PPin (PNat 2) in
+      let bplan_pin = PPin (PNat 66) in
+      let elim_head = PNat 1835625541 in  -- nn_bplan_Elim ("Elim" packed LE; see line 5484)
       let id_pin = PPin id_law in
       match (nat_eq arity 0) {
         | 0 →
-            cg_bapp (cg_bapp (cg_bapp (cg_bapp (cg_bapp (cg_bapp op3 id_pin) id_pin) id_pin) z) m) scr
+            -- Body context: quote-wrap constants, build via cg_bapp.
+            let name_quoted = PApp (PNat 0) elim_head in
+            let bplan_quoted = PApp (PNat 0) bplan_pin in
+            let inner = cg_bapp (cg_bapp (cg_bapp (cg_bapp (cg_bapp (cg_bapp name_quoted id_pin) id_pin) id_pin) z) m) scr in
+            cg_bapp bplan_quoted inner
         | _ →
-            PApp (PApp (PApp (PApp (PApp (PApp op3 id_pin) id_pin) id_pin) z) m) scr
+            -- Top level: direct App spine; outer wrap is the BPLAN-66 pin.
+            let inner = PApp (PApp (PApp (PApp (PApp (PApp elim_head id_pin) id_pin) id_pin) z) m) scr in
+            PApp bplan_pin inner
       }
 
--- cg_build_reflect_dispatch: Case_(id, id, app_fn, z, m, scr)
+-- cg_build_reflect_dispatch: BPLAN-66-wrapped Elim with custom app handler —
+-- ((#pin 66) (Elim id id app_fn z m scr)).  Same shape as cg_build_op2 but
+-- `app_fn` replaces the `id` handler for the App case (used by reflect/show).
 let cg_build_reflect_dispatch : PlanVal → PlanVal → PlanVal → PlanVal → Nat → PlanVal
   = λ app_fn z m scr arity →
-      let op3 = PPin (PNat 2) in
+      let bplan_pin = PPin (PNat 66) in
+      let elim_head = PNat 1835625541 in  -- nn_bplan_Elim ("Elim" packed LE; see line 5484)
       let id_pin = PPin id_law in
       match (nat_eq arity 0) {
         | 0 →
-            cg_bapp (cg_bapp (cg_bapp (cg_bapp (cg_bapp (cg_bapp op3 id_pin) id_pin) app_fn) z) m) scr
+            let name_quoted = PApp (PNat 0) elim_head in
+            let bplan_quoted = PApp (PNat 0) bplan_pin in
+            let inner = cg_bapp (cg_bapp (cg_bapp (cg_bapp (cg_bapp (cg_bapp name_quoted id_pin) id_pin) app_fn) z) m) scr in
+            cg_bapp bplan_quoted inner
         | _ →
-            PApp (PApp (PApp (PApp (PApp (PApp op3 id_pin) id_pin) app_fn) z) m) scr
+            let inner = PApp (PApp (PApp (PApp (PApp (PApp elim_head id_pin) id_pin) app_fn) z) m) scr in
+            PApp bplan_pin inner
       }
 
 -- cg_build_reflect_app: Case_(id, id, app_fn, z, const2(0), scr)
@@ -4968,7 +4986,19 @@ let cg_compile_elet : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat �
         | _ → PNat 0
       }
 
--- cg_compile_if: compile EIf using Case_ (opcode 3)
+-- cg_compile_if: compile EIf via BPLAN-66 Elim with thunked branches.
+--
+-- Both branches are lambda-lifted into Pin'd 1-arg thunk laws so neither is
+-- forced by the surrounding `kal` walk.  The Elim dispatch selects which
+-- Pin to apply based on the condition; the trampoline `(_ <0>)` then enters
+-- the chosen law's body, evaluating only the selected branch.
+--
+-- Without lifting, `kal`'s recursion through the `(0 f x)` shape would force
+-- both branches before the dispatch could choose — a silent infinite loop
+-- when either branch refers to the enclosing function (issue #1b in
+-- bootstrap/codegen.py::_compile_if).
+--
+-- Mirrors bootstrap/codegen.py::_compile_if line-for-line.
 let cg_compile_if : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
                   → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
   = λ expr env ctab hint ce →
@@ -4976,12 +5006,18 @@ let cg_compile_if : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat →
         | EIf cond pair →
             match pair {
               | MkPair then_ else_ →
+                  -- "__if_thunk__" packed LE — sentinel name for the unused
+                  -- predecessor slot of each branch's 1-arg thunk law.  The
+                  -- thunk body never references this name; it exists only to
+                  -- keep the law a Pin until selected and applied.
+                  let nn_if_thunk = 29516431216706826313644203871 in
                   let cond_v = ce cond env ctab hint in
-                  let then_v = ce then_ env ctab hint in
-                  let else_v = ce else_ env ctab hint in
+                  let then_thunk = cg_make_pred_succ_law then_ nn_if_thunk env ce ctab hint in
+                  let else_thunk = cg_make_pred_succ_law else_ nn_if_thunk env ce ctab hint in
                   let const2_pin = PPin const2_law in
-                  let const_then = cg_apply const2_pin then_v (cenv_arity env) in
-                  cg_build_op2 else_v const_then cond_v (cenv_arity env)
+                  let const_then = cg_apply const2_pin then_thunk (cenv_arity env) in
+                  let dispatch = cg_build_op2 else_thunk const_then cond_v (cenv_arity env) in
+                  cg_apply dispatch (PNat 0) (cenv_arity env)
             }
         | _ → PNat 0
       }
