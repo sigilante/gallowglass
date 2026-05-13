@@ -342,6 +342,39 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         """
         self._assert_byte_identical('let ap = fn ff -> fn xx -> ff xx')
 
+    def test_match_top_level_wildcard(self):
+        """``let mm = match 0 { | _ → 9 }`` — top-level match, wildcard arm only.
+
+        Pinned the parser fix: ``parse_app_go_pe`` only treats ``{`` as a
+        record update when the next token is an identifier.  Without the
+        lookahead, ``match 0 { ... }`` mis-parsed as ``0 { ... }`` (a
+        record update of nat 0) and the ``| _ → 9`` was consumed as
+        garbage record fields, leaving the match arms empty.  Bug was
+        pre-existing; surfaced once the Phase H if/match fixtures were
+        added.
+        """
+        self._assert_byte_identical('let mm = match 0 { | _ → 9 }')
+
+    def test_match_nat_in_function_body(self):
+        """``let pick = λ x → match x { | 0 → 100 | _ → 200 }`` — match
+        inside a lambda body (arity > 0).  Exercises the full nat-dispatch
+        chain plus three further pre-existing fixes surfaced together:
+
+          * ``emit_bval_papp_nat`` quote-form handling — ``(0 x)`` with
+            non-nat x now renders as ``ep x`` (top-level form), not
+            ``(_0 x_body)`` which mis-applied slot 0.
+          * ``cg_make_wild_succ`` — lambda-lifts the wildcard body at
+            arity > 0 via ``cg_make_pred_succ_law`` instead of plain
+            ``const2``-wrap, so outer-local captures thread through;
+            mirrors Python's _build_nat_dispatch dispatch lines 1988-1997.
+          * ``cg_compile_lam_as_law`` / ``cg_compile_lam_lifted`` — pass
+            the parent ``hint`` (not ``0``) into the body compile, so
+            nested lifted laws get the proper ``<hint>_wild_succ`` name.
+        """
+        self._assert_byte_identical(
+            'let pick = λ x → match x { | 0 → 100 | _ → 200 }'
+        )
+
     def test_if_expression(self):
         """``let mm = if 1 then 5 else 10`` — pins Phase H #1 + #2 end-to-end.
 

@@ -2267,27 +2267,40 @@ let parse_atom_expr_pe : List (Pair Nat (List Nat)) → (List Token → Pair Exp
       }
 
 -- parse_app_go_pe: fold additional atoms into application spine
--- When is_atom_start returns 0, checks for { to handle record updates: acc { field = expr }
+-- When is_atom_start returns 0, checks for { to handle record updates:
+-- acc { field = expr }.  CRITICAL: only consume `{` as a record update when
+-- the token AFTER it is an identifier (a field name).  Without this
+-- lookahead, `match scrut { | ... }` mis-parses scrut and `{` as the start
+-- of a record update, eats the `|` arms as garbage record fields, and
+-- leaves parse_match_expr_pe with an empty arms list and trailing junk
+-- tokens.  Mirrors bootstrap/parser.py:972-983.
 let parse_app_go_pe : List (Pair Nat (List Nat)) → (List Token → Pair Expr (List Token)) → Expr → List Token → Pair Expr (List Token)
   = λ rt pe acc toks →
       match (is_atom_start toks) {
         | 0 →
-            -- Record update: acc { field = expr, ... }
             match (tok_is toks TkLBrace) {
               | 0 → MkPair acc toks
               | k →
-                  match (parse_record_expr_fields_pe pe (tok_tail toks)) {
-                    | MkPair upd_pairs rest_ru →
-                        let upd_fnames = collect_field_names upd_pairs in
-                        match (rt_lookup_subset rt upd_fnames) {
-                          | MkPair type_name decl_fields →
-                              -- Desugar: match acc { | Type f1 f2 ... → Type e1' e2' ... }
-                              let body_exprs = build_update_body_exprs decl_fields upd_pairs in
-                              let rebuild = build_con_app (EVar type_name) body_exprs in
-                              let arm = ArmCon type_name (MkPair decl_fields rebuild) in
-                              let result = EMatch acc (Cons arm Nil) in
-                              parse_app_go_pe rt pe result rest_ru
+                  -- Lookahead: only treat as record update if the next
+                  -- token after `{` is an identifier (field name).  Bare
+                  -- `{ |` etc. is NOT a record update — return acc and
+                  -- let the caller handle the brace.
+                  match (tok_peek (tok_tail toks)) {
+                    | TkIdent _ →
+                        match (parse_record_expr_fields_pe pe (tok_tail toks)) {
+                          | MkPair upd_pairs rest_ru →
+                              let upd_fnames = collect_field_names upd_pairs in
+                              match (rt_lookup_subset rt upd_fnames) {
+                                | MkPair type_name decl_fields →
+                                    -- Desugar: match acc { | Type f1 f2 ... → Type e1' e2' ... }
+                                    let body_exprs = build_update_body_exprs decl_fields upd_pairs in
+                                    let rebuild = build_con_app (EVar type_name) body_exprs in
+                                    let arm = ArmCon type_name (MkPair decl_fields rebuild) in
+                                    let result = EMatch acc (Cons arm Nil) in
+                                    parse_app_go_pe rt pe result rest_ru
+                              }
                         }
+                    | _ → MkPair acc toks
                   }
             }
         | k →
@@ -4301,11 +4314,22 @@ let cg_make_pred_succ_law : Expr → Nat → CEnv
       cg_apply_free_locals result0 free_vars env
 
 -- cg_make_wild_succ: build succ function for the wild arm (no more named arms)
+--
+-- Mirrors bootstrap/codegen.py::_build_nat_dispatch::dispatch lines 1988-1997.
+-- At arity > 0 (in-law), the wildcard body is lambda-lifted via
+-- cg_make_pred_succ_law so outer-local captures and self-ref are threaded
+-- through.  A truly-wildcard arm (`| _ → body`) has no user-bound name; we
+-- use the sentinel nn_pat_wild ("__pat_wild__" packed LE) for the
+-- unreferenced predecessor slot — the body never reads it.  At arity = 0
+-- (top level) there are no captures to thread, so const2-wrap the body.
 let cg_make_wild_succ : Option (Pair (Option Nat) Expr) → CEnv
                        → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
                        → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
   = λ wild env ce ctab hint →
       let const2_pin = PPin const2_law in
+      let nn_pat_wild = 29516398122387466075270831967 in  -- "__pat_wild__" LE
+      let nn_wild = 1684826487 in                          -- "wild" LE
+      let wild_hint = cg_concat_under hint nn_wild in
       match wild {
         | None →
             let fallback = cg_quote_nat 0 (cenv_arity env) in
@@ -4318,13 +4342,21 @@ let cg_make_wild_succ : Option (Pair (Option Nat) Expr) → CEnv
               | MkPair wild_name_opt wild_body →
                   match wild_name_opt {
                     | None →
-                        let wv = ce wild_body env ctab hint in
                         match (nat_eq (cenv_arity env) 0) {
-                          | 0 → cg_bapp const2_pin wv
-                          | _ → PApp const2_pin wv
+                          | 0 →
+                              -- In-law: lambda-lift so the wild body sees
+                              -- outer captures and self-ref through the
+                              -- lifted law's slots.  Hint is `<hint>_wild`
+                              -- so the lifted law gets name `<hint>_wild_succ`,
+                              -- matching Python.
+                              cg_make_pred_succ_law wild_body nn_pat_wild env ce ctab wild_hint
+                          | _ →
+                              -- Top level: no captures; const2-wrap directly.
+                              let wv = ce wild_body env ctab hint in
+                              PApp const2_pin wv
                         }
                     | Some wild_var →
-                        cg_make_pred_succ_law wild_body wild_var env ce ctab hint
+                        cg_make_pred_succ_law wild_body wild_var env ce ctab wild_hint
                   }
             }
       }
@@ -4883,7 +4915,10 @@ let cg_make_lifted_env : List Nat → List Nat → List (Pair Nat PlanVal) → O
       let env1 = cg_bind_params free_vars env0 in
       cg_bind_params params env1
 
--- cg_compile_lam_as_law: compile lambda as a named top-level law (arity == 0 context)
+-- cg_compile_lam_as_law: compile lambda as a named top-level law (arity == 0 context).
+-- Threads `hint` into the body compile so nested match/if dispatches name
+-- their lifted laws `<hint>_*_succ` rather than `_*_succ`.  Mirrors
+-- bootstrap/codegen.py::_compile_lam_as_law line 1581 (passes name_hint).
 let cg_compile_lam_as_law : List Nat → Expr → CEnv
                             → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
                             → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
@@ -4891,10 +4926,11 @@ let cg_compile_lam_as_law : List Nat → Expr → CEnv
       let g = cenv_globals env in
       let self = cenv_self env in
       let body_env = cg_make_lifted_env Nil params g self in
-      let body_val = ce body_expr body_env ctab 0 in
+      let body_val = ce body_expr body_env ctab hint in
       PLaw hint (MkPair (length params) body_val)
 
--- cg_compile_lam_lifted: lambda-lift a nested lambda (arity > 0 context)
+-- cg_compile_lam_lifted: lambda-lift a nested lambda (arity > 0 context).
+-- Same hint-threading as cg_compile_lam_as_law.
 let cg_compile_lam_lifted : List Nat → Expr → CEnv
                             → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
                             → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
@@ -4902,7 +4938,7 @@ let cg_compile_lam_lifted : List Nat → Expr → CEnv
       let free_vars = cg_free_vars body_expr params env in
       let g = cenv_globals env in
       let lifted_env = cg_make_lifted_env free_vars params g None in
-      let body_val = ce body_expr lifted_env ctab 0 in
+      let body_val = ce body_expr lifted_env ctab hint in
       let total_arity = add (length free_vars) (length params) in
       let lifted_law = PPin (PLaw hint (MkPair total_arity body_val)) in
       cg_apply_free_locals lifted_law free_vars env
@@ -6568,16 +6604,28 @@ let planval_app_arg : PlanVal → PlanVal
 
 -- emit_bval_papp_nat: sub-dispatch for PApp(PNat opcode)(x).
 -- No let-bindings: avoids stuck A(A(N(1),...),k) values in Case_ arms.
+-- emit_bval_papp_nat: emit body-context `PApp (PNat opcode) x`.
+--
+-- Opcode 0 is the QUOTE form: `(0 x)` means "x as a constant, unaffected by
+-- de Bruijn substitution".  Plan Asm renders this as the constant itself —
+-- decimal for nats, top-level form for everything else.  Without the
+-- top-level branch we'd emit `(_0 x_body)`, treating the leading `0` as a
+-- slot ref and mis-rendering the constant.  Mirrors
+-- bootstrap/emit_pla.py::_emit_body lines 181-185.
+--
+-- Opcode > 0 is a non-body App that arrived via codegen (e.g., partial
+-- application of an opcode); emit literally as `(f x)`.
 let emit_bval_papp_nat
-      : (PlanVal → Nat → Bytes)
+      : (PlanVal → Bytes)
+      → (PlanVal → Nat → Bytes)
       → Nat → PlanVal → PlanVal → Nat
       → Bytes
-  = λ ebv opcode f x depth →
+  = λ ep ebv opcode f x depth →
       if nat_eq opcode 0 then
         if planval_is_nat x then
           nat_to_decimal (planval_get_nat x)
         else
-          emit_asm_app (ebv f depth) (ebv x depth)
+          ep x
       else
         emit_asm_app (ebv f depth) (ebv x depth)
 
@@ -6612,7 +6660,7 @@ let emit_bval_dispatch
             -- planval_is_app f, planval_is_nat f2 → emit_bval_papp_app
             -- else              → PLaw / PPin: generic application
             if planval_is_nat f then
-              emit_bval_papp_nat ebv (planval_get_nat f) f x depth
+              emit_bval_papp_nat ep ebv (planval_get_nat f) f x depth
             else if planval_is_app f then
               if planval_is_nat (planval_app_fun f) then
                 emit_bval_papp_app ebv
