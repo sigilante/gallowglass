@@ -511,6 +511,55 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         """
         self._assert_byte_identical('let mm = if 1 then 5 else 10')
 
+    def test_self_recursion_in_match_wildcard(self):
+        """``let count_down = λ n → match n { | 0 → 0 | _ → count_down (sub n 1) }``
+        — self-recursive call from inside a nat-match wildcard arm body.
+
+        Pins the Phase H Task #10 fix for lifted-law outer-local capture
+        of self-references when ``sr_dispatch`` failed to qualify the bare
+        EVar to its FQ form (the documented "deep recursion" sr_dispatch
+        gap).  Without the fix, ``cg_body_uses_self`` returns 0 for a body
+        carrying a bare ``count_down`` (it only matched FQ
+        ``Compiler.count_down``), so the lifted wild_succ law dropped the
+        self capture — produced arity 2 instead of arity 3 and lost the
+        recursive call.
+
+        The fix is a safety net that mirrors Python's ``_body_uses_self_ref``:
+
+        * New ``cg_short_after_dot`` helper extracts the segment after the
+          last ``.`` from an LE-encoded name nat (e.g. ``Compiler.count_down``
+          → ``count_down``) using ``Reaver.BPLAN.eq`` for O(1) byte compare
+          (the recursive ``nat_eq`` is O(min m n) and would walk a Case_
+          chain of cosmic length for encoded-name nats).
+
+        * ``cg_body_uses_self`` checks both the FQ name *and* its short
+          tail — either match counts as self-use.
+
+        * ``cg_make_pred_succ_law``, ``cg_build_app_handler``, and
+          ``cg_build_binary_handler_body`` alias the short name to the
+          same slot as the FQ in their lifted envs, so the body's bare
+          ``count_down`` EVar resolves to the captured self slot via
+          ``cg_var_from_env``.
+
+        * ``cg_compile_var`` accepts the short tail as a self-reference
+          (compiles to ``N(0)``) at the OUTER law level.
+
+        Also pins the related ``cg_var_from_env`` emit fix: when a binding
+        is itself ``Pin``'d (e.g. ``Reaver.BPLAN.sub``), the cross-binding
+        ref tag is now ``PNamed n val`` (not ``PPin (PNamed n inner)``),
+        so emit produces bare ``Reaver_BPLAN_sub`` instead of the wrongly
+        double-pinned ``(#pin Reaver_BPLAN_sub)`` — mirrors Python's
+        identity-based ``_maybe_symbol`` dedup.
+        """
+        src = (
+            'external mod Reaver.BPLAN {\n'
+            '  sub : Nat → Nat → Nat\n'
+            '}\n'
+            '\n'
+            'let count_down = λ n → match n { | 0 → 0 | _ → count_down (Reaver.BPLAN.sub n 1) }\n'
+        )
+        self._assert_byte_identical(src)
+
     @unittest.expectedFailure
     def test_same_constructor_literal_field_collapses(self):
         """`match (MkPair 0 99) { | MkPair 0 _ -> 1 | MkPair n _ -> 2 }` —

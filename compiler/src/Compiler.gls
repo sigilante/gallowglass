@@ -4182,12 +4182,57 @@ let cg_hv_dispatch : (Expr → Nat → Nat) → Expr → Nat → Nat
 let cg_has_var : Expr → Nat → Nat
   = λ expr name → cg_hv_dispatch cg_has_var expr name
 
+-- cg_short_after_dot_go: scan body of cg_short_after_dot.  Walks `n` byte
+-- by byte, recording the position just after the highest-indexed '.' seen
+-- so far.  `pos` is the current byte index; `len` is the total byte count;
+-- `best` is "first index past last dot" (0 = no dot found yet).
+let cg_short_after_dot_go : Nat → Nat → Nat → Nat → Nat
+  = λ n pos len best →
+      match (lte len pos) {
+        | 0 →
+            match (Reaver.BPLAN.eq (byte_at n pos) 0x2E) {
+              | 0 → cg_short_after_dot_go n (Core.PLAN.inc pos) len best
+              | _ → cg_short_after_dot_go n (Core.PLAN.inc pos) len (Core.PLAN.inc pos)
+            }
+        | _ → best
+      }
+
+-- cg_short_after_dot: extract the segment after the LAST '.' (0x2E) byte
+-- in a little-endian-encoded name nat.  E.g. `Compiler.count_down` →
+-- `count_down`.  If the name contains no '.', returns `n` unchanged.
+-- Mirrors Python's `fq.split('.')[-1]` for self-ref detection when
+-- sr_dispatch failed to qualify a bare EVar to its FQ form.
+let cg_short_after_dot : Nat → Nat
+  = λ n →
+      let len = nat_byte_len n in
+      let pos = cg_short_after_dot_go n 0 len 0 in
+      match (nat_eq pos 0) {
+        | 0 → shift_right n (mul 8 pos)
+        | _ → n
+      }
+
 -- cg_body_uses_self: does expr reference env's self_ref?
+--
+-- Checks both the FQ name and its short tail (after the last '.') —
+-- mirrors Python's `_body_uses_self_ref` safety net for bare EVars
+-- that sr_dispatch failed to qualify.  IMPORTANT: comparisons against
+-- the encoded FQ name use `Reaver.BPLAN.eq` (O(1)) rather than the
+-- recursive `nat_eq` (O(min m n)) — encoded names are ~2^100+ nats,
+-- so `nat_eq` would walk a Case_ chain of cosmic length.
 let cg_body_uses_self : Expr → CEnv → Nat
   = λ expr env →
       match (cenv_self env) {
         | None → 0
-        | Some fq_nat → cg_has_var expr fq_nat
+        | Some fq_nat →
+            match (cg_has_var expr fq_nat) {
+              | 0 →
+                  let short = cg_short_after_dot fq_nat in
+                  match (Reaver.BPLAN.eq short fq_nat) {
+                    | 0 → cg_has_var expr short
+                    | _ → 0
+                  }
+              | _ → 1
+            }
       }
 
 -- cg_flatten_lam: collect params and find body (workaround: no multi-arm match)
@@ -4342,7 +4387,13 @@ let cg_make_pred_succ_law : Expr → Nat → CEnv
                    | 0 →
                        match (cenv_self env) {
                          | None → env0
-                         | Some fq → cenv_new_param env0 fq
+                         | Some fq →
+                             let env_fq = cenv_new_param env0 fq in
+                             let short = cg_short_after_dot fq in
+                             match (Reaver.BPLAN.eq short fq) {
+                               | 0 → cenv_bind_local env_fq short (cenv_arity env_fq)
+                               | _ → env_fq
+                             }
                        }
                    | _ → env0
                  } in
@@ -4782,7 +4833,13 @@ let cg_build_binary_handler_body : List MatchArm → Option (Pair (Option Nat) E
                          | 0 →
                              match (cenv_self henv) {
                                | None → inner_env0
-                               | Some fq → cenv_new_param inner_env0 fq
+                               | Some fq →
+                                   let inner_env_fq = cenv_new_param inner_env0 fq in
+                                   let short = cg_short_after_dot fq in
+                                   match (Reaver.BPLAN.eq short fq) {
+                                     | 0 → cenv_bind_local inner_env_fq short (cenv_arity inner_env_fq)
+                                     | _ → inner_env_fq
+                                   }
                              }
                          | _ → inner_env0
                        } in
@@ -4886,7 +4943,13 @@ let cg_build_app_handler : List MatchArm → Option (Pair (Option Nat) Expr) →
                     | 0 →
                         match (cenv_self env) {
                           | None → henv0
-                          | Some fq → cenv_new_param henv0 fq
+                          | Some fq →
+                              let henv_fq = cenv_new_param henv0 fq in
+                              let short = cg_short_after_dot fq in
+                              match (Reaver.BPLAN.eq short fq) {
+                                | 0 → cenv_bind_local henv_fq short (cenv_arity henv_fq)
+                                | _ → henv_fq
+                              }
                         }
                     | _ → henv0
                   } in
@@ -5056,7 +5119,15 @@ let cg_var_from_env : Nat → CEnv → PlanVal
                           | 0 →
                               match (planval_is_pin val) {
                                 | 0 → cg_tag_global n (PPin val)
-                                | _ → cg_tag_global n val
+                                | _ →
+                                    -- val is already a Pin (binding is pin'd).
+                                    -- cg_tag_global would produce PPin(PNamed …),
+                                    -- which emits as `(#pin sym)` — but Python
+                                    -- collapses that to bare `sym` via id() dedup
+                                    -- (the bound Pin object IS the ref).  Mirror
+                                    -- that here: tag with PNamed at the outer
+                                    -- level so emit produces bare `sym`.
+                                    PNamed n val
                               }
                           | _ → cg_quote_nat (planval_get_nat val) (cenv_arity env)
                         }
@@ -5072,13 +5143,22 @@ let cg_compile_var : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat �
       match expr {
         | EVar n →
             -- 1. Self-reference: inside a law body (arity>0), own FQ name → N(0)
+            --    Also accept the short tail (after the last '.') of the FQ —
+            --    mirrors Python's _compile_var, which compares both forms.
+            --    Safety net for bare EVars that sr_dispatch failed to qualify.
+            --    Comparisons use Reaver.BPLAN.eq (O(1)); see cg_body_uses_self.
             match (nat_eq (cenv_arity env) 0) {
               | 0 →
                   match (cenv_self env) {
                     | None → cg_var_from_env n env
                     | Some fq →
-                        match (nat_eq n fq) {
-                          | 0 → cg_var_from_env n env
+                        match (Reaver.BPLAN.eq n fq) {
+                          | 0 →
+                              let short = cg_short_after_dot fq in
+                              match (Reaver.BPLAN.eq n short) {
+                                | 0 → cg_var_from_env n env
+                                | _ → PNat 0
+                              }
                           | _ → PNat 0
                         }
                   }

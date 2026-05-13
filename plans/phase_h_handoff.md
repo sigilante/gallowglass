@@ -33,12 +33,12 @@ b27061b fix(self-host): four match-on-nat fixes — pinned by two new fixtures
 - `tests/bootstrap/` — 832 passed, 4 skipped, 2 xfailed (pre-existing).
 - `tests/compiler/` — 227 passed, 3 skipped.
 - `tests/prelude/` — 167 passed.
-- `tests/reaver/` — 46 passed, 1 xfailed. Includes 14 selfhost
-  fixtures (12 byte-identical + 2 smoke).
+- `tests/reaver/` — 49 passed, 1 xfailed. Includes 17 selfhost
+  fixtures (15 byte-identical + 2 smoke).
 
 ### Byte-identity fixtures (`tests/reaver/test_selfhost.py`)
 
-The 12 G3 byte-identical fixtures, in order of when they landed:
+The 13 G3 byte-identical fixtures, in order of when they landed:
 
 1. `test_single_nat_binding` — `let xx = 42`
 2. `test_identity_function` — `let id = fn x -> x`
@@ -46,14 +46,15 @@ The 12 G3 byte-identical fixtures, in order of when they landed:
 4. `test_multi_decl_source_order`
 5. `test_nested_lambda` — `let kk = fn x -> fn y -> x`
 6. `test_application_in_body` — `let ap = fn ff -> fn xx -> ff xx`
-7. **`test_if_expression`** — `let mm = if 1 then 5 else 10`  *(new)*
-8. **`test_match_top_level_wildcard`** — `let mm = match 0 { | _ → 9 }`
-9. **`test_match_nat_in_function_body`** — `let pick = λ x → match x { | 0 → 100 | _ → 200 }`
-10. **`test_match_multi_arm`** — three named arms + wildcard
-11. **`test_external_mod_decl`** — `external mod X { sub : Nat }`
-12. **`test_match_adt_single_field`** — `Maybe a = None | Some a; unwrap (Some 42)`
-13. **`test_match_adt_nullary_multi_arm`** — `Color = Red | Green | Blue`
-14. **`test_match_adt_multi_field`** — `IntList = INil | ICons Nat IntList`
+7. `test_if_expression` — `let mm = if 1 then 5 else 10`
+8. `test_match_top_level_wildcard` — `let mm = match 0 { | _ → 9 }`
+9. `test_match_nat_in_function_body` — `let pick = λ x → match x { | 0 → 100 | _ → 200 }`
+10. `test_match_multi_arm` — three named arms + wildcard
+11. `test_external_mod_decl` — `external mod X { sub : Nat }`
+12. `test_match_adt_single_field` — `Maybe a = None | Some a; unwrap (Some 42)`
+13. `test_match_adt_nullary_multi_arm` — `Color = Red | Green | Blue`
+14. `test_match_adt_multi_field` — `IntList = INil | ICons Nat IntList`
+15. **`test_self_recursion_in_match_wildcard`** — `count_down = λ n → match n { | 0 → 0 | _ → count_down (sub n 1) }`  *(new)*
 
 Plus `test_same_constructor_literal_field_collapses` (xfail, pre-existing).
 
@@ -73,20 +74,63 @@ byte-identical Plan Asm output to the bootstrap (`bootstrap/*.py`) for:
 
 ## What does NOT work yet
 
-### Task #10 — Lifted-law outer-local capture in recursive / nested contexts
+### Task #10 — Self-recursion case landed (2026-05-13)
 
-The hot remaining issue.  Demonstrated by:
+`/tmp/recursive.gls` (count_down self-recursion) is now byte-identical;
+pinned as `test_self_recursion_in_match_wildcard`.  The fix is a
+safety net mirroring Python's `_body_uses_self_ref`: when sr_dispatch
+fails to qualify a bare EVar to its FQ form, the codegen still
+recognises self-use by comparing the body's bare names against the
+short tail of `cenv_self`'s FQ.  Specifically:
 
-- `/tmp/recursive.gls` — `let count_down = λ n → match n { | 0 → 0 | _ → count_down (sub n 1) }`.
-  Diverges by 1 byte; lifted wild_succ law arity 2 vs reference's 3
-  (missing self-capture).
-- `/tmp/cross_ref.gls` — same shape but cross-binding ref instead of
-  self-recursion.  Larger diff; same root cause.
-- `/tmp/adt_multi_arm.gls` — `Shape = Empty | Circle Nat | Square Nat`.
-  Multi-arm field-bearing constructors.  Lifted dispatch law arity
-  mismatch.
+* New `cg_short_after_dot` helper (Compiler.gls L4185–4213) extracts
+  the segment after the last `.` of an LE-encoded name nat using
+  `Reaver.BPLAN.eq` (O(1)).  **Beware:** comparisons against encoded
+  FQ nats must NOT use the recursive `nat_eq` (O(min m n) walks a
+  Case_ chain for ~2^100+ nats — first attempt hung Reaver at >300s
+  per fixture).
+* `cg_body_uses_self`, `cg_make_pred_succ_law`,
+  `cg_build_app_handler`, `cg_build_binary_handler_body`, and
+  `cg_compile_var` all check both FQ and short tail.  Lifted-law
+  builders alias the short name to the same slot as the FQ in their
+  inner envs.
+* `cg_var_from_env` emit-side fix: pin'd-binding refs in body context
+  tag as `PNamed n val` (not `PPin (PNamed n inner)`) so emit
+  produces bare `Reaver_BPLAN_sub` instead of double-pinned
+  `(#pin Reaver_BPLAN_sub)`.  Mirrors Python's identity-based
+  `_maybe_symbol` dedup.
 
-#### What investigation has shown
+### Cross-binding bare-ref (`/tmp/cross_ref.gls`) — still diverges
+
+`let count_down = λ n → match n { | 0 → 0 | _ → helper (sub n 1) }`
+diverges: actual emits `(_0 ((sub _1) 1))` (treating `helper` as the
+lifted law's own self) where reference has `((#pin Compiler_helper)
+((Reaver_BPLAN_sub _1) 1))`.  Same root cause as Task #10 (sr_dispatch
+not qualifying), but the short-name self-ref safety net doesn't help
+because `helper` ≠ count_down's short.  Needs either fixing
+sr_dispatch's deep dispatch or a globals-by-short lookup in
+`cg_var_from_env`.
+
+### Multi-arm unary-mixed (`/tmp/adt_multi_arm.gls`) — still diverges
+
+`type Shape = | Empty | Circle Nat | Square Nat; let area = λ s → match s
+{ | Empty → 0 | Circle r → r | Square w → w }` — multi-arm mixed-arity
+con-match with same capture issue at `cg_build_unary_handler_body`'s
+multi-arm path (calls `cg_build_precompiled_nat_dispatch` with a fresh
+pred_env that drops outer captures).  Several hardcoded `PPin (PLaw 0
+...)` sites remain in `cg_build_unary_m_body` / `cg_build_m_body`.
+Mechanical hint-threading like the `_inner` / `_app` fixes.
+
+#### Investigation history (sr_dispatch deep-recursion bug)
+
+The underlying sr_dispatch issue — its ELam/EMatch/EVar handlers do
+not fire for nested EVars reached through `sr_rewrite_arms →
+sr_rewrite_arm → pe → sr_rewrite_expr → sr_dispatch` — is **still
+unresolved**.  The 2026-05-13 fix above sidesteps it for self-refs
+specifically (approach #4 from the prior session's plan).  For
+cross-binding refs the deeper sr_dispatch bug still bites.
+
+Earlier probe findings (kept for reference):
 
 1. `sr_dispatch` IS called and CAN rewrite EVar — verified via
    `EVar 88888` sentinel that makes all bodies become PNat 0.
@@ -96,77 +140,46 @@ The hot remaining issue.  Demonstrated by:
    replaced EVar arm with `ENat 77777`.
 
 3. `sr_dispatch`'s EVar arm does NOT fire for DEEP recursion through
-   `sr_rewrite_arms → sr_rewrite_arm → pe → sr_rewrite_expr → sr_dispatch`.
-   The deep `count_down (sub n 1)` body keeps bare names.
+   the helper chain.  The deep `count_down (sub n 1)` body keeps bare
+   names.
 
 4. `sr_dispatch`'s ELam and EMatch handlers also fail to fire when
    processing count_down's lambda body — replacement-sentinel probes
-   confirmed.  Strange because they're in the same wildcard-arm body
-   as EApp handler (which works for main's case).
+   confirmed.
 
 5. Same behavior whether outer match is `match expr { | EVar n → A | _ → B }`
    (constructor-match, commit aa6af56) or
    `match (nat_eq (expr_tag expr) 0) { ... }` (nat-match, commit d077ec2).
-   Both fail in the same way.
 
-#### Strongest hypothesis
+#### Strongest hypothesis (still open)
 
-The wildcard arm body B (containing the entire nested tag-dispatch
-chain — EApp, ELam, ELet, ..., EDo handlers) is lambda-lifted into a
-sub-law that captures the outer environment.  When this sub-law is
-invoked from a deep recursive call through `sr_rewrite_arms /
-sr_rewrite_arm / pe`, something in the closure-capture or slot-indexing
-prevents the inner tag-dispatch chain from reaching deeper arms like
-ELam and EMatch.  EApp arm reaches because it's the outermost in the
-nested-match chain.
+The wildcard arm body B (the entire nested tag-dispatch chain) is
+lambda-lifted into a sub-law that captures the outer environment.
+When invoked from a deep recursive call, something in the closure
+capture or slot indexing prevents the inner tag-dispatch chain from
+reaching deeper arms.
 
-#### Concrete next steps
-
-In order of leverage:
+#### Next steps for the remaining cases
 
 1. **Inspect bytecode directly.**  Run the bootstrap on a minimal
    Compiler.gls extract that has just sr_dispatch + dependencies.
-   Compare the wildcard-arm-body sub-law's compiled shape (slots,
-   captures, body) to what we expect.  Identify which arm in the
-   nested chain compiles wrong.
+   Identify which arm in the nested chain compiles wrong.
 
-2. **Inline sr_rewrite_arms into the EMatch handler.**  Bypass the
-   helper-function indirection — maybe the issue is specific to
-   reaching sr_dispatch via a helper rather than directly.
+2. **Rewrite the multi-arm Expr dispatch as `cg_is_X` chain.**  The
+   `cg_is_X` helpers are post-b61bb7e-fix and known to work.  Each
+   becomes its own law, eliminating the wildcard-arm-body sub-law.
 
-3. **Rewrite the multi-arm Expr dispatch as `cg_is_X` chain.**
-   Replace sr_dispatch's nested-match body with a series of
-   `if cg_is_lam expr then ELam_handler else if cg_is_emat expr then ...`
-   The `cg_is_X` helpers are simple, post-b61bb7e-fix, and known to
-   work.  Each becomes its own law (eliminates the wildcard-arm-body
-   sub-law).
-
-4. **Bypass resolve entirely for self-refs.**  In
-   `cg_make_pred_succ_law`, ALWAYS bind both the FQ name AND the
-   short bare name in env1.locals when uses_self is true (mirroring
-   Python's `_make_pred_succ_law` lines 3125-3127).  This way, even
-   if the body's EVar has bare name (resolve broken), the env3
-   lookup finds it.  Requires extracting the short name from the
-   FQ; needs a small helper.
-
-5. **Sidestep the issue entirely.**  Use a different dispatch
-   structure in sr_dispatch — e.g., an explicit if-chain with
-   `Reaver.BPLAN.eq` on `expr_tag` comparisons instead of nested
-   `match (nat_eq ...) { ... }`.  Or use a List-of-(tag, handler)
-   table iterated linearly.
+3. **Globals-by-short lookup in `cg_var_from_env`.**  For
+   cross-binding bare refs (e.g. `/tmp/cross_ref.gls`), the
+   self-ref short-name safety net doesn't help.  A globals search
+   by short-suffix would resolve bare `helper` to `Compiler.helper`
+   in the lookup itself.
 
 ### Other open follow-ups (lower priority)
 
-- **Multi-arm unary-mixed** (e.g., `match s { | Empty → 0 | Circle r → r | Square w → w }`)
-  has the same capture issue at `cg_build_unary_handler_body`'s
-  multi-arm path (calls `cg_build_precompiled_nat_dispatch` with a
-  fresh pred_env that drops outer captures).  Several hardcoded
-  `PPin (PLaw 0 ...)` sites remain in `cg_build_unary_m_body` /
-  `cg_build_m_body`.  Mechanical hint-threading like the `_inner` /
-  `_app` fixes once #10 root cause is resolved.
-
-- **The compile-self gate itself.**  After #10 is resolved (or
-  enough of #10 to make Compiler.gls's compile-self work), run
+- **The compile-self gate itself.**  After the remaining cross-ref /
+  multi-arm-unary cases land (or enough of them to make Compiler.gls's
+  compile-self work), run
   `python3 tools/selfcompile.py compiler/src/Compiler.gls`.
   Without jets, this takes hours under Reaver — schedule as
   slow-CI or background run.  Then lift into
