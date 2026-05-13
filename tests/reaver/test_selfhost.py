@@ -355,6 +355,35 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         """
         self._assert_byte_identical('let mm = match 0 { | _ → 9 }')
 
+    def test_match_adt_single_field(self):
+        """``type Maybe a = | None | Some a; let unwrap = λ m → match m { ... }``.
+
+        Constructor match with one nullary arm (None) and one
+        single-field arm (Some n → n).  Pins two fixes:
+
+        * The app-handler lifted-law name in ``cg_build_app_handler`` is
+          now ``<hint>_app`` (mirroring Python's _compile_con_match).
+          ``cg_build_app_handler`` accepts a hint parameter; the caller
+          ``cg_compile_con_match`` threads it.
+
+        * The body-context "constant 0 with no wildcard arm" fallback
+          across three sites (`cg_build_reflect_app`, `cg_build_m_body`,
+          `cg_build_unary_m_body`) now uses the quote form
+          ``PApp (PNat 0) (PNat 0)`` — Plan Asm ``0`` — rather than
+          ``PPin (PNat 0)`` which emitted ``(#pin 0)``.  The wire form
+          had to match Python's bapp-form fallback shape.
+
+        Multi-field ADT constructors (e.g., ``ICons Nat IntList``)
+        still have a remaining ``<hint>_inner`` name divergence;
+        tracked separately.
+        """
+        src = (
+            'type Maybe a = | None | Some a\n'
+            'let unwrap = λ m → match m { | None → 0 | Some n → n }\n'
+            'let main = unwrap (Some 42)\n'
+        )
+        self._assert_byte_identical(src)
+
     def test_external_mod_decl(self):
         """``external mod X { sub : Nat }`` — single-item external module.
 

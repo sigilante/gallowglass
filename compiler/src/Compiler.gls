@@ -3490,7 +3490,7 @@ let cg_build_reflect_app : PlanVal → PlanVal → PlanVal → Nat → PlanVal
   = λ app_fn z scr arity →
       let const2_pin = PPin const2_law in
       let m = match (nat_eq arity 0) {
-                | 0 → cg_bapp const2_pin (PPin (PNat 0))
+                | 0 → cg_bapp const2_pin (PApp (PNat 0) (PNat 0))
                 | _ → PApp const2_pin (PNat 0)
               } in
       cg_build_reflect_dispatch app_fn z m scr arity
@@ -4603,7 +4603,7 @@ let cg_build_m_body : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr) �
             match wild {
               | None →
                   match (nat_eq (cenv_arity env) 0) {
-                    | 0 → cg_bapp const2_pin (PPin (PNat 0))
+                    | 0 → cg_bapp const2_pin (PApp (PNat 0) (PNat 0))
                     | _ → PApp const2_pin (PNat 0)
                   }
               | Some p →
@@ -4734,7 +4734,7 @@ let cg_build_unary_m_body : List MatchArm → Option (Pair (Option Nat) Expr) �
             match wild {
               | None →
                   match (nat_eq (cenv_arity henv) 0) {
-                    | 0 → cg_bapp const2_pin (PPin (PNat 0))
+                    | 0 → cg_bapp const2_pin (PApp (PNat 0) (PNat 0))
                     | _ → PApp const2_pin (PNat 0)
                   }
               | Some p →
@@ -4869,8 +4869,8 @@ let cg_bodies_use_self : List Expr → CEnv → Nat
 -- cg_build_app_handler: build the App-handler law for Case_ dispatch
 let cg_build_app_handler : List MatchArm → Option (Pair (Option Nat) Expr) → CEnv
                           → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                          → List (Pair Nat (Pair Nat Nat)) → PlanVal
-  = λ field_arms wild env ce ctab →
+                          → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ field_arms wild env ce ctab hint →
       let all_bodies = map arm_get_con_body field_arms in
       let field_names = cg_all_field_names field_arms in
       let free_locals = cg_free_vars_bodies all_bodies field_names env in
@@ -4897,7 +4897,11 @@ let cg_build_app_handler : List MatchArm → Option (Pair (Option Nat) Expr) →
                            | _ →
                                cg_build_unary_handler_body field_arms wild henv fun_idx arg_idx ce ctab
                          } in
-      let handler_law = PPin (PLaw 0 (MkPair arg_idx handler_body)) in
+      -- Lifted app-handler law gets name `<hint>_app`, matching Python's
+      -- _compile_con_match's app-handler naming.
+      let nn_app = 7368801 in  -- "app" LE
+      let handler_name = cg_concat_under hint nn_app in
+      let handler_law = PPin (PLaw handler_name (MkPair arg_idx handler_body)) in
       let r0 = handler_law in
       let r1 = match (nat_eq uses_self 0) {
                  | 0 →
@@ -4927,7 +4931,7 @@ let cg_compile_con_match : PlanVal → List MatchArm → CEnv
             let z_body = cg_build_z_body nullary_nat_arms wild env ce ctab in
             let remaining = cg_build_nullary_remaining nullary_nat_arms in
             let m_body = cg_build_m_body remaining wild env ce ctab in
-            let app_handler = cg_build_app_handler field_arms wild env ce ctab in
+            let app_handler = cg_build_app_handler field_arms wild env ce ctab hint in
             cg_build_reflect_dispatch app_handler z_body m_body scr (cenv_arity env)
       }
 
