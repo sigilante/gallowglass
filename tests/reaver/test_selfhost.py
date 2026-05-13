@@ -355,6 +355,26 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         """
         self._assert_byte_identical('let mm = match 0 { | _ → 9 }')
 
+    def test_match_adt_multi_field(self):
+        """``type IntList = | INil | ICons Nat IntList; let head_or = ...``.
+
+        Binary-field constructor match (`ICons h t → h`).  Pins the
+        `<hint>_inner` lifted-law name in `cg_build_binary_handler_body`
+        (matching Python's _compile_con_match line 2801).  Without the
+        hint threading, the inner field-binding law gets name `0`,
+        diverging from the bootstrap output.
+
+        Other hardcoded-`0` PLaw sites remain in
+        cg_build_unary_handler_body's multi-arm path; not exercised
+        here.  Tracked as a continuing follow-up.
+        """
+        src = (
+            'type IntList = | INil | ICons Nat IntList\n'
+            'let head_or = λ d xs → match xs { | INil → d | ICons h t → h }\n'
+            'let main = head_or 99 (ICons 5 INil)\n'
+        )
+        self._assert_byte_identical(src)
+
     def test_match_adt_single_field(self):
         """``type Maybe a = | None | Some a; let unwrap = λ m → match m { ... }``.
 

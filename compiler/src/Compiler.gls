@@ -4647,8 +4647,8 @@ let cg_arm_find_by_tag : List MatchArm → Nat → List (Pair Nat (Pair Nat Nat)
 let cg_build_unary_handler_body : List MatchArm → Option (Pair (Option Nat) Expr)
                                   → CEnv → Nat → Nat
                                   → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                                  → List (Pair Nat (Pair Nat Nat)) → PlanVal
-  = λ field_arms wild henv fun_idx arg_idx ce ctab →
+                                  → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ field_arms wild henv fun_idx arg_idx ce ctab hint →
       match field_arms {
         | Nil → cg_quote_nat 0 (cenv_arity henv)
         | Cons arm0 rest_arms →
@@ -4774,8 +4774,8 @@ let cg_build_unary_m_body : List MatchArm → Option (Pair (Option Nat) Expr) �
 let cg_build_binary_handler_body : List MatchArm → Option (Pair (Option Nat) Expr)
                                    → CEnv → Nat → Nat → Nat → List Nat
                                    → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                                   → List (Pair Nat (Pair Nat Nat)) → PlanVal
-  = λ field_arms wild henv fun_idx arg_idx uses_self free_locals ce ctab →
+                                   → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ field_arms wild henv fun_idx arg_idx uses_self free_locals ce ctab hint →
       let g = cenv_globals henv in
       let inner_env0 = cenv_make g Nil 0 None in
       let inner_env1 = match (nat_eq uses_self 0) {
@@ -4831,7 +4831,11 @@ let cg_build_binary_handler_body : List MatchArm → Option (Pair (Option Nat) E
                                      wild (PNat inner_tag_idx) inner_env4 ce ctab 0
                              }
                        } in
-      let inner_law = PPin (PLaw 0 (MkPair field1_idx inner_body)) in
+      -- inner_law gets name `<hint>_inner` matching Python's
+      -- _compile_con_match line 2801 (encode_name(name_hint + "_inner")).
+      let nn_inner = 491328007785 in  -- "inner" LE
+      let inner_name = cg_concat_under hint nn_inner in
+      let inner_law = PPin (PLaw inner_name (MkPair field1_idx inner_body)) in
       -- Apply inner_law to: [self?]+[free_locals]+outer_arg
       let n_cap = cenv_arity inner_env2 in
       let r0 = inner_law in
@@ -4893,9 +4897,9 @@ let cg_build_app_handler : List MatchArm → Option (Pair (Option Nat) Expr) →
       let henv = cenv_set_arity henv2 arg_idx in
       let handler_body = match (nat_eq max_arity 1) {
                            | 0 →
-                               cg_build_binary_handler_body field_arms wild henv fun_idx arg_idx uses_self free_locals ce ctab
+                               cg_build_binary_handler_body field_arms wild henv fun_idx arg_idx uses_self free_locals ce ctab hint
                            | _ →
-                               cg_build_unary_handler_body field_arms wild henv fun_idx arg_idx ce ctab
+                               cg_build_unary_handler_body field_arms wild henv fun_idx arg_idx ce ctab hint
                          } in
       -- Lifted app-handler law gets name `<hint>_app`, matching Python's
       -- _compile_con_match's app-handler naming.
