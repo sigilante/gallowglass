@@ -6180,9 +6180,9 @@ let sr_rewrite_arm
                   ArmCon fq_con (MkPair fields body2)
               | _ →
                   -- ArmVar: var name is a local binder
+                  -- DEBUG: replace body with ENat 99999 to verify ArmVar arm fires
                   let n     = arm_get_var_name arm in
-                  let body2 = pe (arm_get_var_body arm) (Cons n bound) gtab in
-                  ArmVar n body2
+                  ArmVar n (ENat 99999)
             }
         | _ →
             -- ArmNat: no new binders
@@ -6262,17 +6262,13 @@ let sr_dispatch
       -- reach the handler at runtime (cross_ref.gls probe shows bare
       -- name persists).  Likely a separate bootstrap-codegen issue
       -- around mutual SCC compilation of sr_dispatch/sr_rewrite_expr.
-      match expr {
-        | EVar n →
-            match (cg_name_in_list n bound) {
-              | 0 →
-                  match (assoc_lookup n gtab) {
-                    | None    → expr
-                    | Some fq → EVar fq
-                  }
-              | _ → expr
-            }
-        | _ →
+      -- Dispatch EVar (tag 0) first via nat_eq on expr_tag.  Using
+      -- constructor `match expr { | EVar n → ... | _ → ... }` here has a
+      -- bootstrap-codegen issue (unary single-arm with field-bind +
+      -- wildcard, on a mixed-arity multi-ctor type) where the wildcard
+      -- arm's body isn't actually reached for many constructors.
+      match (nat_eq (expr_tag expr) 0) {
+        | 0 →
             match (nat_eq (planval_is_nat expr) 1) {
               | 0 →
                   -- Not a bare Nat.  Check for binary constructor (has App outer-fun).
@@ -6404,9 +6400,21 @@ let sr_dispatch
             }
         | _ →
             -- Unreachable: planval_is_nat=1 means bare PNat, not Expr.
-            -- (Old code had EVar handler here but it never fired for
-            -- actual EVar values — see outer dispatch comment.)
             expr
+            }
+        | _ →
+            -- EVar (tag 0) — qualify if global and not locally bound.
+            match expr {
+              | EVar n →
+                  match (cg_name_in_list n bound) {
+                    | 0 →
+                        match (assoc_lookup n gtab) {
+                          | None    → expr
+                          | Some fq → EVar fq
+                        }
+                    | _ → expr
+                  }
+              | _ → expr
             }
       }
 
