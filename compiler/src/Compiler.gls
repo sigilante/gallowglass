@@ -537,6 +537,14 @@ type PlanVal =
   | PApp PlanVal PlanVal
   | PLaw Nat (Pair Nat PlanVal)     -- name_nat, (arity, body)
   | PPin PlanVal
+  | PNamed Nat PlanVal              -- cross-binding tag: (fq_name, val) — emit
+                                    -- renders as bare `Module_foo` symbol
+                                    -- instead of inlining val.  Mirrors
+                                    -- bootstrap/emit_pla.py::_maybe_symbol.
+                                    -- Tagged at cg_var_from_env, stripped at
+                                    -- emit_pval/emit_body_val.  All other
+                                    -- helpers see PNamed as opaque (fall
+                                    -- through their wildcard arms).
 
 -- Compilation environment (4 fields → nested Pairs)
 -- globals : List (Pair Nat PlanVal)
@@ -4894,6 +4902,24 @@ let cg_is_nat_match : List MatchArm → Nat
 let cg_is_con_match : List MatchArm → Nat
   = λ arms → foldl (λ acc arm → if nat_eq acc 1 then 1 else arm_is_con arm) 0 arms
 
+-- cg_tag_global: tag a top-level binding's value with its FQ name nat so
+-- emit_pval / emit_bval render it as the bare symbol `Module_foo` rather
+-- than inlining its full PLAN tree.  Mirrors emit_pla.py's _maybe_symbol
+-- identity-based dedup.  Pin'd values are tagged inside the Pin (emit
+-- produces `(#pin Foo)`); bare Law/App values are tagged at the top
+-- (emit produces `Foo`).  Nat globals are not tagged — Python excludes
+-- them too (int interning makes id() unreliable for small constants).
+let cg_tag_global : Nat → PlanVal → PlanVal
+  = λ name val →
+      match (planval_is_nat val) {
+        | 0 →
+            match val {
+              | PPin inner → PPin (PNamed name inner)
+              | _ → PNamed name val
+            }
+        | _ → val
+      }
+
 -- cg_var_from_env: look up variable name in locals then globals
 -- (must be defined before cg_compile_var)
 let cg_var_from_env : Nat → CEnv → PlanVal
@@ -4909,12 +4935,12 @@ let cg_var_from_env : Nat → CEnv → PlanVal
                         match (planval_is_nat val) {
                           | 0 →
                               match (planval_is_pin val) {
-                                | 0 → PPin val
-                                | _ → val
+                                | 0 → cg_tag_global n (PPin val)
+                                | _ → cg_tag_global n val
                               }
                           | _ → cg_quote_nat (planval_get_nat val) (cenv_arity env)
                         }
-                    | _ → val
+                    | _ → cg_tag_global n val
                   }
               | None → PNat 0  -- unbound: return 0 (error in source)
             }
@@ -6584,6 +6610,7 @@ let emit_bval_dispatch
         | PLaw _ _ →
             -- Lambda-lifted laws appear as PPin(PLaw ...) in law bodies.
             ep pval
+        | PNamed n _ → name_to_symbol n
       }
 
 -- emit_body_val: ties the knot for emit_bval_dispatch.
@@ -6650,6 +6677,7 @@ let emit_pval_dispatch : (PlanVal → Bytes) → PlanVal → Bytes
                     | _ → emit_elim_symbol
                   }
             }
+        | PNamed n _ → name_to_symbol n
       }
 
 -- emit_pval: ties the knot for emit_pval_dispatch.
