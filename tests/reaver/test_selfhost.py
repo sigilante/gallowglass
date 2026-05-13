@@ -355,6 +355,22 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         """
         self._assert_byte_identical('let mm = match 0 { | _ → 9 }')
 
+    def test_match_adt_nullary_multi_arm(self):
+        """``type Color = | Red | Green | Blue; let to_nat = ...`` — multi-arm
+        nullary constructor match.
+
+        Passing byte-identical already (no fixes from this session needed —
+        the path through cg_compile_con_match's all-nullary branch uses
+        cg_build_nat_dispatch with the idx-threaded succ-law name fix from
+        7ab0dcf).  Pinned here as a regression sentinel.
+        """
+        src = (
+            'type Color = | Red | Green | Blue\n'
+            'let to_nat = λ c → match c { | Red → 1 | Green → 2 | Blue → 3 }\n'
+            'let main : Nat = to_nat Green\n'
+        )
+        self._assert_byte_identical(src)
+
     def test_match_adt_multi_field(self):
         """``type IntList = | INil | ICons Nat IntList; let head_or = ...``.
 
