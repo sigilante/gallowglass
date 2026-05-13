@@ -355,6 +355,27 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         """
         self._assert_byte_identical('let mm = match 0 { | _ → 9 }')
 
+    def test_match_multi_arm(self):
+        """``let classify = λ n → match n { | 0 → 10 | 1 → 20 | 2 → 30 | _ → 99 }``.
+
+        Exercises the multi-arm nat-dispatch path with three named arms +
+        a wildcard.  Pins the ``idx`` threading through
+        ``cg_build_nat_dispatch``: each succ law in the chain is named
+        ``<hint>_succ_<idx>`` (matching Python's
+        _build_nat_dispatch.make_succ_law line 1969).  Without idx
+        threading every succ law gets name 0, diverging in the
+        ``(#law "<name>" ...)`` field at every level.
+
+        Also pins the new ``cg_b_decimal`` helper (small LE-packed
+        decimal-byte encoder) which makes the suffix idx names like
+        ``_succ_1``, ``_succ_2`` constructible inside the codegen layer
+        without depending on the later-defined emit-layer
+        ``nat_to_decimal``.
+        """
+        self._assert_byte_identical(
+            'let classify = λ n → match n { | 0 → 10 | 1 → 20 | 2 → 30 | _ → 99 }'
+        )
+
     def test_match_nat_in_function_body(self):
         """``let pick = λ x → match x { | 0 → 100 | _ → 200 }`` — match
         inside a lambda body (arity > 0).  Exercises the full nat-dispatch

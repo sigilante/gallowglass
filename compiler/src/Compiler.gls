@@ -3415,6 +3415,34 @@ let cg_build_op2 : PlanVal → PlanVal → PlanVal → Nat → PlanVal
             PApp bplan_pin inner
       }
 
+-- cg_b_decimal_go: build the LE-packed-bytes nat of n's decimal digits.
+-- `acc` accumulates digits from least-significant up; `shift` is the byte
+-- offset (in bytes, not bits) of the NEXT digit to place.  Local to the
+-- codegen layer; `nat_to_decimal_go` in the emit layer is later in the
+-- file and not lexicographically reachable from cg_build_nat_dispatch
+-- (SCC ordering is by name).  This is a Nat → Nat function — it returns
+-- the content nat, not a Bytes pair, so it can be fed directly into
+-- name_concat_under.
+let cg_b_decimal_go : Nat → Nat → Nat → Nat
+  = λ n acc shift →
+      match (nat_eq n 0) {
+        | 0 →
+            let digit = mod_nat n 10 in
+            let new_acc = add acc (shift_left (add 0x30 digit) (mul 8 shift)) in
+            cg_b_decimal_go (div_nat n 10) new_acc (add shift 1)
+        | _ → acc
+      }
+
+-- cg_b_decimal: convert a Nat to the content_nat of its decimal byte string.
+-- Examples: cg_b_decimal 0 = 0x30; cg_b_decimal 1 = 0x31;
+-- cg_b_decimal 12 = 0x32_31 = 12849 (LE bytes "12").
+let cg_b_decimal : Nat → Nat
+  = λ n →
+      match (nat_eq n 0) {
+        | 0 → cg_b_decimal_go n 0 0
+        | _ → 0x30
+      }
+
 -- cg_build_reflect_dispatch: BPLAN-66-wrapped Elim with custom app handler —
 -- ((#pin 66) (Elim id id app_fn z m scr)).  Same shape as cg_build_op2 but
 -- `app_fn` replaces the `id` handler for the App case (used by reflect/show).
@@ -4361,13 +4389,16 @@ let cg_make_wild_succ : Option (Pair (Option Nat) Expr) → CEnv
             }
       }
 
--- cg_build_nat_dispatch: build nat dispatch using Case_ (opcode 3)
--- Self-recursive on the arm list; uses fresh pred_env for arms[1+]
+-- cg_build_nat_dispatch: build nat dispatch using Case_ (opcode 3).
+-- `idx` is the position-in-the-original-arms-list of arms[0].  The succ law
+-- that handles arms[1+] is named `<hint>_succ_<idx+1>` (matching Python's
+-- _build_nat_dispatch.make_succ_law line 1969).  Each recursive call
+-- increments idx so successive succ laws get successive numbers.
 let cg_build_nat_dispatch : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr)
                            → PlanVal → CEnv
                            → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                           → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
-  = λ arms wild scr env ce ctab hint →
+                           → List (Pair Nat (Pair Nat Nat)) → Nat → Nat → PlanVal
+  = λ arms wild scr env ce ctab hint idx →
       match arms {
         | Nil →
             match wild {
@@ -4383,10 +4414,15 @@ let cg_build_nat_dispatch : List (Pair Nat Expr) → Option (Pair (Option Nat) E
                                 | Nil →
                                     cg_make_wild_succ wild env ce ctab hint
                                 | Cons _ _ →
+                                    let nn_succ = 1667462515 in  -- "succ" LE
+                                    let next_idx = add idx 1 in
+                                    let idx_name = cg_b_decimal next_idx in
+                                    let succ_base = cg_concat_under hint nn_succ in
+                                    let succ_name = cg_concat_under succ_base idx_name in
                                     let g = cenv_globals env in
                                     let pred_env = cenv_make g Nil 1 None in
-                                    let inner = cg_build_nat_dispatch rest wild (PNat 1) pred_env ce ctab hint in
-                                    PPin (PLaw 0 (MkPair 1 inner))
+                                    let inner = cg_build_nat_dispatch rest wild (PNat 1) pred_env ce ctab hint next_idx in
+                                    PPin (PLaw succ_name (MkPair 1 inner))
                               } in
                   cg_build_op2 zero_val succ scr (cenv_arity env)
             }
@@ -4455,7 +4491,7 @@ let cg_compile_nat_match : PlanVal → List MatchArm → CEnv
   = λ scr arms env ce ctab hint →
       let nat_arms = cg_extract_nat_arms arms in
       let wild = cg_extract_wild_arm arms in
-      cg_build_nat_dispatch nat_arms wild scr env ce ctab hint
+      cg_build_nat_dispatch nat_arms wild scr env ce ctab hint 0
 
 
 -- -------------------------------------------------------------------
@@ -4561,7 +4597,7 @@ let cg_build_m_body : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr) �
         | Cons _ _ →
             let g = cenv_globals env in
             let pred_env = cenv_make g Nil 1 None in
-            let m_inner = cg_build_nat_dispatch remaining wild (PNat 1) pred_env ce ctab 0 in
+            let m_inner = cg_build_nat_dispatch remaining wild (PNat 1) pred_env ce ctab 0 0 in
             PPin (PLaw 0 (MkPair 1 m_inner))
       }
 
@@ -4863,7 +4899,7 @@ let cg_compile_con_match : PlanVal → List MatchArm → CEnv
       match (length field_arms) {
         | 0 →
             let nat_arms = cg_sort_nat_pairs (cg_arms_to_tag_expr nullary_arms ctab) in
-            cg_build_nat_dispatch nat_arms wild scr env ce ctab hint
+            cg_build_nat_dispatch nat_arms wild scr env ce ctab hint 0
         | _ →
             let nullary_nat_arms = cg_sort_nat_pairs (cg_arms_to_tag_expr nullary_arms ctab) in
             let z_body = cg_build_z_body nullary_nat_arms wild env ce ctab in
