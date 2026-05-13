@@ -33,8 +33,8 @@ b27061b fix(self-host): four match-on-nat fixes — pinned by two new fixtures
 - `tests/bootstrap/` — 832 passed, 4 skipped, 2 xfailed (pre-existing).
 - `tests/compiler/` — 227 passed, 3 skipped.
 - `tests/prelude/` — 167 passed.
-- `tests/reaver/` — 49 passed, 1 xfailed. Includes 17 selfhost
-  fixtures (15 byte-identical + 2 smoke).
+- `tests/reaver/` — 50 passed, 1 xfailed. Includes 18 selfhost
+  fixtures (16 byte-identical + 2 smoke).
 
 ### Byte-identity fixtures (`tests/reaver/test_selfhost.py`)
 
@@ -54,7 +54,8 @@ The 13 G3 byte-identical fixtures, in order of when they landed:
 12. `test_match_adt_single_field` — `Maybe a = None | Some a; unwrap (Some 42)`
 13. `test_match_adt_nullary_multi_arm` — `Color = Red | Green | Blue`
 14. `test_match_adt_multi_field` — `IntList = INil | ICons Nat IntList`
-15. **`test_self_recursion_in_match_wildcard`** — `count_down = λ n → match n { | 0 → 0 | _ → count_down (sub n 1) }`  *(new)*
+15. `test_self_recursion_in_match_wildcard` — `count_down = λ n → match n { | 0 → 0 | _ → count_down (sub n 1) }`
+16. **`test_cross_binding_bare_ref_in_match_wildcard`** — same shape with `helper` cross-binding ref instead of self-recursion  *(new)*
 
 Plus `test_same_constructor_literal_field_collapses` (xfail, pre-existing).
 
@@ -100,16 +101,22 @@ short tail of `cenv_self`'s FQ.  Specifically:
   `(#pin Reaver_BPLAN_sub)`.  Mirrors Python's identity-based
   `_maybe_symbol` dedup.
 
-### Cross-binding bare-ref (`/tmp/cross_ref.gls`) — still diverges
+### Cross-binding bare-ref case landed (2026-05-13)
 
-`let count_down = λ n → match n { | 0 → 0 | _ → helper (sub n 1) }`
-diverges: actual emits `(_0 ((sub _1) 1))` (treating `helper` as the
-lifted law's own self) where reference has `((#pin Compiler_helper)
-((Reaver_BPLAN_sub _1) 1))`.  Same root cause as Task #10 (sr_dispatch
-not qualifying), but the short-name self-ref safety net doesn't help
-because `helper` ≠ count_down's short.  Needs either fixing
-sr_dispatch's deep dispatch or a globals-by-short lookup in
-`cg_var_from_env`.
+Sibling of Task #10.  Pinned as
+`test_cross_binding_bare_ref_in_match_wildcard`.  The fix is the
+globals-by-short fallback in `cg_var_from_env`: when local and
+direct-FQ globals lookup both fail, scan globals for the first FQ
+whose short tail matches the bare name.  New helpers
+`cg_global_lookup_by_short` and `cg_resolve_global_val` (Compiler.gls
+L5108–5168).  This is the resolver-safety-net counterpart to the
+Task #10 cg_body_uses_self / cg_compile_var short-tail check.
+
+Ambiguity caveat: if two globals have the same short tail (e.g.
+`Mod.foo` and `Other.foo`), the first match in globals-iteration order
+wins.  Python's resolver wouldn't tolerate that — it would error or
+pick by scope.  For the cases hit by Compiler.gls today there's no
+ambiguity, but a stricter check would be nice.
 
 ### Multi-arm unary-mixed (`/tmp/adt_multi_arm.gls`) — still diverges
 

@@ -5103,7 +5103,59 @@ let cg_tag_global : Nat → PlanVal → PlanVal
         | _ → val
       }
 
--- cg_var_from_env: look up variable name in locals then globals
+-- cg_global_lookup_by_short: scan globals for the FIRST entry whose key's
+-- short tail (after the last '.') matches `short_name`.  Returns the entire
+-- (fq_key, val) pair so callers can tag the resolved reference with the FQ.
+-- Used by `cg_var_from_env` as a safety net for bare EVars that sr_dispatch
+-- failed to qualify (parallels Python's resolver fully-qualifying every
+-- ExprVar before codegen).
+let cg_global_lookup_by_short : Nat → List (Pair Nat PlanVal) → Option (Pair Nat PlanVal)
+  = λ short_name kvs →
+      match kvs {
+        | Nil → None
+        | Cons kv rest →
+            match kv {
+              | MkPair k _ →
+                  let k_short = cg_short_after_dot k in
+                  match (Reaver.BPLAN.eq k_short short_name) {
+                    | 0 → cg_global_lookup_by_short short_name rest
+                    | _ → Some kv
+                  }
+            }
+      }
+
+-- cg_resolve_global_val: tag a (fq, val) global lookup result for use as an
+-- EVar reference.  Shared between the direct-FQ-hit path and the bare-name
+-- fallback path of `cg_var_from_env`.
+let cg_resolve_global_val : Nat → PlanVal → CEnv → PlanVal
+  = λ fq val env →
+      match (nat_eq (cenv_arity env) 0) {
+        | 0 →
+            -- Inside law body: nat globals need quoting
+            match (planval_is_nat val) {
+              | 0 →
+                  match (planval_is_pin val) {
+                    | 0 → cg_tag_global fq (PPin val)
+                    | _ →
+                        -- val is already a Pin (binding is pin'd).
+                        -- cg_tag_global would produce PPin(PNamed …),
+                        -- which emits as `(#pin sym)` — but Python
+                        -- collapses that to bare `sym` via id() dedup
+                        -- (the bound Pin object IS the ref).  Mirror
+                        -- that here: tag with PNamed at the outer
+                        -- level so emit produces bare `sym`.
+                        PNamed fq val
+                  }
+              | _ → cg_quote_nat (planval_get_nat val) (cenv_arity env)
+            }
+        | _ → cg_tag_global fq val
+      }
+
+-- cg_var_from_env: look up variable name in locals then globals.
+-- Lookup order: locals (de Bruijn slot), globals (by FQ), globals (by short
+-- tail).  The short-tail fallback resolves bare EVars that sr_dispatch
+-- failed to qualify; without it, bare cross-binding refs in deeply-nested
+-- arm bodies fall through to PNat 0 (= the lifted law's own self).
 -- (must be defined before cg_compile_var)
 let cg_var_from_env : Nat → CEnv → PlanVal
   = λ n env →
@@ -5111,29 +5163,18 @@ let cg_var_from_env : Nat → CEnv → PlanVal
         | Some idx → PNat idx
         | None →
             match (cenv_global_lookup env n) {
-              | Some val →
-                  match (nat_eq (cenv_arity env) 0) {
-                    | 0 →
-                        -- Inside law body: nat globals need quoting
-                        match (planval_is_nat val) {
-                          | 0 →
-                              match (planval_is_pin val) {
-                                | 0 → cg_tag_global n (PPin val)
-                                | _ →
-                                    -- val is already a Pin (binding is pin'd).
-                                    -- cg_tag_global would produce PPin(PNamed …),
-                                    -- which emits as `(#pin sym)` — but Python
-                                    -- collapses that to bare `sym` via id() dedup
-                                    -- (the bound Pin object IS the ref).  Mirror
-                                    -- that here: tag with PNamed at the outer
-                                    -- level so emit produces bare `sym`.
-                                    PNamed n val
-                              }
-                          | _ → cg_quote_nat (planval_get_nat val) (cenv_arity env)
+              | Some val → cg_resolve_global_val n val env
+              | None →
+                  -- Bare-name fallback: scan globals for the first FQ whose
+                  -- short tail matches `n` (e.g. bare `helper` → FQ
+                  -- `Compiler.helper`).  Tag with the resolved FQ.
+                  match (cg_global_lookup_by_short n (cenv_globals env)) {
+                    | None → PNat 0  -- unbound: return 0 (error in source)
+                    | Some pair →
+                        match pair {
+                          | MkPair fq val → cg_resolve_global_val fq val env
                         }
-                    | _ → cg_tag_global n val
                   }
-              | None → PNat 0  -- unbound: return 0 (error in source)
             }
       }
 

@@ -560,6 +560,32 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
+    def test_cross_binding_bare_ref_in_match_wildcard(self):
+        """``let helper = λ n → n
+            let count_down = λ n → match n { | 0 → 0 | _ → helper (sub n 1) }``
+        — cross-binding bare reference inside a nat-match wildcard arm body.
+
+        Sibling of ``test_self_recursion_in_match_wildcard``: same
+        sr_dispatch deep-recursion gap (the bare ``helper`` EVar isn't
+        qualified to FQ ``Compiler.helper``), but the self-ref short-name
+        safety net doesn't fire because ``helper`` ≠ ``count_down``'s
+        short.  Pins the globals-by-short fallback in
+        ``cg_var_from_env``: when both local and bare-FQ globals lookup
+        fail, scan globals for the first FQ whose short tail matches
+        the bare name.  Without the fallback, ``helper`` resolves to
+        ``PNat 0`` (= the lifted law's self, i.e. emits ``(_0 …)``
+        instead of ``((#pin Compiler_helper) …)``).
+        """
+        src = (
+            'external mod Reaver.BPLAN {\n'
+            '  sub : Nat → Nat → Nat\n'
+            '}\n'
+            '\n'
+            'let helper = λ n → n\n'
+            'let count_down = λ n → match n { | 0 → 0 | _ → helper (Reaver.BPLAN.sub n 1) }\n'
+        )
+        self._assert_byte_identical(src)
+
     @unittest.expectedFailure
     def test_same_constructor_literal_field_collapses(self):
         """`match (MkPair 0 99) { | MkPair 0 _ -> 1 | MkPair n _ -> 2 }` —
