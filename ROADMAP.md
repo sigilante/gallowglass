@@ -814,6 +814,139 @@ the 1.0 acceptance criterion that's been outstanding since alpha.
 
 ---
 
+## Phase H — Compile-self fixed point
+
+**Status:** in progress. Successor to Phase G.
+**Acceptance:** for `S = compiler/src/Compiler.gls`, the diff
+
+  python_bootstrap(S)  ==  reaver_hosted_compiler(S)
+
+is byte-identical.  Gate test: a `TestPhaseHFixedPoint` class in
+`tests/reaver/test_selfhost.py`, plus a CI matrix entry that runs
+`tools/selfcompile.py compiler/src/Compiler.gls`.
+
+### Why this is a separate arc
+
+Phase G satisfied "Reaver-hosted compiler produces byte-identical output to
+the bootstrap for a small fixture set" — the formal 1.0 gate as written.
+Phase H is the *deeper* claim usually meant by "self-hosting": that the
+compiler can ingest its own source and produce itself, the canonical
+fixed-point property.  The two are related but distinct, and the
+g/angel/gnome reviews of `v1.0.0-rc1` flagged the gap — the rc1 fixture
+surface (`let xx = 42`, `let id = fn x -> x`, type annotation, multi-decl,
+nested lambda) covers a thin slice of the language and does not exercise
+the paths a real `Compiler.gls` compile would hit.
+
+### Carry-overs already addressed (post-rc1, on master)
+
+- `tools/selfcompile.py` — diff harness for any source through both
+  compilers; usable as `python3 tools/selfcompile.py path/to/source.gls`.
+  Pinned in the rc1 follow-on commits.
+- `cg_is_lam` binary single-arm tag check (`bootstrap/codegen.py::
+  _build_field_arm_law`) — same class of bug as the unary "wildcard arm
+  drop" already documented in `CLAUDE.md`.  Was the root cause of the
+  `let ap = fn ff -> fn xx -> ff xx` divergence and the prime suspect
+  for a true compile-self failing.  Fixed; pinned by
+  `test_binary_single_arm_tag_check_*` in `tests/bootstrap/test_codegen.py`.
+- `PPin (PNat 2)` → bare `Elim` symbol translation in
+  `Compiler.gls::emit_pval_dispatch` / `emit_bval_dispatch`, mirroring
+  the Python `emit_pla.py::emit_top` rule.
+
+### Concrete deliverables remaining
+
+1. **Op2/Elim BPLAN-66 dispatch wrap + trampoline.**  Python's `_compile_if`
+   / `_make_op2_dispatch` produce
+   `((#pin 66) (Elim p l a z m val)) 0` — a BPLAN-named dispatch row
+   with a trailing `N(0)` trampoline that fires the selected (thunk'd)
+   branch.  The self-host's `cg_build_op2` currently emits a raw
+   `(Elim p l a z m val)` spine without the wrap, the thunk wrapping,
+   or the trampoline.  This affects *every* `match` and `if` expression
+   in the emitted output — currently the largest single byte-identity
+   gap.  Rewrites needed:
+   * `cg_build_op2` → emit BPLAN-66-wrapped Elim spine with `Elim` head
+     (mirrors `_elim_app` / `_elim_body`).
+   * `cg_compile_if` → lambda-lift both branches into 1-arg Pin'd thunk
+     laws (mirrors Python's `_make_pred_succ_law` use); add trailing
+     `N(0)` trampoline.
+   * `cg_compile_match` and other `cg_build_op2` callers → same thunk
+     + trampoline treatment as the dispatch result is consumed.
+
+2. **Cross-binding symbol dedup at emit time.**  Python's `emit_top`
+   uses `_maybe_symbol(v)` to detect when a value is one of the
+   registered top-level bindings (by `id()`), then emits the bare
+   symbol (`Compiler_Foo`) instead of inlining the law body.  Without
+   the equivalent in the self-host, every body that references another
+   top-level binding emits the *full* law tree — for `Compiler.gls`
+   itself, the output explodes from ~1 MB to gigabytes and Reaver
+   can't load it.  Implementation options:
+   * Add a `PNamed name val` PlanVal variant.  Clean but invasive.
+     `cg_var_from_env` emits `PNamed fq_name val`; `emit_pval_dispatch`
+     renders `PNamed` as the symbol bytes.
+   * Pass the compiled bindings list to emit_pval and check value
+     identity at emit time.  Cheap if we add a hash side table; needs
+     a hashing pass over compiled values first.
+   * Hybrid: tag global references via a sentinel `PApp (PNat 0) (PNat
+     name)` shape that the emitter recognises and renders as the symbol.
+
+3. **Language coverage fixtures.**  Each language feature gets a small
+   dedicated G3-style fixture in `tests/reaver/test_selfhost.py` so
+   regressions are pinned in seconds rather than discovered weeks later
+   on a Compiler.gls full-compile.  Approximate order, by leverage:
+   * `if` with both literal and variable scrutinee (blocks on #1).
+   * `match` on Nat literals.
+   * `match` on user ADT constructors (single arm + wildcard, multi-arm).
+   * Record construction / projection / update.
+   * Programmer pins (`@name = …`).
+   * `fix λ self → …`.
+   * Effect declarations, handlers, do-notation.
+   * Typeclass declarations and instance definitions.
+   * Each item that goes from xfail to pass in this list narrows the
+     gap to compile-self.
+
+4. **The compile-self gate itself.**  Once #1 and #2 are in,
+   `python3 tools/selfcompile.py compiler/src/Compiler.gls` should
+   succeed.  At that point: lift it into
+   `TestPhaseHFixedPoint::test_compile_self` and add a CI matrix entry.
+   Expected runtime under Reaver without jets is hours — the test will
+   need a long timeout and a separate slow-CI lane, or we ship a jet
+   layer first (see Risk surface below).
+
+### Risk surface
+
+- **Performance.**  Reaver has no jet substrate.  `Compiler.gls` is
+  ~290 KB of source / hundreds of bindings / Laws as large as 200 KB
+  (`collect_record_types_go`).  Even with all byte-identity bugs fixed,
+  the actual compile-self run will likely take hours.  This isn't a
+  correctness blocker — `python3 tools/selfcompile.py --timeout 86400`
+  is a legal invocation — but it does mean Phase H's gate doesn't fit
+  in a normal CI matrix.  Options when we land: a separate slow-CI
+  job, a nightly run, or a `--sample` mode that compiles a prefix of
+  `Compiler.gls` and pins those bytes.
+- **Self-host codegen drift.**  The collapse pass added in commit
+  69c152e lives only in `bootstrap/codegen.py`; Compiler.gls's own
+  codegen still has the same-constructor-literal-field gap (the
+  xfailed `test_same_constructor_literal_field_collapses`).  Porting
+  the collapse pass to Compiler.gls is required for Compiler.gls to
+  *evolve* under self-host without divergence, but is not on the
+  critical path for the current `Compiler.gls` whose 25 affected
+  sites already use the manual workaround.
+- **Test fixture inflation.**  Each new G3 fixture roughly doubles the
+  rc CI time for the reaver/selfhost matrix entry (the bootstrap
+  pre-compile dominates and is shared, but each Reaver invocation is
+  ~1 s minimum).  Stay under ~20 fixtures total, or restructure into a
+  parametrised test that shares one compile.
+
+### Estimated effort
+
+#1 alone: 1–2 days of focused codegen work plus regression fallout.
+#2 alone: similar.  #3 is incremental, ~1 fixture per hour once #1 and
+#2 are in.  The compile-self gate (#4) is the easy part once #1 and #2
+are landed — it's just plumbing.  Total: 1–2 weeks of focused effort,
+assuming nothing surfaces a new bug class along the way (likely it
+will).
+
+---
+
 ## What is NOT on this roadmap
 
 - **Dependent types**: explicitly out of scope. See `DECISIONS.md §"Why algebraic
