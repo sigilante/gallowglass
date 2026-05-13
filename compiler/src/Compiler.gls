@@ -6243,16 +6243,46 @@ let sr_dispatch
       : (Expr → List Nat → List (Pair Nat Nat) → Expr)
       → Expr → List Nat → List (Pair Nat Nat) → Expr
   = λ pe expr bound gtab →
-      match (nat_eq (planval_is_nat expr) 1) {
-        | 0 →
-            -- Not EVar. Check for binary constructor (has App outer-fun).
-            match (nat_eq (planval_is_app expr) 1) {
+      -- Handle EVar (tag 0) explicitly first.  EVar is encoded as a
+      -- unary-App `App (PNat 0) (PNat n)` at the PLAN level, so the
+      -- old outer dispatch via `planval_is_nat` couldn't reach it —
+      -- the EVar handler at the bottom of this function was unreachable
+      -- for actual EVar values and the resolver silently passed them
+      -- through unchanged.  This caused recursive self-refs in let-body
+      -- recursion to never get qualified to FQ, breaking the
+      -- cg_body_uses_self detection downstream.
+      -- Handle EVar (tag 0) explicitly first.  Without this, EVar fell
+      -- through the entire tag dispatch chain to the EDo handler whose
+      -- inner pattern match returned the expression unchanged — meaning
+      -- the resolver silently never rewrote EVar.  Recursive self-refs
+      -- and lifted-body cross-binding refs remained bare, breaking
+      -- cg_body_uses_self detection and any local/global lookup.
+      --
+      -- KNOWN GAP: even with this fix, the body's EVar still doesn't
+      -- reach the handler at runtime (cross_ref.gls probe shows bare
+      -- name persists).  Likely a separate bootstrap-codegen issue
+      -- around mutual SCC compilation of sr_dispatch/sr_rewrite_expr.
+      match expr {
+        | EVar n →
+            match (cg_name_in_list n bound) {
               | 0 →
-                  -- Unary with tag > 0 (ENat, EText…): no names, pass through.
-                  expr
-              | _ →
-                  -- Binary constructor: dispatch by tag.
-                  match (nat_eq (expr_tag expr) 1) {
+                  match (assoc_lookup n gtab) {
+                    | None    → expr
+                    | Some fq → EVar fq
+                  }
+              | _ → expr
+            }
+        | _ →
+            match (nat_eq (planval_is_nat expr) 1) {
+              | 0 →
+                  -- Not a bare Nat.  Check for binary constructor (has App outer-fun).
+                  match (nat_eq (planval_is_app expr) 1) {
+                    | 0 →
+                        -- Unary with tag > 0 (ENat, EText…): no names, pass through.
+                        expr
+                    | _ →
+                        -- Binary constructor: dispatch by tag.
+                        match (nat_eq (expr_tag expr) 1) {
                     | 0 →
                         match (nat_eq (expr_tag expr) 2) {
                           | 0 →
@@ -6373,18 +6403,10 @@ let sr_dispatch
                   }
             }
         | _ →
-            -- EVar (tag 0): qualify if global and not locally bound
-            match expr {
-              | EVar n →
-                  match (cg_name_in_list n bound) {
-                    | 0 →
-                        match (assoc_lookup n gtab) {
-                          | None    → expr
-                          | Some fq → EVar fq
-                        }
-                    | _ → expr
-                  }
-              | _ → expr
+            -- Unreachable: planval_is_nat=1 means bare PNat, not Expr.
+            -- (Old code had EVar handler here but it never fired for
+            -- actual EVar values — see outer dispatch comment.)
+            expr
             }
       }
 
