@@ -4913,14 +4913,27 @@ let cg_all_field_names : List MatchArm → List Nat
 -- cg_build_z_body: value for z (scrutinee = Nat 0) in reflect dispatch
 let cg_build_z_body : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr) → CEnv
                      → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                     → List (Pair Nat (Pair Nat Nat)) → PlanVal
-  = λ nullary_nat_arms wild env ce ctab →
+                     → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ nullary_nat_arms wild env ce ctab hint →
+      let nn_tag0 = 812081524 in   -- "tag0" LE
+      let nn_wild = 1684826487 in  -- "wild" LE
       match (assoc_lookup 0 nullary_nat_arms) {
-        | Some z_expr → ce z_expr env ctab 0
+        | Some z_expr →
+            -- Python: `_compile_expr(z_arm, env, f'{name_hint}_tag0')` —
+            -- z arm's body hint mirrors codegen.py L2444.
+            let body_hint = cg_concat_under hint nn_tag0 in
+            ce z_expr env ctab body_hint
         | None →
             match wild {
               | None → cg_quote_nat 0 (cenv_arity env)
-              | Some p → match p { | MkPair _ wb → ce wb env ctab 0 }
+              | Some p →
+                  match p {
+                    | MkPair _ wb →
+                        -- Python: wild fallback in z slot uses
+                        -- `<name_hint>_wild` (codegen.py L2446).
+                        let body_hint = cg_concat_under hint nn_wild in
+                        ce wb env ctab body_hint
+                  }
             }
       }
 
@@ -4939,9 +4952,12 @@ let cg_build_nullary_remaining : List (Pair Nat Expr) → List (Pair Nat Expr)
 -- cg_build_m_body: m (succ fn) for remaining nullary constructors with tag > 0
 let cg_build_m_body : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr) → CEnv
                      → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                     → List (Pair Nat (Pair Nat Nat)) → PlanVal
-  = λ remaining wild env ce ctab →
+                     → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ remaining wild env ce ctab hint →
       let const2_pin = PPin const2_law in
+      let nn_wild = 1684826487 in           -- "wild" LE
+      let nn_tag_succ = 7161696970831520116 in  -- "tag_succ" LE
+      let nn_m = 109 in                     -- "m" LE
       match remaining {
         | Nil →
             match wild {
@@ -4953,7 +4969,10 @@ let cg_build_m_body : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr) �
               | Some p →
                   match p {
                     | MkPair _ wb →
-                        let wv = ce wb env ctab 0 in
+                        -- Python L2522: `<name_hint>_wild` for the wild
+                        -- value before const2-wrapping.
+                        let wild_hint = cg_concat_under hint nn_wild in
+                        let wv = ce wb env ctab wild_hint in
                         match (nat_eq (cenv_arity env) 0) {
                           | 0 → cg_bapp const2_pin wv
                           | _ → PApp const2_pin wv
@@ -4998,8 +5017,14 @@ let cg_build_m_body : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr) �
             let env2 = cg_bind_params free_vars env1 in
             let pred_idx = add (cenv_arity env2) 1 in
             let pred_env = cenv_set_arity env2 pred_idx in
-            let m_inner = cg_build_nat_dispatch remaining wild (PNat pred_idx) pred_env ce ctab 0 0 in
-            let m_succ_law = PPin (PLaw 0 (MkPair pred_idx m_inner)) in
+            -- Python L2510/2512: inner dispatch hint = `<name_hint>_tag_succ`,
+            -- lifted law name = `<name_hint>_m`.  Without these, the lifted
+            -- m-handler emits as an anonymous `(#law "0" …)` and any nested
+            -- match inside an arm body or the wild loses its FQ-name chain.
+            let inner_hint = cg_concat_under hint nn_tag_succ in
+            let m_law_name = cg_concat_under hint nn_m in
+            let m_inner = cg_build_nat_dispatch remaining wild (PNat pred_idx) pred_env ce ctab inner_hint 0 in
+            let m_succ_law = PPin (PLaw m_law_name (MkPair pred_idx m_inner)) in
             let result0 = match (nat_eq uses_self 0) {
                   | 0 →
                       match (nat_eq (cenv_arity env) 0) {
@@ -5123,8 +5148,14 @@ let cg_build_unary_handler_body : List MatchArm → Option (Pair (Option Nat) Ex
                                             let arm_hint = cg_concat_under hint (arm_get_con_name arm) in
                                             MkPair tag (ce (arm_get_con_body arm) ae ctab arm_hint)
                                           ) field_arms in
+                  -- Python L2723: dispatch hint = `<name_hint>_tag` so any
+                  -- nested wild compilation in the chain emits names like
+                  -- `<outer>_tag_wild_0_wild_succ` instead of the bare
+                  -- `_wild_0_wild_succ` you get with hint=0.
+                  let nn_tag = 6775156 in
+                  let tag_hint = cg_concat_under hint nn_tag in
                   cg_build_precompiled_nat_dispatch (cg_sort_pv_pairs tag_val_pairs)
-                    wild (PNat fun_idx) henv ce ctab 0
+                    wild (PNat fun_idx) henv ce ctab tag_hint
             }
       }
 
@@ -5278,7 +5309,32 @@ let cg_build_binary_handler_body : List MatchArm → Option (Pair (Option Nat) E
                                    -- Mirrors Python's _build_field_arm_law L2677:
                                    -- `f'{name_hint}_{info.fq_name.split(".")[-1]}'`.
                                    let arm_hint = cg_concat_under hint (arm_get_con_name arm0) in
-                                   ce (arm_get_con_body arm0) ae ctab arm_hint
+                                   let arm_compiled = ce (arm_get_con_body arm0) ae ctab arm_hint in
+                                   -- Binary single-arm + wildcard: dispatch on
+                                   -- `inner_tag_idx` so non-matching 2-field
+                                   -- Apps (different tag) correctly fall
+                                   -- through to wild.  Mirrors Python
+                                   -- `_build_field_arm_law` L2779-2784:
+                                   -- `_build_tag_chain([(info.tag,
+                                   -- arm_compiled)], wild_body, …,
+                                   -- f'{name_hint}_inner_single_tag')`.
+                                   -- Without this, every binary App matched
+                                   -- the single arm regardless of tag — the
+                                   -- "wildcard arm drop" bug rediscovered in
+                                   -- the binary path (CLAUDE.md pitfalls).
+                                   match wild {
+                                     | None → arm_compiled
+                                     | Some _ →
+                                         let nn_ist = 137416496678702714058903172135449947753 in  -- "inner_single_tag" LE
+                                         let ist_hint = cg_concat_under hint nn_ist in
+                                         let arm0_tag = match (cg_contab_lookup_safe ctab (arm_get_con_name arm0)) {
+                                                          | None → 0
+                                                          | Some p → contab_tag p
+                                                        } in
+                                         cg_build_precompiled_nat_dispatch
+                                           (Cons (MkPair arm0_tag arm_compiled) Nil)
+                                           wild (PNat inner_tag_idx) inner_env4 ce ctab ist_hint
+                                   }
                                | Cons _ _ →
                                    let tag_val_pairs = map (λ arm →
                                        let fields = arm_get_con_fields arm in
@@ -5297,8 +5353,13 @@ let cg_build_binary_handler_body : List MatchArm → Option (Pair (Option Nat) E
                                                  } in
                                        let arm_hint = cg_concat_under hint (arm_get_con_name arm) in
                                        MkPair tag (ce (arm_get_con_body arm) ae ctab arm_hint)) field_arms in
+                                   -- Same `<name_hint>_tag` rename as the
+                                   -- unary multi-arm path above (Python
+                                   -- L2723).
+                                   let nn_tag_b = 6775156 in
+                                   let tag_hint_b = cg_concat_under hint nn_tag_b in
                                    cg_build_precompiled_nat_dispatch (cg_sort_pv_pairs tag_val_pairs)
-                                     wild (PNat inner_tag_idx) inner_env4 ce ctab 0
+                                     wild (PNat inner_tag_idx) inner_env4 ce ctab tag_hint_b
                              }
                        } in
       -- inner_law gets name `<hint>_inner` matching Python's
@@ -5429,9 +5490,9 @@ let cg_compile_con_match : PlanVal → List MatchArm → CEnv
             cg_build_nat_dispatch nat_arms wild scr env ce ctab hint 0
         | _ →
             let nullary_nat_arms = cg_sort_nat_pairs (cg_arms_to_tag_expr nullary_arms ctab) in
-            let z_body = cg_build_z_body nullary_nat_arms wild env ce ctab in
+            let z_body = cg_build_z_body nullary_nat_arms wild env ce ctab hint in
             let remaining = cg_build_nullary_remaining nullary_nat_arms in
-            let m_body = cg_build_m_body remaining wild env ce ctab in
+            let m_body = cg_build_m_body remaining wild env ce ctab hint in
             let app_handler = cg_build_app_handler field_arms wild env ce ctab hint in
             cg_build_reflect_dispatch app_handler z_body m_body scr (cenv_arity env)
       }
