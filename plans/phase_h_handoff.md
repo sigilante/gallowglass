@@ -202,16 +202,47 @@ reaching deeper arms.
    by short-suffix would resolve bare `helper` to `Compiler.helper`
    in the lookup itself.
 
+### The compile-self gate — first divergence at parenthesized type
+
+Ran 2026-05-13 with all the session's fixes in place
+(`tools/selfcompile.py compiler/src/Compiler.gls`).  Completed in
+570s under Reaver (much faster than predicted — no hang).
+**Diverges.**
+
+First divergence is at byte 334, in the `Cons` constructor binding:
+
+```
+ref:    (#bind Compiler_Cons (#law "1936617283" (_0 _1 _2)         ((1 _1) _2)))                 -- arity 2
+actual: (#bind Compiler_Cons (#law "1936617283" (_0 _1 _2 _3 _4 _5) (((((1 _1) _2) _3) _4) _5))) -- arity 5
+```
+
+**Root cause:** `parse_con_arity` (Compiler.gls L2553) counts *tokens*
+between the constructor name and the next stop-token, not *atom types*.
+For `Cons a (List a)`, the tokens after `Cons` are `a`, `(`, `List`,
+`a`, `)` — five tokens, so arity = 5.  Python's parser uses
+`_parse_atom_type` (bootstrap/parser.py L330) which treats
+`(List a)` as a single parenthesized atom.
+
+**Fix shape:** rewrite `parse_con_arity` to count atoms (single
+identifier OR balanced-paren group).  Comment at L2552 notes the
+current implementation was kept simple to avoid the "multi-nat-arm
+pred_env bug" — that constraint is no longer in force now that
+[[cg_short_after_dot]] and related fixes have landed in earlier
+commits.  A paren-depth-tracking variant should be safe.
+
+Output size: reference 1143093 bytes, actual 526350 bytes —
+divergence cascades from the constructor arity mismatch.  Many
+other parser bugs likely surface once this one is fixed; expect
+multiple iteration rounds before compile-self is byte-identical.
+
 ### Other open follow-ups (lower priority)
 
-- **The compile-self gate itself.**  After the remaining cross-ref /
-  multi-arm-unary cases land (or enough of them to make Compiler.gls's
-  compile-self work), run
-  `python3 tools/selfcompile.py compiler/src/Compiler.gls`.
-  Without jets, this takes hours under Reaver — schedule as
-  slow-CI or background run.  Then lift into
-  `TestPhaseHFixedPoint::test_compile_self` in
-  `tests/reaver/test_selfhost.py`.
+- **Lift compile-self into a test fixture.**  Once the parser issues
+  above clear and `tools/selfcompile.py compiler/src/Compiler.gls`
+  reports `OK n bytes`, add `TestPhaseHFixedPoint::test_compile_self`
+  in `tests/reaver/test_selfhost.py`.  The current 570s runtime is
+  fast enough for slow-CI but probably too slow for the default
+  pytest run — gate it behind an env-var skip.
 
 ## Repro recipes
 
