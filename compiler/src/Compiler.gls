@@ -3366,6 +3366,37 @@ let cenv_bind_global : CEnv → Nat → PlanVal → CEnv
                 (cenv_arity env)
                 (cenv_self env)
 
+-- nn_top_of_law: sentinel local-name encoding "__top_of_law__" LE-packed.
+-- Used as a flag marker in cenv_locals: present ↔ top_of_law=True, absent
+-- ↔ False.  No user identifier can collide because Gallowglass identifiers
+-- don't start with `__` (and even if they could, this exact 14-byte string
+-- is reserved for this flag).  Mirrors Python's `env.top_of_law: bool`
+-- (bootstrap/codegen.py L155).  See cg_compile_elet for why we track this:
+-- native PLAN let form `(1 rhs body)` is only valid at a law's body root,
+-- so nested lets must be lambda-lifted to sub-laws instead.
+let nn_top_of_law : Nat = 1934392534279512447088758627786591
+
+-- cenv_top_of_law: 1 if env is at the body root of some law, 0 otherwise.
+let cenv_top_of_law : CEnv → Nat
+  = λ env →
+      match (assoc_lookup nn_top_of_law (cenv_locals env)) {
+        | Some _ → 1
+        | None → 0
+      }
+
+-- cenv_mark_top_of_law: mark env as being at a law's body root.  The
+-- payload slot value (0) is arbitrary — only presence/absence matters.
+let cenv_mark_top_of_law : CEnv → CEnv
+  = λ env → cenv_bind_local env nn_top_of_law 0
+
+-- cenv_clear_top_of_law: drop the top_of_law marker.  Called by
+-- `cg_dispatch`'s chokepoint when entering a non-let, non-pin expression.
+let cenv_clear_top_of_law : CEnv → CEnv
+  = λ env → cenv_make (cenv_globals env)
+                      (assoc_remove nn_top_of_law (cenv_locals env))
+                      (cenv_arity env)
+                      (cenv_self env)
+
 let cenv_local_lookup : CEnv → Nat → Option Nat
   = λ env name → assoc_lookup name (cenv_locals env)
 
@@ -4458,6 +4489,10 @@ let cg_make_pred_succ_law : Expr → Nat → CEnv
                    | _ → env0
                  } in
       let env2 = cg_bind_params free_vars env1 in
+      -- Python's _make_pred_succ_law (codegen.py L3118) does NOT set
+      -- `lifted_env.top_of_law = True`, so any let in wild_body gets
+      -- lambda-lifted rather than emitted as a native `(1 …)` form.
+      -- Match that here — top_of_law stays default (0).
       let env3 = cenv_new_param env2 wild_var in
       -- Thread `_pred` into the body's compile hint so nested lifted
       -- laws inside the wild body get names like `<hint>_pred_wild_succ`
@@ -5099,6 +5134,9 @@ let cg_build_binary_handler_body : List MatchArm → Option (Pair (Option Nat) E
       let inner_env3 = cenv_set_arity inner_env2 field2_idx in
       let inner_tag_idx = add field2_idx 1 in
       let field1_idx = add inner_tag_idx 1 in
+      -- Python's _build_field_arm_law (codegen.py L2644) doesn't mark
+      -- top_of_law on handler_env — nested lets inside arm bodies always
+      -- lambda-lift.  Match that.
       let inner_env4 = cenv_set_arity inner_env3 field1_idx in
       -- Compile each arm body in inner_env4 with field1 and field2 bound
       let inner_body = match field_arms {
@@ -5318,7 +5356,8 @@ let cg_compile_lam_as_law : List Nat → Expr → CEnv
   = λ params body_expr env ce ctab hint →
       let g = cenv_globals env in
       let self = cenv_self env in
-      let body_env = cg_make_lifted_env Nil params g self in
+      -- Body of this lambda is the new law's body root → mark top_of_law.
+      let body_env = cenv_mark_top_of_law (cg_make_lifted_env Nil params g self) in
       let body_val = ce body_expr body_env ctab hint in
       PLaw hint (MkPair (length params) body_val)
 
@@ -5330,7 +5369,7 @@ let cg_compile_lam_lifted : List Nat → Expr → CEnv
   = λ params body_expr env ce ctab hint →
       let free_vars = cg_free_vars body_expr params env in
       let g = cenv_globals env in
-      let lifted_env = cg_make_lifted_env free_vars params g None in
+      let lifted_env = cenv_mark_top_of_law (cg_make_lifted_env free_vars params g None) in
       let body_val = ce body_expr lifted_env ctab hint in
       let total_arity = add (length free_vars) (length params) in
       let lifted_law = PPin (PLaw hint (MkPair total_arity body_val)) in
@@ -5509,7 +5548,13 @@ let cg_compile_enat : Expr → CEnv → Nat → PlanVal
         | _ → PNat 0
       }
 
--- cg_compile_elet: compile ELet (local let binding)
+-- cg_compile_elet: compile ELet (local let binding).
+-- Three cases, mirroring Python's _compile_local_let (codegen.py L3164):
+--   * env.arity = 0 (top level) → inline as global binding.
+--   * top_of_law = 1 (chain of lets at law body root) → native PLAN
+--     `(1 rhs body)` let form; preserve top_of_law for body recursion.
+--   * Otherwise (nested) → lambda-lift the body into a sub-law that
+--     captures outer locals + self + the let-bound name as parameters.
 let cg_compile_elet : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
                     → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
   = λ expr env ctab hint ce →
@@ -5520,11 +5565,48 @@ let cg_compile_elet : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat �
                   let rhs_val = ce rhs env ctab name in
                   match (nat_eq (cenv_arity env) 0) {
                     | 0 →
-                        -- Law body: PLAN let form A(A(N(1), rhs), body)
-                        let new_idx = add (cenv_arity env) 1 in
-                        let body_env = cenv_bind_local (cenv_set_arity env new_idx) name new_idx in
-                        let body_val = ce body body_env ctab hint in
-                        PApp (PApp (PNat 1) rhs_val) body_val
+                        match (cenv_top_of_law env) {
+                          | 0 →
+                              -- Nested let: lambda-lift body into a sub-law.
+                              -- Sub-law env layout: [self?][free_locals…][pat_name].
+                              let free_vars = cg_free_vars body (Cons name Nil) env in
+                              let uses_self = cg_body_uses_self body env in
+                              let g = cenv_globals env in
+                              let sub_env0 = cenv_mark_top_of_law (cenv_make g Nil 0 None) in
+                              let sub_env1 = match (nat_eq uses_self 0) {
+                                    | 0 →
+                                        match (cenv_self env) {
+                                          | None → sub_env0
+                                          | Some fq →
+                                              let sub_env_fq = cenv_new_param sub_env0 fq in
+                                              let short = cg_short_after_dot fq in
+                                              match (Reaver.BPLAN.eq short fq) {
+                                                | 0 → cenv_bind_local sub_env_fq short (cenv_arity sub_env_fq)
+                                                | _ → sub_env_fq
+                                              }
+                                        }
+                                    | _ → sub_env0
+                                  } in
+                              let sub_env2 = cg_bind_params free_vars sub_env1 in
+                              let sub_env3 = cenv_new_param sub_env2 name in
+                              let body_val = ce body sub_env3 ctab hint in
+                              let sub_arity = cenv_arity sub_env3 in
+                              let sub_law = PPin (PLaw name (MkPair sub_arity body_val)) in
+                              let r0 = sub_law in
+                              let r1 = match (nat_eq uses_self 0) {
+                                    | 0 → cg_bapp r0 (PNat 0)
+                                    | _ → r0
+                                  } in
+                              let r2 = cg_apply_free_locals r1 free_vars env in
+                              cg_bapp r2 rhs_val
+                          | _ →
+                              -- Top-of-law: native PLAN let form, preserve flag.
+                              let new_idx = add (cenv_arity env) 1 in
+                              let body_env0 = cenv_bind_local (cenv_set_arity env new_idx) name new_idx in
+                              let body_env = cenv_mark_top_of_law body_env0 in
+                              let body_val = ce body body_env ctab hint in
+                              PApp (PApp (PNat 1) rhs_val) body_val
+                        }
                     | _ →
                         -- Top level: add to globals
                         let body_env = cenv_bind_global env name rhs_val in
@@ -5592,7 +5674,10 @@ let cg_compile_fix : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat �
                   -- self_name goes into cenv_self so references to it become N(0)
                   let g = cenv_globals env in
                   let env0 = cenv_make g Nil 0 (Some self_name) in
-                  -- Bind each user param at N(1), N(2), ... via cenv_new_param
+                  -- Bind each user param at N(1), N(2), ... via cenv_new_param.
+                  -- Note: Python's _compile_fix doesn't mark top_of_law on
+                  -- the body env, so nested lets in fix bodies always
+                  -- lambda-lift.  We match that here.
                   let env1 = cg_bind_params params env0 in
                   let body_val = ce body env1 ctab 0 in
                   PLaw hint (MkPair (length params) body_val)
@@ -6005,28 +6090,50 @@ let cg_compile_complex : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Na
 
 -- cg_dispatch: main expression dispatch (routes to per-constructor handlers)
 -- ce: the compile_expr function (passed for recursion — ties the knot)
+--
+-- top_of_law chokepoint: Python's _compile_expr clears env.top_of_law on
+-- entry whenever the expression isn't an ELet or EPin (codegen.py L1127),
+-- so a chain of lets at a law's body root stays "top of law" but anything
+-- else (a match, lambda, app, …) leaves the root.  We replicate that
+-- here.  Letting top_of_law leak past a non-let expression would
+-- mis-classify subsequent nested lets as top-of-law and emit native
+-- `(1 …)` form where Python lifts to sub-laws — the divergence
+-- compile-self hit at byte ~37725 in lex_skip_ws.
 let cg_dispatch : (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
                 → Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
   = λ ce expr env ctab hint →
-      match (nat_eq (expr_tag expr) 0) {
+      let tag = expr_tag expr in
+      let env2 = match (cenv_top_of_law env) {
+            | 0 → env
+            | _ →
+                match (nat_eq tag 3) {     -- ELet preserves top_of_law
+                  | 0 →
+                      match (nat_eq tag 7) {     -- EPin preserves
+                        | 0 → cenv_clear_top_of_law env
+                        | _ → env
+                      }
+                  | _ → env
+                }
+          } in
+      match (nat_eq tag 0) {
         | 0 →
-            match (nat_eq (expr_tag expr) 4) {
+            match (nat_eq tag 4) {
               | 0 →
-                  match (nat_eq (expr_tag expr) 1) {
+                  match (nat_eq tag 1) {
                     | 0 →
                         -- Complex expression (ELam/ELet/EIf/EMatch/EPin)
-                        cg_compile_complex expr env ctab hint ce
+                        cg_compile_complex expr env2 ctab hint ce
                     | _ →
                         -- EApp (tag 1)
-                        cg_compile_app expr env ctab hint ce
+                        cg_compile_app expr env2 ctab hint ce
                   }
               | _ →
                   -- ENat (tag 4)
-                  cg_compile_enat expr env hint
+                  cg_compile_enat expr env2 hint
             }
         | _ →
             -- EVar (tag 0)
-            cg_compile_var expr env ctab hint
+            cg_compile_var expr env2 ctab hint
       }
 
 -- cg_compile_expr: main compiler entry point (self-recursive via cg_dispatch)
@@ -6359,7 +6466,11 @@ let cg_compile_let_one : Nat → Expr → Nat → CEnv → List (Pair Nat (Pair 
       match (Reaver.BPLAN.eq name 0) {
         | 0 →
             let fq_name = name_concat_dot mod_name name in
-            let fq_env = cenv_set_self (cenv_set_arity env 0) (Some fq_name) in
+            -- Body of a top-level let begins at the law's body root.  Mark
+            -- top_of_law so nested let-chains at the body root use native
+            -- `(1 rhs body)` form rather than lambda-lifting.
+            let fq_env = cenv_mark_top_of_law
+                           (cenv_set_self (cenv_set_arity env 0) (Some fq_name)) in
             let val = cg_compile_expr body fq_env ctab name in
             let new_env = cenv_bind_global env fq_name val in
             MkPair new_env (Cons (MkPair fq_name val) compiled)
