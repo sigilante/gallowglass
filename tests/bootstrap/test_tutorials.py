@@ -22,9 +22,28 @@ import os
 import sys
 import unittest
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from bootstrap.jupyter_kernel import GallowglassEvaluator
+
+
+# CI runs the kernel + full prelude per notebook (6 notebooks); each cell
+# re-imports prelude and re-evaluates, which is slow.  Skip in CI unless
+# this PR/push actually edits tutorials, the test, or the kernel itself —
+# the CI workflow's path-filter step (`.github/workflows/ci.yml`) sets
+# `GG_RUN_TUTORIALS=1` exactly when one of those files changed.  Locally,
+# no env var is set and the tests run normally.
+pytestmark = pytest.mark.skipif(
+    os.environ.get('CI') == 'true'
+    and os.environ.get('GG_RUN_TUTORIALS') != '1',
+    reason=(
+        'CI: tutorial notebook smoke tests are slow; skipping unless this '
+        'PR/push edits tutorials/, tests/bootstrap/test_tutorials.py, or '
+        'bootstrap/jupyter_kernel.py.  Set GG_RUN_TUTORIALS=1 to force-run.'
+    ),
+)
 
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))

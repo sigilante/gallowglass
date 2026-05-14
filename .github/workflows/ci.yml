@@ -31,7 +31,24 @@ jobs:
       - name: Install marduk from vendor
         run: pip install -e vendor/marduk/packages/marduk
 
+      # Skip the tutorial notebook smoke tests by default — they import
+      # the full prelude per notebook and re-run every cell, which is
+      # slow.  Opt-in only when this PR/push actually touches tutorial
+      # files or the kernel evaluator they exercise.  See
+      # tests/bootstrap/test_tutorials.py's pytestmark.
+      - name: Detect tutorial changes
+        id: tut_changed
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            tutorials:
+              - 'tutorials/**'
+              - 'tests/bootstrap/test_tutorials.py'
+              - 'bootstrap/jupyter_kernel.py'
+
       - name: Run all Python-only tests
+        env:
+          GG_RUN_TUTORIALS: ${{ steps.tut_changed.outputs.tutorials == 'true' && '1' || '0' }}
         run: python3 -m pytest tests/bootstrap/ tests/compiler/ tests/prelude/ tests/sanity/ tests/demos/ -v --tb=short
 
   # ── Reaver runtime gate (parallel matrix) ─────────────────────────────
