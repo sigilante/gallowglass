@@ -623,6 +623,32 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
+    def test_type_with_parenthesized_field(self):
+        """``type Wrapped = | Wrap (Nat) Nat; let mk = Wrap 1 2``
+        — constructor with one parenthesized field type and one bare.
+
+        Pins ``parse_con_arity`` counting atom types, not raw tokens.
+        The original implementation counted every token between the
+        constructor name and the next stop-token, so ``Cons a (List a)``
+        parsed as arity 5 (counting ``a``, ``(``, ``List``, ``a``, ``)``)
+        instead of 2.  This minimal-repro case parses ``Wrap (Nat) Nat``
+        as arity 4 (``(``, ``Nat``, ``)``, ``Nat``) instead of 2 — the
+        constructor binding diverges:
+
+            ref:    (#law "1885434455" (_0 _1 _2)         ((0 _1) _2))
+            buggy:  (#law "1885434455" (_0 _1 _2 _3 _4)   ((((0 _1) _2) _3) _4))
+
+        The new ``parse_con_arity_go`` (Compiler.gls L2553) tracks paren
+        depth and treats each balanced group as a single atom — mirrors
+        Python's ``_parse_atom_type`` (bootstrap/parser.py L330).
+        Discovered as the first divergence of the compile-self gate.
+        """
+        src = (
+            'type Wrapped = | Wrap (Nat) Nat\n'
+            'let mk = Wrap 1 2\n'
+        )
+        self._assert_byte_identical(src)
+
     @unittest.expectedFailure
     def test_same_constructor_literal_field_collapses(self):
         """`match (MkPair 0 99) { | MkPair 0 _ -> 1 | MkPair n _ -> 2 }` —

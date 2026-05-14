@@ -2548,14 +2548,44 @@ let is_arity_stop : Nat → Nat
         | k → 1
       }
 
--- parse_con_arity: count tokens before next | } let type external (arity)
--- Uses is_arity_stop (1 named nat arm) — avoids multi-nat-arm pred_env bug.
-let parse_con_arity : List Token → Nat → Pair Nat (List Token)
-  = λ toks acc →
-      match (is_arity_stop (tok_peek toks)) {
-        | 0 → parse_con_arity (tok_tail toks) (Core.PLAN.inc acc)
-        | k → MkPair acc toks
+-- parse_con_arity_go: scan tokens counting atom types until a stop token
+-- at depth 0.  An atom is either a single non-paren token OR a balanced
+-- paren group `(...)`.  Mirrors Python's parser, which reads one atom-type
+-- per field via `_parse_atom_type` (bootstrap/parser.py L330).  The
+-- previous token-count version produced arity 5 for `Cons a (List a)`
+-- (counting `a`, `(`, `List`, `a`, `)`) instead of 2.
+let parse_con_arity_go : List Token → Nat → Nat → Pair Nat (List Token)
+  = λ toks depth acc →
+      let t = tok_peek toks in
+      match (Reaver.BPLAN.eq depth 0) {
+        | 0 →
+            -- Inside parens (depth > 0): track depth only, don't count.
+            match (Reaver.BPLAN.eq t TkLParen) {
+              | 0 →
+                  match (Reaver.BPLAN.eq t TkRParen) {
+                    | 0 → parse_con_arity_go (tok_tail toks) depth acc
+                    | _ → parse_con_arity_go (tok_tail toks) (sub depth 1) acc
+                  }
+              | _ → parse_con_arity_go (tok_tail toks) (add depth 1) acc
+            }
+        | _ →
+            -- At depth 0.  Stop tokens end the field list; otherwise this
+            -- is the start of a new atom — count it and advance.
+            match (is_arity_stop t) {
+              | 0 →
+                  match (Reaver.BPLAN.eq t TkLParen) {
+                    | 0 → parse_con_arity_go (tok_tail toks) 0 (Core.PLAN.inc acc)
+                    | _ → parse_con_arity_go (tok_tail toks) 1 (Core.PLAN.inc acc)
+                  }
+              | k → MkPair acc toks
+            }
       }
+
+-- parse_con_arity: count atom types before next stop token, returning
+-- (arity, remaining_toks).  Thin wrapper that starts parse_con_arity_go
+-- at depth 0.
+let parse_con_arity : List Token → Nat → Pair Nat (List Token)
+  = λ toks acc → parse_con_arity_go toks 0 acc
 
 -- parse_con_def: parse  | Name fields...
 let parse_con_def : List Token → Pair ConDef (List Token)
