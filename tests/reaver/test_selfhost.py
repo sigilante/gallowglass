@@ -649,6 +649,59 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
+    def test_type_with_nested_parens(self):
+        """``type Box = | B (Wrap) (Wrap)`` — two parenthesized fields,
+        with an inner constructor reference.
+
+        Gates against regression of the paren-depth tracker in
+        ``parse_con_arity_go`` (Compiler.gls L2557).  A token-count
+        version would parse `B`'s field list as arity 6 (counting
+        ``(``, ``Wrap``, ``)``, ``(``, ``Wrap``, ``)``) instead of 2.
+        This case is byte-identical only when the depth tracker is
+        correctly counting balanced groups as single atoms.
+        """
+        src = (
+            'type Wrap = | Mk Nat\n'
+            'type Box = | B (Wrap) (Wrap)\n'
+            'let mk = B (Mk 1) (Mk 2)\n'
+        )
+        self._assert_byte_identical(src)
+
+    def test_nullary_match_captures_outer_local(self):
+        """``type Color = | Red | Green | Blue
+            let pick = λ d → λ c → match c { | Red → d | Green → d | Blue → d }``
+        — multi-arm nullary match whose arm bodies reference an outer
+        lambda local.
+
+        Gates two coupled `pred_env` locals-drop bugs flagged in the
+        Dwarf review of this Phase H arc:
+
+        * ``cg_build_nat_dispatch``'s multi-arm succ-law (Compiler.gls
+          L4527) previously built `pred_env = cenv_make g Nil 1 None`
+          — a fresh empty env that drops the caller's locals.  Arm
+          bodies referencing outer locals collapsed to ``PNat 0`` (the
+          succ law's own self) rather than the captured slot.
+
+        * ``cg_build_m_body`` (Compiler.gls L4832) had the same shape
+          for the nullary-tag>0 succ law in mixed con-matches.
+
+        Both now do free-var analysis (mirroring Python's
+        `make_succ_law`, bootstrap/codegen.py L1932) and partial-apply
+        the captured locals at the call site.  The earlier
+        captures-preserving fix in
+        `cg_build_precompiled_nat_dispatch` (commit c216e46) addressed
+        only the field-bearing path; the parallel paths in
+        `cg_build_nat_dispatch` and `cg_build_m_body` survived until
+        Dwarf flagged them — they go unexercised by every fixture
+        whose arm bodies are pure literals (e.g. ``Red → 1``).
+        """
+        src = (
+            'type Color = | Red | Green | Blue\n'
+            'let pick = λ d → λ c → match c { | Red → d | Green → d | Blue → d }\n'
+            'let main = pick 99 Red\n'
+        )
+        self._assert_byte_identical(src)
+
     @unittest.expectedFailure
     def test_same_constructor_literal_field_collapses(self):
         """`match (MkPair 0 99) { | MkPair 0 _ -> 1 | MkPair n _ -> 2 }` —

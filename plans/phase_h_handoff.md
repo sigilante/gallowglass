@@ -33,8 +33,8 @@ b27061b fix(self-host): four match-on-nat fixes — pinned by two new fixtures
 - `tests/bootstrap/` — 832 passed, 4 skipped, 2 xfailed (pre-existing).
 - `tests/compiler/` — 227 passed, 3 skipped.
 - `tests/prelude/` — 167 passed.
-- `tests/reaver/` — 51 passed, 1 xfailed. Includes 19 selfhost
-  fixtures (17 byte-identical + 2 smoke).
+- `tests/reaver/` — 53 passed, 1 xfailed. Includes 22 selfhost
+  fixtures (20 byte-identical + 2 smoke).
 
 ### Byte-identity fixtures (`tests/reaver/test_selfhost.py`)
 
@@ -201,6 +201,40 @@ reaching deeper arms.
    self-ref short-name safety net doesn't help.  A globals search
    by short-suffix would resolve bare `helper` to `Compiler.helper`
    in the lookup itself.
+
+### Dwarf review follow-up (2026-05-14)
+
+The Dwarf agent flagged three durability gaps after the Phase H arc
+landed.  Two are now fixed and pinned; one is documented.
+
+* **EOF infinite recursion at depth > 0** in
+  ``parse_con_arity_go`` — fixed by hoisting ``is_arity_stop`` above
+  the depth branch (Compiler.gls L2557).  Unbalanced open parens
+  (``type Foo = | Bar (Nat``) previously recursed forever once the
+  token stream ran dry; Python rejects the same input with a parse
+  error, so this is a "graceful failure" property not byte-testable.
+
+* **`pred_env` locals-drop in `cg_build_nat_dispatch`'s multi-arm
+  succ-law** (Compiler.gls L4520) and **the parallel path in
+  `cg_build_m_body`** (Compiler.gls L4832).  Both previously built a
+  fresh empty `pred_env`, so arm bodies referencing outer-lambda
+  locals collapsed to `PNat 0`.  Both now do free-var analysis
+  mirroring Python's `make_succ_law` (`bootstrap/codegen.py` L1932)
+  and partial-apply captured locals at the call site.  Pinned by
+  `test_nullary_match_captures_outer_local`.
+
+* **Silent shadowing in `cg_global_lookup_by_short` and
+  `cg_contab_lookup_by_short`** — still open.  These fall back to
+  "first FQ with matching short tail" on lookup miss; if two FQs in
+  scope share a short tail, the first in iteration order silently
+  wins.  Python's resolver would reject the bare reference as
+  ambiguous.  No current fixture triggers this; documented for
+  follow-up.
+
+Also slated: the Hobbit review's suggested helper-inlining cuts for
+`cg_global_lookup_by_short`, `cg_contab_lookup_by_short`, and the
+`cg_pcd_z_for_op2` / `cg_pcd_pairs_for_inner` pair (whose "let-lifting
+hazard" rationale was speculative).
 
 ### The compile-self gate — first divergence at parenthesized type
 

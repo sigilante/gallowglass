@@ -2557,28 +2557,36 @@ let is_arity_stop : Nat → Nat
 let parse_con_arity_go : List Token → Nat → Nat → Pair Nat (List Token)
   = λ toks depth acc →
       let t = tok_peek toks in
-      match (Reaver.BPLAN.eq depth 0) {
+      -- Hoist `is_arity_stop` above the depth branch so EOF terminates
+      -- the scan at any depth.  Without this, malformed input like
+      -- `type Foo = | Bar (Nat` (unbalanced open paren) recurses
+      -- forever once the token stream runs dry — the depth > 0 branch
+      -- never consults `is_arity_stop` and `tok_peek` on an exhausted
+      -- list returns `TkEof` indefinitely.  Stop tokens (`|`, `}`,
+      -- `let`, ...) legally occur only at depth 0; finding one inside
+      -- parens means the source is malformed and stopping is correct.
+      match (is_arity_stop t) {
         | 0 →
-            -- Inside parens (depth > 0): track depth only, don't count.
-            match (Reaver.BPLAN.eq t TkLParen) {
+            match (Reaver.BPLAN.eq depth 0) {
               | 0 →
-                  match (Reaver.BPLAN.eq t TkRParen) {
-                    | 0 → parse_con_arity_go (tok_tail toks) depth acc
-                    | _ → parse_con_arity_go (tok_tail toks) (sub depth 1) acc
+                  -- Inside parens (depth > 0): track depth, don't count.
+                  match (Reaver.BPLAN.eq t TkLParen) {
+                    | 0 →
+                        match (Reaver.BPLAN.eq t TkRParen) {
+                          | 0 → parse_con_arity_go (tok_tail toks) depth acc
+                          | _ → parse_con_arity_go (tok_tail toks) (sub depth 1) acc
+                        }
+                    | _ → parse_con_arity_go (tok_tail toks) (add depth 1) acc
                   }
-              | _ → parse_con_arity_go (tok_tail toks) (add depth 1) acc
-            }
-        | _ →
-            -- At depth 0.  Stop tokens end the field list; otherwise this
-            -- is the start of a new atom — count it and advance.
-            match (is_arity_stop t) {
-              | 0 →
+              | _ →
+                  -- At depth 0, this is the start of a new atom —
+                  -- count it and advance (entering paren depth if it's `(`).
                   match (Reaver.BPLAN.eq t TkLParen) {
                     | 0 → parse_con_arity_go (tok_tail toks) 0 (Core.PLAN.inc acc)
                     | _ → parse_con_arity_go (tok_tail toks) 1 (Core.PLAN.inc acc)
                   }
-              | k → MkPair acc toks
             }
+        | k → MkPair acc toks
       }
 
 -- parse_con_arity: count atom types before next stop token, returning
@@ -4522,10 +4530,59 @@ let cg_build_nat_dispatch : List (Pair Nat Expr) → Option (Pair (Option Nat) E
                                     let idx_name = cg_b_decimal next_idx in
                                     let succ_base = cg_concat_under hint nn_succ in
                                     let succ_name = cg_concat_under succ_base idx_name in
+                                    -- Free-var analysis: capture only the outer
+                                    -- locals that remaining arm bodies (or the
+                                    -- wild body) actually reference.  Mirrors
+                                    -- Python's `make_succ_law`.  Without this,
+                                    -- a body like `match s { | Red → d | Green
+                                    -- → d | Blue → d }` (with `d` an outer
+                                    -- lambda param) compiles `d` to PNat 0
+                                    -- (the succ-law's own self) instead of the
+                                    -- captured slot.
+                                    let rest_bodies = map (λ p →
+                                          match p { | MkPair _ b → b }) rest in
+                                    let all_bodies = match wild {
+                                          | None → rest_bodies
+                                          | Some p → match p {
+                                              | MkPair _ wb → Cons wb rest_bodies
+                                            }
+                                        } in
+                                    let free_vars = cg_free_vars_bodies all_bodies Nil env in
+                                    let uses_self = foldl (λ acc b →
+                                          match (nat_eq acc 1) {
+                                            | 0 → cg_body_uses_self b env
+                                            | _ → 1
+                                          }) 0 all_bodies in
                                     let g = cenv_globals env in
-                                    let pred_env = cenv_make g Nil 1 None in
-                                    let inner = cg_build_nat_dispatch rest wild (PNat 1) pred_env ce ctab hint next_idx in
-                                    PPin (PLaw succ_name (MkPair 1 inner))
+                                    let env0 = cenv_make g Nil 0 None in
+                                    let env1 = match (nat_eq uses_self 0) {
+                                          | 0 →
+                                              match (cenv_self env) {
+                                                | None → env0
+                                                | Some fq →
+                                                    let env_fq = cenv_new_param env0 fq in
+                                                    let short = cg_short_after_dot fq in
+                                                    match (Reaver.BPLAN.eq short fq) {
+                                                      | 0 → cenv_bind_local env_fq short (cenv_arity env_fq)
+                                                      | _ → env_fq
+                                                    }
+                                              }
+                                          | _ → env0
+                                        } in
+                                    let env2 = cg_bind_params free_vars env1 in
+                                    let pred_idx = add (cenv_arity env2) 1 in
+                                    let pred_env = cenv_set_arity env2 pred_idx in
+                                    let inner = cg_build_nat_dispatch rest wild (PNat pred_idx) pred_env ce ctab hint next_idx in
+                                    let succ_law = PPin (PLaw succ_name (MkPair pred_idx inner)) in
+                                    let result0 = match (nat_eq uses_self 0) {
+                                          | 0 →
+                                              match (nat_eq (cenv_arity env) 0) {
+                                                | 0 → cg_bapp succ_law (PNat 0)
+                                                | _ → PApp succ_law (PNat 0)
+                                              }
+                                          | _ → succ_law
+                                        } in
+                                    cg_apply_free_locals result0 free_vars env
                               } in
                   cg_build_op2 zero_val succ scr (cenv_arity env)
             }
@@ -4773,10 +4830,54 @@ let cg_build_m_body : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr) �
                   }
             }
         | Cons _ _ →
+            -- Free-var analysis (same pattern as cg_build_nat_dispatch's
+            -- multi-arm case): preserve captures referenced by the m-arm
+            -- bodies or wild body, so the succ law has the right arity
+            -- and we partial-apply at the call site.
+            let rem_bodies = map (λ p →
+                  match p { | MkPair _ b → b }) remaining in
+            let all_bodies = match wild {
+                  | None → rem_bodies
+                  | Some p → match p {
+                      | MkPair _ wb → Cons wb rem_bodies
+                    }
+                } in
+            let free_vars = cg_free_vars_bodies all_bodies Nil env in
+            let uses_self = foldl (λ acc b →
+                  match (nat_eq acc 1) {
+                    | 0 → cg_body_uses_self b env
+                    | _ → 1
+                  }) 0 all_bodies in
             let g = cenv_globals env in
-            let pred_env = cenv_make g Nil 1 None in
-            let m_inner = cg_build_nat_dispatch remaining wild (PNat 1) pred_env ce ctab 0 0 in
-            PPin (PLaw 0 (MkPair 1 m_inner))
+            let env0 = cenv_make g Nil 0 None in
+            let env1 = match (nat_eq uses_self 0) {
+                  | 0 →
+                      match (cenv_self env) {
+                        | None → env0
+                        | Some fq →
+                            let env_fq = cenv_new_param env0 fq in
+                            let short = cg_short_after_dot fq in
+                            match (Reaver.BPLAN.eq short fq) {
+                              | 0 → cenv_bind_local env_fq short (cenv_arity env_fq)
+                              | _ → env_fq
+                            }
+                      }
+                  | _ → env0
+                } in
+            let env2 = cg_bind_params free_vars env1 in
+            let pred_idx = add (cenv_arity env2) 1 in
+            let pred_env = cenv_set_arity env2 pred_idx in
+            let m_inner = cg_build_nat_dispatch remaining wild (PNat pred_idx) pred_env ce ctab 0 0 in
+            let m_succ_law = PPin (PLaw 0 (MkPair pred_idx m_inner)) in
+            let result0 = match (nat_eq uses_self 0) {
+                  | 0 →
+                      match (nat_eq (cenv_arity env) 0) {
+                        | 0 → cg_bapp m_succ_law (PNat 0)
+                        | _ → PApp m_succ_law (PNat 0)
+                      }
+                  | _ → m_succ_law
+                } in
+            cg_apply_free_locals result0 free_vars env
       }
 
 -- cg_arm_find_by_tag: find a con arm whose ctab tag equals the given tag
