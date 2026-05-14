@@ -1508,14 +1508,29 @@ let is_upper_first_byte : Nat → Nat
 -- parse_ident_list: collect TkIdent tokens (constructor field names)
 let parse_ident_list : List Token → Pair (List Nat) (List Token)
   = λ toks →
-      match (tok_eat_ident toks) {
-        | MkPair n rest →
-            match n {
-              | 0 → MkPair Nil toks
-              | _ →
-                  match (parse_ident_list rest) {
-                    | MkPair names rest2 → MkPair (Cons n names) rest2
+      -- Wildcard `_` in field-pattern position (e.g. `Cons _ rest`) is a
+      -- pattern atom that occupies a slot but is never referenced.  Python's
+      -- _parse_pattern returns PatWild for `_`; we use the sentinel name 0
+      -- so downstream `cg_arm_con_arity` counts the field while
+      -- `cenv_bind_local 0 slot` adds a never-looked-up entry.  Use
+      -- `Reaver.BPLAN.eq` to peek the token (TkUnderscore is a nullary
+      -- constructor, i.e. a bare Nat) and recurse, otherwise fall through
+      -- to the original ident-only path.
+      match (Reaver.BPLAN.eq (tok_peek toks) TkUnderscore) {
+        | 0 →
+            match (tok_eat_ident toks) {
+              | MkPair n rest →
+                  match n {
+                    | 0 → MkPair Nil toks
+                    | _ →
+                        match (parse_ident_list rest) {
+                          | MkPair names rest2 → MkPair (Cons n names) rest2
+                        }
                   }
+            }
+        | _ →
+            match (parse_ident_list (tok_tail toks)) {
+              | MkPair names rest → MkPair (Cons 0 names) rest
             }
       }
 
@@ -4050,17 +4065,24 @@ let cg_keep_free_locals : List (Pair Nat Nat) → List Nat → List Nat → List
             }
       }
 
--- cg_free_vars: names in cenv_locals order that appear free in expr (not in bound)
+-- cg_free_vars: names in INSERTION order that appear free in expr (not in
+-- bound).  The locals list is stored newest-first (assoc_insert prepends);
+-- Python's `env.locals` is a dict iterated in insertion order (oldest
+-- first).  Reversing the locals list before keep-filtering matches
+-- Python's order, which downstream callers use to lay out lifted-law
+-- capture slots and partial-apply them at the call site — that ordering
+-- has to be byte-identical for compile-self.
 let cg_free_vars : Expr → List Nat → CEnv → List Nat
   = λ expr bound env →
       let found = cg_collect_free expr bound env Nil in
-      cg_keep_free_locals (cenv_locals env) found bound
+      cg_keep_free_locals (reverse (cenv_locals env)) found bound
 
--- cg_free_vars_bodies: free locals across multiple bodies (union)
+-- cg_free_vars_bodies: free locals across multiple bodies (union).  Same
+-- reversal as `cg_free_vars` so callers get Python-compatible ordering.
 let cg_free_vars_bodies : List Expr → List Nat → CEnv → List Nat
   = λ bodies bound env →
       let all_found = foldl (λ acc body → cg_collect_free body bound env acc) Nil bodies in
-      cg_keep_free_locals (cenv_locals env) all_found bound
+      cg_keep_free_locals (reverse (cenv_locals env)) all_found bound
 
 -- -------------------------------------------------------------------
 -- Layer 4b: Self-reference detection (same pass-self pattern)
@@ -4437,7 +4459,13 @@ let cg_make_pred_succ_law : Expr → Nat → CEnv
                  } in
       let env2 = cg_bind_params free_vars env1 in
       let env3 = cenv_new_param env2 wild_var in
-      let body_val = ce wild_body env3 ctab 0 in
+      -- Thread `_pred` into the body's compile hint so nested lifted
+      -- laws inside the wild body get names like `<hint>_pred_wild_succ`
+      -- instead of the empty-hint default `_wild_succ`.  Mirrors
+      -- Python's _make_pred_succ_law (codegen.py L3137).
+      let nn_pred = 1684370032 in  -- "pred" LE
+      let body_hint = cg_concat_under hint nn_pred in
+      let body_val = ce wild_body env3 ctab body_hint in
       let arity = cenv_arity env3 in
       let nn_succ = 1667462515 in  -- = encode_name("succ")
       let law_name = cg_concat_under hint nn_succ in
@@ -4519,8 +4547,15 @@ let cg_build_nat_dispatch : List (Pair Nat Expr) → Option (Pair (Option Nat) E
             }
         | Cons arm0 rest →
             match arm0 {
-              | MkPair _ body0 →
-                  let zero_val = ce body0 env ctab hint in
+              | MkPair tag body0 →
+                  -- Thread `_{tag}` into the arm-body's hint so nested
+                  -- lifted laws inside the arm body get distinct names
+                  -- like `nat_eq_0_wild_succ` instead of colliding on
+                  -- `nat_eq_wild_succ`.  Mirrors Python's
+                  -- `_compile_expr(body_expr, cur_env, f'{name_hint}_{tag}')`
+                  -- in `_build_nat_dispatch.dispatch` (codegen.py L1983).
+                  let body_hint = cg_concat_under hint (cg_b_decimal tag) in
+                  let zero_val = ce body0 env ctab body_hint in
                   let succ = match rest {
                                 | Nil →
                                     cg_make_wild_succ wild env ce ctab hint
@@ -4917,7 +4952,10 @@ let cg_build_unary_handler_body : List MatchArm → Option (Pair (Option Nat) Ex
                              | Nil → henv
                              | Cons fname _ → cenv_bind_local henv fname arg_idx
                            } in
-                  ce (arm_get_con_body arm0) ae ctab 0
+                  -- Thread `_<ConName>` into the arm-body's hint (see
+                  -- cg_build_binary_handler_body for full rationale).
+                  let arm_hint = cg_concat_under hint (arm_get_con_name arm0) in
+                  ce (arm_get_con_body arm0) ae ctab arm_hint
               | Cons _ _ →
                   -- Multiple arms: compile each body, dispatch on fun (tag)
                   let tag_val_pairs = map (λ arm →
@@ -4930,7 +4968,8 @@ let cg_build_unary_handler_body : List MatchArm → Option (Pair (Option Nat) Ex
                                                         | None → 0
                                                         | Some p → contab_tag p
                                                       } in
-                                            MkPair tag (ce (arm_get_con_body arm) ae ctab 0)
+                                            let arm_hint = cg_concat_under hint (arm_get_con_name arm) in
+                                            MkPair tag (ce (arm_get_con_body arm) ae ctab arm_hint)
                                           ) field_arms in
                   cg_build_precompiled_nat_dispatch (cg_sort_pv_pairs tag_val_pairs)
                     wild (PNat fun_idx) henv ce ctab 0
@@ -5027,17 +5066,22 @@ let cg_build_unary_m_body : List MatchArm → Option (Pair (Option Nat) Expr) �
       }
 
 -- cg_build_binary_handler_body: handler body for arity-2 field arms
--- Receives uses_self and free_locals pre-computed by cg_build_app_handler
+-- Receives uses_self, free_locals, and outer_self (the outer-env self_ref)
+-- pre-computed by cg_build_app_handler.  We need outer_self separately
+-- because cg_build_app_handler builds `henv` with `self_ref = None`
+-- (intentionally, so unary-handler body compiles look up `length` etc.
+-- via locals at the captured slot, not via the self-ref shortcut which
+-- would return PNat 0 = the app-handler law's own self).
 let cg_build_binary_handler_body : List MatchArm → Option (Pair (Option Nat) Expr)
-                                   → CEnv → Nat → Nat → Nat → List Nat
+                                   → CEnv → Nat → Nat → Nat → List Nat → Option Nat
                                    → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
                                    → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
-  = λ field_arms wild henv fun_idx arg_idx uses_self free_locals ce ctab hint →
+  = λ field_arms wild henv fun_idx arg_idx uses_self free_locals outer_self ce ctab hint →
       let g = cenv_globals henv in
       let inner_env0 = cenv_make g Nil 0 None in
       let inner_env1 = match (nat_eq uses_self 0) {
                          | 0 →
-                             match (cenv_self henv) {
+                             match outer_self {
                                | None → inner_env0
                                | Some fq →
                                    let inner_env_fq = cenv_new_param inner_env0 fq in
@@ -5072,7 +5116,14 @@ let cg_build_binary_handler_body : List MatchArm → Option (Pair (Option Nat) E
                                                     | Cons f2 _ → cenv_bind_local ae1 f2 field2_idx
                                                   }
                                             } in
-                                   ce (arm_get_con_body arm0) ae ctab 0
+                                   -- Thread `_<ConName>` into the arm-body's hint
+                                   -- so lifted laws inside the body (e.g. if-thunks)
+                                   -- get names like `filter_Cons_then_succ` rather
+                                   -- than the empty-hint default `_then_succ`.
+                                   -- Mirrors Python's _build_field_arm_law L2677:
+                                   -- `f'{name_hint}_{info.fq_name.split(".")[-1]}'`.
+                                   let arm_hint = cg_concat_under hint (arm_get_con_name arm0) in
+                                   ce (arm_get_con_body arm0) ae ctab arm_hint
                                | Cons _ _ →
                                    let tag_val_pairs = map (λ arm →
                                        let fields = arm_get_con_fields arm in
@@ -5089,7 +5140,8 @@ let cg_build_binary_handler_body : List MatchArm → Option (Pair (Option Nat) E
                                                    | None → 0
                                                    | Some p → contab_tag p
                                                  } in
-                                       MkPair tag (ce (arm_get_con_body arm) ae ctab 0)) field_arms in
+                                       let arm_hint = cg_concat_under hint (arm_get_con_name arm) in
+                                       MkPair tag (ce (arm_get_con_body arm) ae ctab arm_hint)) field_arms in
                                    cg_build_precompiled_nat_dispatch (cg_sort_pv_pairs tag_val_pairs)
                                      wild (PNat inner_tag_idx) inner_env4 ce ctab 0
                              }
@@ -5100,13 +5152,19 @@ let cg_build_binary_handler_body : List MatchArm → Option (Pair (Option Nat) E
       let inner_name = cg_concat_under hint nn_inner in
       let inner_law = PPin (PLaw inner_name (MkPair field1_idx inner_body)) in
       -- Apply inner_law to: [self?]+[free_locals]+outer_arg
+      -- When uses_self is true, the self-ref capture lives at henv slot 1
+      -- (it's the FIRST capture slot in the app-handler's frame — see
+      -- cg_build_app_handler's henv1 setup).  Apply PNat 1, not PNat 0:
+      -- PNat 0 would refer to the app-handler law's own self, not the
+      -- captured outer self.  Mirrors Python's _build_field_arm_law
+      -- which uses `bapp(inner_applied, N(1))` regardless of context.
       let n_cap = cenv_arity inner_env2 in
       let r0 = inner_law in
       let r1 = match (nat_eq uses_self 0) {
                  | 0 →
                      match (nat_eq (cenv_arity henv) 0) {
-                       | 0 → cg_bapp r0 (PNat 0)
-                       | _ → PApp r0 (PNat 0)
+                       | 0 → cg_bapp r0 (PNat 1)
+                       | _ → PApp r0 (PNat 1)
                      }
                  | _ → r0
                } in
@@ -5166,7 +5224,7 @@ let cg_build_app_handler : List MatchArm → Option (Pair (Option Nat) Expr) →
       let henv = cenv_set_arity henv2 arg_idx in
       let handler_body = match (nat_eq max_arity 1) {
                            | 0 →
-                               cg_build_binary_handler_body field_arms wild henv fun_idx arg_idx uses_self free_locals ce ctab hint
+                               cg_build_binary_handler_body field_arms wild henv fun_idx arg_idx uses_self free_locals (cenv_self env) ce ctab hint
                            | _ →
                                cg_build_unary_handler_body field_arms wild henv fun_idx arg_idx ce ctab hint
                          } in
@@ -5354,7 +5412,17 @@ let cg_resolve_global_val : Nat → PlanVal → CEnv → PlanVal
                   }
               | _ → cg_quote_nat (planval_get_nat val) (cenv_arity env)
             }
-        | _ → cg_tag_global fq val
+        | _ →
+            -- Top level: same double-pin avoidance as the body-context
+            -- branch above.  When the binding's val is itself a Pin
+            -- (e.g. opcode pins like `write_op = PPin(PNat 9)`),
+            -- `cg_tag_global` would produce `PPin(PNamed n inner)`
+            -- which emits `(#pin sym)` — but Python's `_maybe_symbol`
+            -- collapses to bare `sym` at the outer Pin level.
+            match (planval_is_pin val) {
+              | 0 → cg_tag_global fq val
+              | _ → PNamed fq val
+            }
       }
 
 -- cg_var_from_env: look up variable name in locals then globals.
@@ -5414,14 +5482,21 @@ let cg_compile_var : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat �
         | _ → PNat 0
       }
 
--- cg_compile_app: compile EApp
+-- cg_compile_app: compile EApp.
+-- Python's `_compile_app` passes the default empty hint to both fun and
+-- arg sub-expressions (bootstrap/codegen.py L1344-1345 — no `name_hint`
+-- kwarg, so the default `''` is used).  Self-host previously threaded
+-- the caller's hint into both, which produced lifted-law names like
+-- `bit_or_wild_pred_wild_pred_then_succ` for an if-expression buried
+-- inside an App, where Python's reference is just `_then_succ`.  Pass
+-- 0 (empty hint) to children for byte-identity.
 let cg_compile_app : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
                    → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
   = λ expr env ctab hint ce →
       match expr {
         | EApp f a →
-            let fv = ce f env ctab hint in
-            let av = ce a env ctab hint in
+            let fv = ce f env ctab 0 in
+            let av = ce a env ctab 0 in
             cg_apply fv av (cenv_arity env)
         | _ → PNat 0
       }
@@ -5992,6 +6067,16 @@ let nn_unpin : Nat = 474215378549   -- "unpin" LE-packed (lowercase u)
 let nn_reflect : Nat = 32760384559932786
 let nn_force  : Nat = 435460140902
 
+-- Core.IO.Prim primitives.  Currently just `write_op`, an opcode pin
+-- inherited from the legacy planvm path (Reaver has no `op 9`; this
+-- compiles cleanly but won't actually run under Reaver — see the note
+-- in bootstrap/codegen.py::_CORE_IO_PRIMITIVES).  Compiler.gls
+-- references `write_op` from `_write_op_call` on L7302; without an
+-- entry here the self-host emits the opaque-sentinel fallback,
+-- diverging from Python's `P(N(9))`.
+let nn_Core_IO_Prim : Nat = 33861343110441687903187922755          -- "Core.IO.Prim" LE
+let nn_write_op   : Nat   = 8101799144012214903                     -- "write_op" LE
+
 -- BPLAN named-primitive name nats (the "Name" string in (P("B")) ("Name" args)).
 -- Per vendor/reaver/src/hs/Plan.hs op 66 cases.
 -- Computed via int.from_bytes(s.encode('utf-8'), 'little') in Python.
@@ -6058,15 +6143,18 @@ let cg_core_plan_bplan_prims : List (Pair Nat (Pair Nat Nat))
     (Cons (MkPair (name_concat_dot nn_Reaver_BPLAN nn_lsh) (MkPair nn_bplan_Lsh   2))
     (Cons (MkPair (name_concat_dot nn_Reaver_BPLAN nn_rsh) (MkPair nn_bplan_Rsh   2))
     (Cons (MkPair (name_concat_dot nn_Reaver_BPLAN nn_seq) (MkPair nn_bplan_Seq   2))
-    -- Reaver.RPLAN entries — same pin shape, different gateway opcode.
-    -- The gateway is the "R" pin (op 82); for the self-hosted compiler
-    -- we still register them in cg_core_plan_bplan_prims since the
-    -- runtime distinction is at the gateway, not the prim-table key.
-    -- (If/when the GLS compiler grows a separate RPLAN dispatch path,
-    -- this entry moves there.)
-    (Cons (MkPair (name_concat_dot nn_Reaver_RPLAN nn_input)  (MkPair nn_rplan_Input  1))
+    Nil))))))))))))))
+
+-- cg_reaver_rplan_prims: Reaver.RPLAN.* named ops.  Same pin shape as
+-- the BPLAN table but the runtime gateway is op 82 (`R`), not 66 (`B`).
+-- Mirrors bootstrap/codegen.py::_REAVER_RPLAN_PRIMS.  Compiler.gls
+-- references `Reaver.RPLAN.input` / `.output` from `main_reaver`; the
+-- compile-self gate's divergence at byte 4640 was an `(#pin 66)`
+-- instead of `(#pin 82)` for these items.
+let cg_reaver_rplan_prims : List (Pair Nat (Pair Nat Nat))
+  = Cons (MkPair (name_concat_dot nn_Reaver_RPLAN nn_input)  (MkPair nn_rplan_Input  1))
     (Cons (MkPair (name_concat_dot nn_Reaver_RPLAN nn_output) (MkPair nn_rplan_Output 1))
-    Nil))))))))))))))))
+    Nil)
 
 -- Builtin name nats
 let nn_False : Nat = 435728179526
@@ -6170,31 +6258,61 @@ let cg_bapp_slots_go : PlanVal → Nat → Nat → PlanVal
         | _ → cg_bapp_slots_go (cg_bapp acc (PNat cur)) (Core.PLAN.inc cur) max
       }
 
--- cg_make_bplan_prim: build the Pin'd Law for a BPLAN named primitive.
--- Mirrors `vendor/reaver/src/plan/boot.plan`'s `bplan` macro expansion:
---     (#pin (#law "Name" (Name a1 ... aN) ((#pin "B") ("Name" a1 ... aN))))
--- In our PlanVal:
---     PPin (PLaw bplan_name (MkPair arity body))
--- where body = bapp(B_pin, bapp(quoted_name, slot_1, ..., slot_arity)).
-let cg_make_bplan_prim : Nat → Nat → PlanVal
-  = λ bplan_name prim_arity →
-      let b_pin = PPin (PNat nn_bplan_B) in
-      let quoted_name = PApp (PNat 0) (PNat bplan_name) in
+-- cg_make_gateway_prim: build the Pin'd Law for a named primitive with
+-- a specific gateway opcode.  Mirrors `vendor/reaver/src/plan/boot.plan`'s
+-- `bplan` and `rplan` macro expansions:
+--     (#pin (#law "Name" (Name a1 ... aN) ((#pin gateway) ("Name" a1 ... aN))))
+-- gateway = 66 ('B') for BPLAN, 82 ('R') for RPLAN.  Mirrors Python's
+-- _make_bplan_prim which takes a `gateway_pin` kwarg.
+let cg_make_gateway_prim : Nat → Nat → Nat → PlanVal
+  = λ gateway_op prim_name prim_arity →
+      let gw_pin = PPin (PNat gateway_op) in
+      let quoted_name = PApp (PNat 0) (PNat prim_name) in
       let inner = cg_bapp_slots_go quoted_name 1 prim_arity in
-      let body = cg_bapp b_pin inner in
-      PPin (PLaw bplan_name (MkPair prim_arity body))
+      let body = cg_bapp gw_pin inner in
+      PPin (PLaw prim_name (MkPair prim_arity body))
+
+-- cg_make_bplan_prim: gateway 66 ('B') wrapper.  Kept as a named alias so
+-- existing call sites stay readable.
+let cg_make_bplan_prim : Nat → Nat → PlanVal
+  = λ bplan_name prim_arity → cg_make_gateway_prim nn_bplan_B bplan_name prim_arity
+
+-- cg_make_rplan_prim: gateway 82 ('R') wrapper for Reaver.RPLAN.* items.
+let cg_make_rplan_prim : Nat → Nat → PlanVal
+  = λ rplan_name prim_arity → cg_make_gateway_prim 82 rplan_name prim_arity
 
 -- cg_register_ext_item: register one external item.
--- For known Core.PLAN.* primitives, build a BPLAN-shaped Pin'd Law.
--- For other externals, fall back to an opaque sentinel pin of the name nat.
+-- Lookup order, mirroring bootstrap/codegen.py::_register_ext:
+--   1. Core.PLAN.* / Reaver.BPLAN.* primitives in
+--      `cg_core_plan_bplan_prims` → Pin'd Law via BPLAN gateway (op 66).
+--   2. Reaver.RPLAN.* primitives in `cg_reaver_rplan_prims` → Pin'd
+--      Law via RPLAN gateway (op 82).
+--   3. Core.IO.Prim.write_op → P(N(9)), the legacy planvm WriteOp
+--      opcode pin (Python mirrors this in `_CORE_IO_PRIMITIVES`).
+--      The opcode is not actually dispatched by Reaver; it compiles
+--      cleanly but won't run.  We emit it for byte-identity with
+--      Python's reference output.
+--   4. Anything else → opaque sentinel pin of the name nat.
 let cg_register_ext_item : Nat → CEnv → List (Pair Nat PlanVal) → Pair CEnv (List (Pair Nat PlanVal))
   = λ fq_name env compiled →
+      let nn_write_op_fq = name_concat_dot nn_Core_IO_Prim nn_write_op in
       let val = match (assoc_lookup fq_name cg_core_plan_bplan_prims) {
                   | Some pair → match pair {
                       | MkPair bplan_name prim_arity →
                           cg_make_bplan_prim bplan_name prim_arity
                     }
-                  | None → PPin (PNat fq_name)
+                  | None →
+                      match (assoc_lookup fq_name cg_reaver_rplan_prims) {
+                        | Some pair → match pair {
+                            | MkPair rplan_name prim_arity →
+                                cg_make_rplan_prim rplan_name prim_arity
+                          }
+                        | None →
+                            match (Reaver.BPLAN.eq fq_name nn_write_op_fq) {
+                              | 0 → PPin (PNat fq_name)
+                              | _ → PPin (PNat 9)
+                            }
+                      }
                 } in
       MkPair (cenv_bind_global env fq_name val) (Cons (MkPair fq_name val) compiled)
 
@@ -6229,15 +6347,24 @@ let cg_pass2 : List Decl → Nat → CEnv → List (Pair Nat PlanVal) → Pair C
             }
       }
 
--- cg_compile_let_one: compile one DLet declaration
+-- cg_compile_let_one: compile one DLet declaration.
+-- Sentinel name=0 is reserved for parser-emitted no-op DLets (e.g. the
+-- placeholder for `type Foo = Bar` alias declarations — see
+-- parse_type_decl_body L2797).  Python's bootstrap simply ignores
+-- DeclTypeAlias at codegen time; the self-host matches by skipping the
+-- sentinel here instead of emitting a stray `(#bind Compiler_ 0)`.
 let cg_compile_let_one : Nat → Expr → Nat → CEnv → List (Pair Nat (Pair Nat Nat)) → List (Pair Nat PlanVal)
                         → Pair CEnv (List (Pair Nat PlanVal))
   = λ name body mod_name env ctab compiled →
-      let fq_name = name_concat_dot mod_name name in
-      let fq_env = cenv_set_self (cenv_set_arity env 0) (Some fq_name) in
-      let val = cg_compile_expr body fq_env ctab name in
-      let new_env = cenv_bind_global env fq_name val in
-      MkPair new_env (Cons (MkPair fq_name val) compiled)
+      match (Reaver.BPLAN.eq name 0) {
+        | 0 →
+            let fq_name = name_concat_dot mod_name name in
+            let fq_env = cenv_set_self (cenv_set_arity env 0) (Some fq_name) in
+            let val = cg_compile_expr body fq_env ctab name in
+            let new_env = cenv_bind_global env fq_name val in
+            MkPair new_env (Cons (MkPair fq_name val) compiled)
+        | _ → MkPair env compiled
+      }
 
 -- cg_compile_inst_members: compile each method body in a DInst
 let cg_compile_inst_members
