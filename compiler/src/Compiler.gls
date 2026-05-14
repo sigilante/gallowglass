@@ -5887,6 +5887,7 @@ let nn_Core_PLAN : Nat = 1443551261620241067843
 let nn_pin   : Nat = 7235952
 let nn_mk_law : Nat = 131260313725805
 let nn_inc   : Nat = 6516329
+let nn_unpin : Nat = 474215378549   -- "unpin" LE-packed (lowercase u)
 let nn_reflect : Nat = 32760384559932786
 let nn_force  : Nat = 435460140902
 
@@ -5897,6 +5898,7 @@ let nn_bplan_B    : Nat = 66
 let nn_bplan_Pin  : Nat = 7235920
 let nn_bplan_Law  : Nat = 7823692
 let nn_bplan_Inc  : Nat = 6516297
+let nn_bplan_Unpin : Nat = 474215378517   -- "Unpin" LE-packed (uppercase U)
 let nn_bplan_Elim : Nat = 1835625541
 let nn_bplan_Force : Nat = 435460140870
 let nn_bplan_Add  : Nat = 6579265
@@ -5942,6 +5944,7 @@ let cg_core_plan_bplan_prims : List (Pair Nat (Pair Nat Nat))
   = Cons (MkPair (name_concat_dot nn_Core_PLAN nn_pin)     (MkPair nn_bplan_Pin   1))
     (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_mk_law) (MkPair nn_bplan_Law   3))
     (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_inc)    (MkPair nn_bplan_Inc   1))
+    (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_unpin)  (MkPair nn_bplan_Unpin 1))
     (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_reflect)(MkPair nn_bplan_Elim  6))
     (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_force)  (MkPair nn_bplan_Force 1))
     -- Reaver.BPLAN entries
@@ -5962,7 +5965,7 @@ let cg_core_plan_bplan_prims : List (Pair Nat (Pair Nat Nat))
     -- this entry moves there.)
     (Cons (MkPair (name_concat_dot nn_Reaver_RPLAN nn_input)  (MkPair nn_rplan_Input  1))
     (Cons (MkPair (name_concat_dot nn_Reaver_RPLAN nn_output) (MkPair nn_rplan_Output 1))
-    Nil)))))))))))))))
+    Nil))))))))))))))))
 
 -- Builtin name nats
 let nn_False : Nat = 435728179526
