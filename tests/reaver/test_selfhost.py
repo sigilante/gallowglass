@@ -702,6 +702,46 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
+    def test_single_unary_arm_with_wildcard(self):
+        """``match m { | Some x → x | _ → d }`` — single unary field arm
+        plus wildcard, where the wildcard body (``d``) references an outer
+        lambda parameter.
+
+        Pins two coupled fixes in the App-handler path:
+
+        * ``cg_build_app_handler`` now includes ``wild_body`` in the
+          free-variable union before intersecting with ``env.locals``.
+          Mirrors Python's ``_build_field_arm_law`` which gathers names
+          from field bodies AND wild_body so outer captures referenced
+          only by the wild (``d`` here) get lifted as a handler-law
+          parameter.  Without this, the wild's reference to ``d`` became
+          an unbound slot inside the lifted handler law's frame.
+
+        * ``cg_build_unary_handler_body`` (single-arm path) now wraps the
+          arm body in a reflect-dispatch tag-check when a wildcard is
+          present, so non-matching constructors (including the Nat-shaped
+          nullary case for tag 0) return the wild value instead of
+          running the arm body on a mistyped scrutinee.  Mirrors
+          Python's ``_build_field_arm_law`` L2664-2710 (``info.tag == 0``
+          and ``info.tag > 0`` branches both implemented).
+
+        * ``cg_build_precompiled_nat_dispatch``'s base case (single
+          pair, tag0=0, wild=Some) now inlines ``bapp(const2,
+          wild_compiled_in_env)`` instead of lifting via
+          ``cg_make_wild_succ``.  Mirrors Python's ``_build_tag_chain``
+          L2999-3005 — DO NOT regress this back to a ``_wild_succ`` law,
+          since Python doesn't lift here and lifting flips byte-identity.
+          The ``wild=None`` branch still uses ``cg_make_wild_succ`` to
+          produce ``bapp(const2, Nat 0)``, also matching Python.
+        """
+        src = (
+            'type Maybe a = | None | Some a\n'
+            'let unwrap_or : Maybe Nat → Nat → Nat\n'
+            '  = λ m d → match m { | Some x → x | _ → d }\n'
+            'let main = unwrap_or (Some 42) 99\n'
+        )
+        self._assert_byte_identical(src)
+
     @unittest.expectedFailure
     def test_same_constructor_literal_field_collapses(self):
         """`match (MkPair 0 99) { | MkPair 0 _ -> 1 | MkPair n _ -> 2 }` —

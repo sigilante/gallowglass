@@ -4758,16 +4758,58 @@ let cg_build_precompiled_nat_dispatch : List (Pair Nat PlanVal) → Option (Pair
                         -- tag0>0: build succ chain so zero_val fires at pred=tag0.
                         match (nat_eq tag0 0) {
                           | 0 →
-                              -- tag0 > 0: shift by 1 and recurse to build succ chain
+                              -- tag0 > 0: shift by 1 and recurse to build succ
+                              -- chain.  When wild = Some, the outer z must be
+                              -- the compiled wild_body (in env), NOT Nat 0 —
+                              -- mirrors Python `_build_tag_chain` L2986
+                              -- (`z_val = wild_val if wild_val is not None
+                              -- else body_nat(0, env.arity)`).  Without this,
+                              -- a match like `match t { | TkIdent n → ... | _
+                              -- → MkPair 0 toks }` (TkIdent.tag=2) compiles
+                              -- the outer z to literal Nat 0 instead of
+                              -- `MkPair 0 toks`, which surfaces in
+                              -- `tok_eat_ident` of the compile-self gate.
                               let shifted = Cons (MkPair (sub tag0 1) zero_val) Nil in
                               let inner = cg_build_precompiled_nat_dispatch shifted wild (PNat pred_idx) pred_env ce ctab hint in
                               let succ_law = PPin (PLaw 0 (MkPair pred_idx inner)) in
                               let succ = cg_apply_params succ_law 1 n_cap in
-                              let fallback = cg_quote_nat 0 n_cap in
-                              cg_build_op2 fallback succ scr n_cap
+                              let z_val = match wild {
+                                            | None → cg_quote_nat 0 n_cap
+                                            | Some wpair →
+                                                match wpair {
+                                                  | MkPair _ wb →
+                                                      let nn_wild = 1684826487 in
+                                                      let wh = cg_concat_under hint nn_wild in
+                                                      ce wb env ctab wh
+                                                }
+                                          } in
+                              cg_build_op2 z_val succ scr n_cap
                           | _ →
-                              -- tag0 = 0: standard z dispatch
-                              let succ = cg_make_wild_succ wild env ce ctab hint in
+                              -- tag0 = 0: standard z dispatch.  When wild is
+                              -- Some, inline `bapp(const2, wild_compiled_in_env)`
+                              -- to mirror Python's `_build_tag_chain` base
+                              -- case (L2999–3005) — DO NOT lambda-lift wild
+                              -- into a separate `_wild_succ` law here, since
+                              -- Python doesn't, and lifting changes the
+                              -- emitted PLAN bytes for byte-identity.
+                              -- When wild is None, fall back to
+                              -- `cg_make_wild_succ` which produces
+                              -- `bapp(const2, Nat 0)`, matching Python.
+                              let succ = match wild {
+                                           | None → cg_make_wild_succ wild env ce ctab hint
+                                           | Some wpair →
+                                               match wpair {
+                                                 | MkPair _ wb →
+                                                     let nn_wild = 1684826487 in
+                                                     let wh = cg_concat_under hint nn_wild in
+                                                     let wv = ce wb env ctab wh in
+                                                     let const2_pin = PPin const2_law in
+                                                     match (nat_eq n_cap 0) {
+                                                       | 0 → cg_bapp const2_pin wv
+                                                       | _ → PApp const2_pin wv
+                                                     }
+                                               }
+                                         } in
                               cg_build_op2 zero_val succ scr n_cap
                         }
                     | Cons _ _ →
@@ -4783,7 +4825,26 @@ let cg_build_precompiled_nat_dispatch : List (Pair Nat PlanVal) → Option (Pair
                         let inner = cg_build_precompiled_nat_dispatch normalized wild (PNat pred_idx) pred_env ce ctab hint in
                         let succ_law = PPin (PLaw 0 (MkPair pred_idx inner)) in
                         let succ = cg_apply_params succ_law 1 n_cap in
-                        let z_val = cg_pcd_z_for_op2 tag0 zero_val n_cap in
+                        -- When tag0 > 0 AND wild is Some, the outer z is the
+                        -- compiled wild_body in env (Python: `wild_val` from
+                        -- `_get_wild_val(env)` in `_build_tag_chain`'s
+                        -- `first_tag > 0` branch).  When wild is None, fall
+                        -- back to the original `cg_pcd_z_for_op2` behaviour
+                        -- (Nat 0 fallback or pair0's value when tag0==0).
+                        let z_val = match (nat_eq tag0 0) {
+                                      | 0 →
+                                          match wild {
+                                            | None → cg_quote_nat 0 n_cap
+                                            | Some wpair →
+                                                match wpair {
+                                                  | MkPair _ wb →
+                                                      let nn_wild = 1684826487 in
+                                                      let wh = cg_concat_under hint nn_wild in
+                                                      ce wb env ctab wh
+                                                }
+                                          }
+                                      | _ → zero_val
+                                    } in
                         cg_build_op2 z_val succ scr n_cap
                   }
             }
@@ -4981,16 +5042,72 @@ let cg_build_unary_handler_body : List MatchArm → Option (Pair (Option Nat) Ex
         | Cons arm0 rest_arms →
             match rest_arms {
               | Nil →
-                  -- Single arm: bind field to arg_idx
+                  -- Single arm: bind field to arg_idx, compile body, and
+                  -- if a wild arm is present, wrap the body in a tag-check
+                  -- reflect dispatch so non-matching constructors return
+                  -- the wild value instead of running the arm body.
+                  -- Mirrors Python's _build_field_arm_law L2664–2710.
+                  -- Without the tag-check, `match m { | Some x → x | _ → d }`
+                  -- would return the field for ANY 2-arg App scrutinee,
+                  -- not just Some (the classic "wildcard arm drop" bug).
                   let fields = arm_get_con_fields arm0 in
                   let ae = match fields {
                              | Nil → henv
                              | Cons fname _ → cenv_bind_local henv fname arg_idx
                            } in
-                  -- Thread `_<ConName>` into the arm-body's hint (see
-                  -- cg_build_binary_handler_body for full rationale).
                   let arm_hint = cg_concat_under hint (arm_get_con_name arm0) in
-                  ce (arm_get_con_body arm0) ae ctab arm_hint
+                  let arm_body_val = ce (arm_get_con_body arm0) ae ctab arm_hint in
+                  match wild {
+                    | None → arm_body_val
+                    | Some wpair →
+                        match wpair {
+                          | MkPair _ wild_body →
+                              let wild_hint = cg_concat_under hint 1684826487 in
+                              let wild_compiled = ce wild_body henv ctab wild_hint in
+                              let const2_pin = PPin const2_law in
+                              let n_cap = cenv_arity henv in
+                              let const_wild = match (nat_eq n_cap 0) {
+                                    | 0 → cg_bapp const2_pin wild_compiled
+                                    | _ → PApp const2_pin wild_compiled
+                                  } in
+                              let const2_wild = match (nat_eq n_cap 0) {
+                                    | 0 → cg_bapp const2_pin const_wild
+                                    | _ → PApp const2_pin const_wild
+                                  } in
+                              let con_tag = match (cg_contab_lookup_safe ctab (arm_get_con_name arm0)) {
+                                              | None → 0
+                                              | Some p → contab_tag p
+                                            } in
+                              match (nat_eq con_tag 0) {
+                                | 0 →
+                                    -- con_tag > 0: build succ chain so the
+                                    -- arm fires when pred = con_tag - 1.
+                                    -- Hint for the inner dispatch is
+                                    -- `<hint>_tag_m`, mirroring Python's
+                                    -- `_build_field_arm_law` L2700 (`f'{name_hint}_tag_m'`).
+                                    -- NOT `arm_hint` (`<hint>_<ConName>`) —
+                                    -- that's the arm body's hint, not the
+                                    -- dispatch's.  Without this rename, the
+                                    -- inner wild's lifted laws get names like
+                                    -- `parse_qual_name_go_Cons_wild_pred_Cons_TkIdent_wild_app`
+                                    -- instead of `..._tag_m_wild_app`.
+                                    let nn_tag_m = 469752045940 in  -- "tag_m" LE
+                                    let m_hint = cg_concat_under hint nn_tag_m in
+                                    let pred_idx = add n_cap 1 in
+                                    let m_ext_env = cenv_set_arity henv pred_idx in
+                                    let shifted_pair = MkPair (sub con_tag 1) arm_body_val in
+                                    let m_inner = cg_build_precompiled_nat_dispatch
+                                                    (Cons shifted_pair Nil)
+                                                    wild (PNat pred_idx) m_ext_env ce ctab m_hint in
+                                    let m_succ_law = PPin (PLaw 0 (MkPair pred_idx m_inner)) in
+                                    let m_body_val = cg_apply_params m_succ_law 1 n_cap in
+                                    cg_build_reflect_dispatch const2_wild wild_compiled m_body_val (PNat fun_idx) n_cap
+                                | _ →
+                                    -- con_tag == 0: arm fires for Nat 0; m is const_wild.
+                                    cg_build_reflect_dispatch const2_wild arm_body_val const_wild (PNat fun_idx) n_cap
+                              }
+                        }
+                  }
               | Cons _ _ →
                   -- Multiple arms: compile each body, dispatch on fun (tag)
                   let tag_val_pairs = map (λ arm →
@@ -5234,7 +5351,22 @@ let cg_build_app_handler : List MatchArm → Option (Pair (Option Nat) Expr) →
                           → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
                           → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
   = λ field_arms wild env ce ctab hint →
-      let all_bodies = map arm_get_con_body field_arms in
+      let field_bodies = map arm_get_con_body field_arms in
+      -- Include wild_body in free-var analysis so its outer-captures
+      -- (e.g. `d` in `match m { | Some x → x | _ → d }`) get lifted
+      -- through the app-handler.  Mirrors Python's `_build_field_arm_law`
+      -- which collects names from field bodies AND wild_body before
+      -- intersecting with env.locals.  Without this, the wild's
+      -- references to outer-lambda params become unbound slots when the
+      -- single-unary-arm tag-check (cg_build_unary_handler_body) compiles
+      -- wild_body inside the app-handler's frame.
+      let all_bodies = match wild {
+                         | None → field_bodies
+                         | Some wpair →
+                             match wpair {
+                               | MkPair _ wb → append field_bodies (Cons wb Nil)
+                             }
+                       } in
       let field_names = cg_all_field_names field_arms in
       let free_locals = cg_free_vars_bodies all_bodies field_names env in
       let uses_self = cg_bodies_use_self all_bodies env in
