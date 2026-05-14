@@ -4514,7 +4514,70 @@ let cg_normalize_pv_tags : List (Pair Nat PlanVal) → Nat → List (Pair Nat Pl
             }
       }
 
+-- cg_contab_lookup_by_short: scan ctab for the first entry whose key's
+-- short tail (after the last '.') matches `short_name`.  Used as a safety
+-- net for bare constructor names in match arms that sr_dispatch failed to
+-- qualify — mirrors `cg_global_lookup_by_short` for the constructor table.
+let cg_contab_lookup_by_short : Nat → List (Pair Nat (Pair Nat Nat))
+                              → Option (Pair Nat Nat)
+  = λ short_name tab →
+      match tab {
+        | Nil → None
+        | Cons kv rest →
+            match kv {
+              | MkPair k v →
+                  let k_short = cg_short_after_dot k in
+                  match (Reaver.BPLAN.eq k_short short_name) {
+                    | 0 → cg_contab_lookup_by_short short_name rest
+                    | _ → Some v
+                  }
+            }
+      }
+
+-- cg_contab_lookup_safe: contab_lookup with a short-tail fallback.  When
+-- direct lookup fails (sr_dispatch didn't qualify the constructor name),
+-- search the ctab for an FQ ending in `.<bare>`.
+let cg_contab_lookup_safe : List (Pair Nat (Pair Nat Nat)) → Nat
+                           → Option (Pair Nat Nat)
+  = λ tab name →
+      match (assoc_lookup name tab) {
+        | Some p → Some p
+        | None → cg_contab_lookup_by_short name tab
+      }
+
+-- cg_pcd_pairs_for_inner: top-level helper.  When `tag0 > 0`, no arm
+-- matches Nat 0 — shift ALL tags down by 1 to feed the succ-chain.  When
+-- `tag0 == 0`, pair0 is the z arm and we shift only `rest` (subtracting
+-- tag0+1 from each `rest` tag).  Extracted as a top-level helper so the
+-- `match` doesn't get lifted into a deep sub-law of cg_build_precompiled_nat_dispatch
+-- (where outer-local captures aren't reliably reachable).
+let cg_pcd_pairs_for_inner : List (Pair Nat PlanVal) → List (Pair Nat PlanVal) → Nat
+                           → List (Pair Nat PlanVal)
+  = λ tag_val_pairs rest tag0 →
+      match (Reaver.BPLAN.eq tag0 0) {
+        | 0 → cg_normalize_pv_tags tag_val_pairs 0
+        | _ → cg_normalize_pv_tags rest tag0
+      }
+
+-- cg_pcd_z_for_op2: top-level helper.  z arm of the outer Elim is the
+-- fallback (cg_quote_nat 0 n_cap) when tag0 > 0 — no arm matches Nat 0
+-- — and pair0's pre-compiled value otherwise.  See `cg_pcd_pairs_for_inner`
+-- for the extraction rationale.
+let cg_pcd_z_for_op2 : Nat → PlanVal → Nat → PlanVal
+  = λ tag0 zero_val n_cap →
+      match (Reaver.BPLAN.eq tag0 0) {
+        | 0 → cg_quote_nat 0 n_cap
+        | _ → zero_val
+      }
+
 -- cg_build_precompiled_nat_dispatch: dispatch on already-compiled (tag, PlanVal) pairs
+--
+-- Each succ law in the chain has arity = `n_cap + 1` (the caller env's
+-- captures plus one pred slot) so that pre-compiled arm bodies — which
+-- reference `env`'s de Bruijn slots — remain reachable inside the succ
+-- law's frame.  The succ law is partially applied to `N(1)..N(n_cap)` at
+-- the dispatch site so it expects only the pred from Case_.  Mirrors
+-- Python's `_build_tag_chain` (`make_ext_env` + `partially_apply`).
 let cg_build_precompiled_nat_dispatch : List (Pair Nat PlanVal) → Option (Pair (Option Nat) Expr)
                                        → PlanVal → CEnv
                                        → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
@@ -4529,8 +4592,9 @@ let cg_build_precompiled_nat_dispatch : List (Pair Nat PlanVal) → Option (Pair
         | Cons pair0 rest →
             match pair0 {
               | MkPair tag0 zero_val →
-                  let g = cenv_globals env in
-                  let pred_env = cenv_make g Nil 1 None in
+                  let n_cap = cenv_arity env in
+                  let pred_idx = add n_cap 1 in
+                  let pred_env = cenv_set_arity env pred_idx in
                   match rest {
                     | Nil →
                         -- Single entry. tag0=0: standard z dispatch.
@@ -4539,20 +4603,31 @@ let cg_build_precompiled_nat_dispatch : List (Pair Nat PlanVal) → Option (Pair
                           | 0 →
                               -- tag0 > 0: shift by 1 and recurse to build succ chain
                               let shifted = Cons (MkPair (sub tag0 1) zero_val) Nil in
-                              let inner = cg_build_precompiled_nat_dispatch shifted wild (PNat 1) pred_env ce ctab hint in
-                              let succ = PPin (PLaw 0 (MkPair 1 inner)) in
-                              let fallback = cg_quote_nat 0 (cenv_arity env) in
-                              cg_build_op2 fallback succ scr (cenv_arity env)
+                              let inner = cg_build_precompiled_nat_dispatch shifted wild (PNat pred_idx) pred_env ce ctab hint in
+                              let succ_law = PPin (PLaw 0 (MkPair pred_idx inner)) in
+                              let succ = cg_apply_params succ_law 1 n_cap in
+                              let fallback = cg_quote_nat 0 n_cap in
+                              cg_build_op2 fallback succ scr n_cap
                           | _ →
                               -- tag0 = 0: standard z dispatch
                               let succ = cg_make_wild_succ wild env ce ctab hint in
-                              cg_build_op2 zero_val succ scr (cenv_arity env)
+                              cg_build_op2 zero_val succ scr n_cap
                         }
                     | Cons _ _ →
-                        let normalized = cg_normalize_pv_tags rest tag0 in
-                        let inner = cg_build_precompiled_nat_dispatch normalized wild (PNat 1) pred_env ce ctab hint in
-                        let succ = PPin (PLaw 0 (MkPair 1 inner)) in
-                        cg_build_op2 zero_val succ scr (cenv_arity env)
+                        -- When tag0 > 0, no arm matches Nat 0: shift ALL tags
+                        -- by 1 and use fallback as z.  When tag0 == 0, pair0
+                        -- is the z arm and we shift only `rest`.  Mirrors
+                        -- Python `_build_tag_chain`'s `first_tag > 0` branch.
+                        -- The two helpers `cg_pcd_pairs_for_inner` and
+                        -- `cg_pcd_z_for_op2` keep this conditional at top
+                        -- level so the bootstrap doesn't lift it into a deep
+                        -- sub-law where captures don't reach.
+                        let normalized = cg_pcd_pairs_for_inner tag_val_pairs rest tag0 in
+                        let inner = cg_build_precompiled_nat_dispatch normalized wild (PNat pred_idx) pred_env ce ctab hint in
+                        let succ_law = PPin (PLaw 0 (MkPair pred_idx inner)) in
+                        let succ = cg_apply_params succ_law 1 n_cap in
+                        let z_val = cg_pcd_z_for_op2 tag0 zero_val n_cap in
+                        cg_build_op2 z_val succ scr n_cap
                   }
             }
       }
@@ -4606,7 +4681,7 @@ let cg_arms_to_tag_expr : List MatchArm → List (Pair Nat (Pair Nat Nat)) → L
   = λ arms ctab →
       map (λ arm →
              let con_name = arm_get_con_name arm in
-             let tag = match (contab_lookup ctab con_name) {
+             let tag = match (cg_contab_lookup_safe ctab con_name) {
                          | None → 0
                          | Some p → contab_tag p
                        } in
@@ -4682,7 +4757,7 @@ let cg_arm_find_by_tag : List MatchArm → Nat → List (Pair Nat (Pair Nat Nat)
             -- Return sentinel arm with empty body
             ArmCon 0 (MkPair Nil (EVar 0))
         | Cons arm rest →
-            let con_tag = match (contab_lookup ctab (arm_get_con_name arm)) {
+            let con_tag = match (cg_contab_lookup_safe ctab (arm_get_con_name arm)) {
                             | None → 0
                             | Some p → contab_tag p
                           } in
@@ -4720,7 +4795,7 @@ let cg_build_unary_handler_body : List MatchArm → Option (Pair (Option Nat) Ex
                                                        | Nil → henv
                                                        | Cons fname _ → cenv_bind_local henv fname arg_idx
                                                      } in
-                                            let tag = match (contab_lookup ctab (arm_get_con_name arm)) {
+                                            let tag = match (cg_contab_lookup_safe ctab (arm_get_con_name arm)) {
                                                         | None → 0
                                                         | Some p → contab_tag p
                                                       } in
@@ -4742,7 +4817,7 @@ let cg_build_unary_z_body : List MatchArm → CEnv → Nat
       let tag0_arms = filter (λ arm →
                                 match (nat_eq (cg_arm_con_arity arm) 1) {
                                   | 0 → 0
-                                  | _ → match (contab_lookup ctab (arm_get_con_name arm)) {
+                                  | _ → match (cg_contab_lookup_safe ctab (arm_get_con_name arm)) {
                                           | None → 0
                                           | Some p → nat_eq (contab_tag p) 0
                                         }
@@ -4770,7 +4845,7 @@ let cg_build_unary_m_body : List MatchArm → Option (Pair (Option Nat) Expr) �
       let unary_gt0 = filter (λ arm →
                                 match (nat_eq (cg_arm_con_arity arm) 1) {
                                   | 0 → 0
-                                  | _ → match (contab_lookup ctab (arm_get_con_name arm)) {
+                                  | _ → match (cg_contab_lookup_safe ctab (arm_get_con_name arm)) {
                                           | None → 0
                                           | Some p →
                                               match (nat_eq (contab_tag p) 0) {
@@ -4810,7 +4885,7 @@ let cg_build_unary_m_body : List MatchArm → Option (Pair (Option Nat) Expr) �
                            | Nil → m_ext_env
                            | Cons f _ → cenv_bind_local m_ext_env f arg_idx
                          } in
-                let tag = match (contab_lookup ctab (arm_get_con_name arm)) {
+                let tag = match (cg_contab_lookup_safe ctab (arm_get_con_name arm)) {
                             | None → 0
                             | Some p → contab_tag p
                           } in
@@ -4879,7 +4954,7 @@ let cg_build_binary_handler_body : List MatchArm → Option (Pair (Option Nat) E
                                                         | Cons f2 _ → cenv_bind_local ae1 f2 field2_idx
                                                       }
                                                 } in
-                                       let tag = match (contab_lookup ctab (arm_get_con_name arm)) {
+                                       let tag = match (cg_contab_lookup_safe ctab (arm_get_con_name arm)) {
                                                    | None → 0
                                                    | Some p → contab_tag p
                                                  } in

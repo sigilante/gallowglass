@@ -586,6 +586,43 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
+    def test_match_adt_multi_arm_unary_mixed(self):
+        """``type Shape = | Empty | Circle Nat | Square Nat; let area = ...``
+        — match with one nullary arm + multiple unary arms.
+
+        Pins two coupled fixes for the multi-arm unary-mixed path:
+
+        * ``cg_build_precompiled_nat_dispatch`` now creates its `pred_env`
+          by bumping the caller env's arity (preserving locals), so
+          pre-compiled arm bodies' slot refs survive into the inner
+          succ-law's frame.  Mirrors Python's `_build_tag_chain`'s
+          `make_ext_env` + `partially_apply` — without this, the inner
+          succ-law had arity 1 instead of `n_cap + 1` and outer locals
+          were unreachable.
+
+        * When `tag0 > 0` (no field arm matches Nat 0 — true when a
+          nullary constructor precedes unary in the type), the outer
+          Elim's z arm is now a fallback (`cg_quote_nat 0 n_cap`) and
+          ALL tags shift down by 1.  Mirrors Python's `_build_tag_chain`
+          `first_tag > 0` branch.  Implemented via top-level helpers
+          `cg_pcd_z_for_op2` and `cg_pcd_pairs_for_inner` to keep the
+          conditional at top-of-law (avoids let-lifting into deep
+          sub-laws).
+
+        * Also pins ``cg_contab_lookup_safe`` — the constructor name
+          lookup falls back to a short-tail search (parallel to the
+          globals-by-short fallback) when sr_dispatch failed to qualify
+          the bare constructor name in the match arm.  Without this,
+          ``contab_lookup ctab "Circle"`` returns None (only finds FQ
+          ``Compiler.Circle``), defaults the tag to 0, and the dispatch
+          structure collapses.
+        """
+        src = (
+            'type Shape = | Empty | Circle Nat | Square Nat\n'
+            'let area = λ s → match s { | Empty → 0 | Circle r → r | Square w → w }\n'
+        )
+        self._assert_byte_identical(src)
+
     @unittest.expectedFailure
     def test_same_constructor_literal_field_collapses(self):
         """`match (MkPair 0 99) { | MkPair 0 _ -> 1 | MkPair n _ -> 2 }` —

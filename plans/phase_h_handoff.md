@@ -33,8 +33,8 @@ b27061b fix(self-host): four match-on-nat fixes — pinned by two new fixtures
 - `tests/bootstrap/` — 832 passed, 4 skipped, 2 xfailed (pre-existing).
 - `tests/compiler/` — 227 passed, 3 skipped.
 - `tests/prelude/` — 167 passed.
-- `tests/reaver/` — 50 passed, 1 xfailed. Includes 18 selfhost
-  fixtures (16 byte-identical + 2 smoke).
+- `tests/reaver/` — 51 passed, 1 xfailed. Includes 19 selfhost
+  fixtures (17 byte-identical + 2 smoke).
 
 ### Byte-identity fixtures (`tests/reaver/test_selfhost.py`)
 
@@ -55,7 +55,8 @@ The 13 G3 byte-identical fixtures, in order of when they landed:
 13. `test_match_adt_nullary_multi_arm` — `Color = Red | Green | Blue`
 14. `test_match_adt_multi_field` — `IntList = INil | ICons Nat IntList`
 15. `test_self_recursion_in_match_wildcard` — `count_down = λ n → match n { | 0 → 0 | _ → count_down (sub n 1) }`
-16. **`test_cross_binding_bare_ref_in_match_wildcard`** — same shape with `helper` cross-binding ref instead of self-recursion  *(new)*
+16. `test_cross_binding_bare_ref_in_match_wildcard` — same shape with `helper` cross-binding ref instead of self-recursion
+17. **`test_match_adt_multi_arm_unary_mixed`** — `Shape = Empty | Circle Nat | Square Nat` (nullary + multi-arm unary)  *(new)*
 
 Plus `test_same_constructor_literal_field_collapses` (xfail, pre-existing).
 
@@ -118,15 +119,34 @@ wins.  Python's resolver wouldn't tolerate that — it would error or
 pick by scope.  For the cases hit by Compiler.gls today there's no
 ambiguity, but a stricter check would be nice.
 
-### Multi-arm unary-mixed (`/tmp/adt_multi_arm.gls`) — still diverges
+### Multi-arm unary-mixed case landed (2026-05-13)
 
 `type Shape = | Empty | Circle Nat | Square Nat; let area = λ s → match s
-{ | Empty → 0 | Circle r → r | Square w → w }` — multi-arm mixed-arity
-con-match with same capture issue at `cg_build_unary_handler_body`'s
-multi-arm path (calls `cg_build_precompiled_nat_dispatch` with a fresh
-pred_env that drops outer captures).  Several hardcoded `PPin (PLaw 0
-...)` sites remain in `cg_build_unary_m_body` / `cg_build_m_body`.
-Mechanical hint-threading like the `_inner` / `_app` fixes.
+{ | Empty → 0 | Circle r → r | Square w → w }` is now byte-identical;
+pinned as `test_match_adt_multi_arm_unary_mixed`.  Three coupled fixes:
+
+* **Constructor-name short-tail fallback** (the actual root cause).
+  `cg_contab_lookup_safe` — direct ctab lookup with a short-tail
+  fallback, parallel to the globals-by-short fallback for cross-binding
+  EVars.  Without this, bare constructor names in match arms (when
+  sr_dispatch fails to qualify) miss the FQ-keyed ctab and the tag
+  defaults to 0, collapsing the multi-arm dispatch structure.
+  Diagnosed via a runtime probe that returned `add tag0 (mul n_cap 100)
+  + 1000000`: emit showed `_1000200` (tag0=0, n_cap=2) for a case where
+  tag0 should have been 1.
+
+* **Captures-preserving `pred_env`** in
+  `cg_build_precompiled_nat_dispatch`: previously created a fresh empty
+  env (arity 1), dropping caller-env locals.  Now bumps the caller
+  env's arity, mirrors Python's `make_ext_env`.
+
+* **`tag0 > 0` outer-z fallback** via top-level helpers
+  `cg_pcd_z_for_op2` and `cg_pcd_pairs_for_inner`.  When no field arm
+  has tag 0, the outer Elim's z is `cg_quote_nat 0 n_cap` and ALL tags
+  shift down by 1.  Mirrors Python's `_build_tag_chain`'s
+  `first_tag > 0` branch.  Extracted into top-level helpers so the
+  conditional doesn't get let-lifted into a deep sub-law (where outer
+  captures wouldn't reach reliably).
 
 #### Investigation history (sr_dispatch deep-recursion bug)
 
