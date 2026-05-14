@@ -1,4 +1,4 @@
-# Phase H — Session handoff (2026-05-13)
+# Phase H — Session handoff (2026-05-14)
 
 **Status:** in progress, multi-session.
 **Roadmap reference:** `ROADMAP.md § "Phase H — Compile-self fixed point"`.
@@ -7,26 +7,45 @@
 
 Phase H deliverables (1) and (2) from the ROADMAP are landed; the
 self-host pipeline is now byte-identical to the bootstrap for a
-growing set of fixtures.
+growing set of fixtures, and the compile-self gate (Compiler.gls
+compiling itself) has been pushed from byte 334 to byte ~78148 of
+~1.16M bytes byte-identical (~7%).
 
 ### Commits this session (head → ROADMAP base)
 
 ```
-d077ec2 fix(self-host): sr_dispatch — switch outer match to nat_eq on expr_tag
-aa6af56 fix(self-host): sr_dispatch reaches EVar — restructure outer match
-cadcaa0 test(selfhost): pin nullary multi-arm constructor match fixture
-05bdc64 fix(self-host): multi-field ADT match — `<hint>_inner` law name
-b268e1f fix(self-host): ADT match — `<hint>_app` name + quote-wrapped 0 fallback
-e5d9b40 fix(self-host): external-decl parser — fix inverted EOF arms + skip logic
-7ab0dcf fix(self-host): byte-identical multi-arm nat match — idx threading
-b27061b fix(self-host): four match-on-nat fixes — pinned by two new fixtures
-01585cf test(selfhost): add if-expression byte-identity fixture
-457e5a5 fix(self-host): byte-identical if-expressions — quote-wrap + lifted-law name
-9970050 docs(roadmap): mark Phase H #1 and #2 complete
-3f0766c feat(self-host): Phase H #2 — cross-binding symbol dedup via PNamed variant
-65efbc4 fix(self-host): Phase H #1 — BPLAN-66 wrap + trampoline + branch thunking
-9346f66 docs(roadmap): add Phase H — compile-self fixed point work plan  (the prior session's base)
+3232fc0 fix(self-host): top_of_law tracking for nested-let lambda lifting
+ba3dfee fix(self-host): five compile-self divergence fixes
+055dde3 fix(self-host): Dwarf-flagged durability gaps in Phase H arc
+ace491b fix(self-host): add Core.PLAN.unpin to BPLAN prims table
+b3b2a05 fix(self-host): parse_con_arity counts atom types, not raw tokens
+6d42eb2 docs(plans): compile-self gate result — diverges at parse_con_arity
+c216e46 fix(self-host): multi-arm unary-mixed ADT byte-identical
+3e019d7 fix(self-host): globals-by-short fallback for cross-binding bare refs
+9c42174 fix(self-host): self-ref short-name safety net for recursive let bodies
+4453b6c docs(plans): session handoff for Phase H continuation  (prior session's head)
 ```
+
+### Compile-self gate progression
+
+| After commit  | First divergence byte | Issue                                                                              |
+| ------------- | --------------------- | ---------------------------------------------------------------------------------- |
+| (initial)     | 334                   | `parse_con_arity` counted tokens for `Cons a (List a)` → arity 5 not 2             |
+| b3b2a05       | 3674                  | `Core.PLAN.unpin` missing from BPLAN prims table                                   |
+| ace491b       | 3771                  | `Core.IO.Prim.write_op` not specialized to `(#pin 9)`                              |
+| ba3dfee §1    | 4640                  | RPLAN ops used gateway 66 instead of 82                                            |
+| ba3dfee §2    | 6566                  | Lifted-law names missing `_{tag}` / `_pred` hint segments                          |
+| ba3dfee §3    | 10525                 | `cg_compile_app` threaded hint into children (Python uses default '')              |
+| ba3dfee §4    | 11040                 | Free-var iteration order mismatched Python's dict insertion order                  |
+| ba3dfee §5    | 12370                 | Binary handler's `cenv_self henv` was always None (henv had no self_ref)           |
+| ba3dfee §6    | ~26000                | `parse_ident_list` truncated at `_` (TkUnderscore) in field-pat position           |
+| ba3dfee §7    | 26702                 | Type alias `type Foo = Bar` emitted stray `(#bind Compiler_ 0)`                    |
+| ba3dfee §8    | ~37725                | Length's inner-law arity wrong: app-handler partial-apply used `_0` not `_1`       |
+| 3232fc0       | ~78148                | Single-unary-arm + wildcard lacks tag-check (analog to "Wildcard arm drop" bootstrap workaround) |
+
+Compile-self runs in ~470–580s under Reaver (no jets) per pass.
+The next-known divergence is the single-unary-arm-with-wildcard
+tag-check.  Many further bugs likely remain; see "Open follow-ups".
 
 ### Test state
 
@@ -35,6 +54,11 @@ b27061b fix(self-host): four match-on-nat fixes — pinned by two new fixtures
 - `tests/prelude/` — 167 passed.
 - `tests/reaver/` — 53 passed, 1 xfailed. Includes 22 selfhost
   fixtures (20 byte-identical + 2 smoke).
+
+(Test counts reflect the suite *before* the compile-self iteration
+arc — the iteration arc only edited `compiler/src/Compiler.gls`
+internals, not test fixtures.  All existing fixtures continue to
+pass after every iteration.)
 
 ### Byte-identity fixtures (`tests/reaver/test_selfhost.py`)
 
@@ -235,6 +259,39 @@ Also slated: the Hobbit review's suggested helper-inlining cuts for
 `cg_global_lookup_by_short`, `cg_contab_lookup_by_short`, and the
 `cg_pcd_z_for_op2` / `cg_pcd_pairs_for_inner` pair (whose "let-lifting
 hazard" rationale was speculative).
+
+### Open follow-ups (deferred this arc)
+
+* **Single-unary-arm + wildcard tag-check.**  Next compile-self
+  divergence (byte ~78148, in `tok_eat_ident`).  Python's bootstrap
+  added a tag-check in `_build_field_arm_law`'s single-unary-arm
+  case (codegen.py L2664-2710) so that non-matching constructors
+  return the wild value via a reflect dispatch.  The self-host's
+  `cg_build_unary_handler_body` single-arm path lacks this — it
+  directly emits the arm body.
+
+* **Subsequent compile-self divergences.**  Likely many.  Each
+  iteration in this session moved the gate forward by 2× — 10× per
+  fix; at byte 78K of 1.16M we have ~30+ further fixes anticipated.
+  Specific suspected categories: more single-arm constructor
+  matches without tag-checks; record-field syntax handling;
+  effect-system handlers; constrained-let dictionary threading.
+
+* **Dwarf #4 — ambiguity check in short-tail fallbacks.**
+  `cg_global_lookup_by_short` and `cg_contab_lookup_by_short`
+  silently pick the first FQ that shares the queried short tail.
+  Implementing a "loud failure" requires changing the compiler's
+  error contract (no current error path); deferred.  No Compiler.gls
+  input currently has ambiguous short tails.
+
+* **Hobbit cuts.**  Hobbit's review suggested inlining the
+  single-call-site helpers `cg_global_lookup_by_short`,
+  `cg_contab_lookup_by_short`, and the `cg_pcd_z_for_op2` /
+  `cg_pcd_pairs_for_inner` pair.  Re-evaluated: the first two are
+  self-recursive list walks that don't inline cleanly in Gallowglass
+  (no idiomatic local recursion); the third was tried mid-session
+  and regressed the multi-arm unary-mixed case.  All three left in
+  place.
 
 ### The compile-self gate — first divergence at parenthesized type
 
