@@ -13,3 +13,16 @@ prelude/pins/
 
 # Local IDE / agent state
 .claude/
+
+# Jupyter
+**/.ipynb_checkpoints/
+Untitled.ipynb
+Untitled[0-9]*.ipynb
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Mathematica scratch
+*.nb
+*.nb.bak
