@@ -1,11 +1,12 @@
-# Phase H — Session handoff (2026-05-14)
+# Phase H — Session handoff (2026-05-14 / 2026-05-15)
 
 **Status:** in progress, multi-session.
 **Roadmap reference:** `ROADMAP.md § "Phase H — Compile-self fixed point"`.
 
-> **Next session: see [§ Work plan for next session](#work-plan-for-next-session) at the bottom.**
+> **Next session: see [§ Work plan for next session (2026-05-15)](#work-plan-for-next-session-2026-05-15) at the bottom.**
 > That section is the actionable starting point. The earlier sections are
-> background context that explains how we got to byte 293921.
+> background context that explains how we got past the byte 293921 structural wall
+> and now sit at byte 306230 (~25% of 1.22M, the new reference length).
 
 ## Where we are
 
@@ -661,3 +662,227 @@ print(bytes(out))
 
 - `spec/02-mutual-recursion.md` — the formal specification of shared
   pins; read this before starting Task A.
+
+---
+
+## Work plan for next session (2026-05-15)
+
+**Session anchor (end of 2026-05-14 / very early 2026-05-15):**
+compile-self diverges at byte **306230** of 1218740 (~25%), inside
+`Compiler_parse_expr` at offset 12190 — well past the byte 293921
+structural wall.  The wall is gone: Tarjan SCC analysis, shared-pin
+encoding, lambda-lifted member laws, and external wrappers all
+landed and are byte-identical to the bootstrap for the
+`is_even`/`is_odd` two-member fixture.  The new divergence is a
+local capture-counting bug deep inside the parse_expr 5-member SCC,
+not a structural problem.
+
+### What changed this session (commits, oldest → newest)
+
+```
+d5020c8 feat(self-host): dep-graph builder for SCC analysis (Phase H Task A1)
+2b074f4 feat(self-host): Tarjan SCC over dep graph (Phase H Task A2)
+208fc91 feat(self-host): shared-pin SCC encoding (Phase H Task A3-A7)
+9dc2baa test(selfhost): mutual-recursion is_even/is_odd byte-identity fixture
+```
+
+Plus this handoff doc update.
+
+Net: **+664 lines** in `compiler/src/Compiler.gls` (dep-graph builder,
+Tarjan SCC, selector-law / member-law / wrapper / scc-orchestrator
+helpers, `PMutual` PlanVal variant, `cg_var_from_env` PMutual
+interception, `cg_cf_dispatch` implicit-`__shared__` capture rule,
+and `cg_pass3` rewrite to route through SCC dispatch).
+
+Selfhost suite: **24 passing + 1 xfailed** (was 23+1 at session
+start — added `test_mutual_recursion_two_member_scc`).  No
+regressions in `tests/bootstrap/test_codegen.py`,
+`test_coverage_gaps.py`, or `test_programs.py`.
+
+### The wall is gone, but a new local bug emerged at byte 306230
+
+The diverging law is a deeply-nested lifted sub-law named
+`_0_wild_pred_inner` (LE-decoded from law nat `99653159036490844…`)
+inside `Compiler_parse_expr`.  It has one EXTRA captured argument
+in the self-host output:
+
+| Position                 | Reference                 | Actual (self-host)       |
+| ------------------------ | ------------------------- | ------------------------ |
+| `_0_wild_pred_app` sig   | `(_0 _1 _2 _3)` (arity 3) | `(_0 _1 _2 _3 _4)` (a 4) |
+| `_0_wild_pred_inner` sig | `(_0 _1 _2 _3 _4)` (a 4)  | `(_0 _1 _2 _3 _4 _5)` (5)|
+
+That's one extra slot in a chain of nested lifts.  The cascade
+suggests one root cause adds a spurious capture somewhere and
+downstream lifts inherit it via free-var propagation.
+
+**Strongest hypothesis:** the `__shared__` implicit-capture rule
+I added to `cg_cf_dispatch`'s EVar arm (commit 208fc91, mirrors
+`bootstrap/codegen.py::_collect_free` L1640-1646) is firing in a
+deeper-nested context where Python's version doesn't fire.
+Possible sub-cases to investigate:
+
+1. **Bound check semantics.**  Python checks `'__shared__' not in
+   bound`.  My check uses `cg_name_in_list` against the `bound`
+   parameter.  If a nested let or lambda has a param accidentally
+   named `nn___shared__` (LE-encoded), we'd over-add.  In practice
+   no user code does this, but a synthetic `__shared__` parameter
+   from a *different* SCC orchestration might collide.
+
+2. **MutualRef leakage across SCCs.**  `cg_register_mutual_refs`
+   adds PMutuals to env.globals.  After `cg_compile_mutual_law`
+   returns, the local env is dropped — but if any intermediate
+   lift's lifted_env was constructed by copying globals into a
+   long-lived structure (the `g = cenv_globals env` capture at
+   `cg_compile_lam_lifted` L5573 or similar), the PMutuals could
+   leak into a *subsequent* law's compilation.  Worth tracing
+   whether env.globals for a non-SCC top-level let contains any
+   PMutuals.
+
+3. **Outer-vs-lifted env analysis difference.**  Python's
+   `_free_vars` is called once per lift on the OUTER env.  Mine
+   uses the same convention via `cg_free_vars`.  But maybe my
+   `cg_compile_lam_lifted` or `cg_make_pred_succ_law` analysis env
+   differs subtly — e.g., if `cenv_locals` ordering differs by
+   one entry, the filtered list would change.
+
+### Recommended task order
+
+#### Task D — Minimal repro for the extra-capture bug (start here)
+
+Write a *small* mutual-rec fixture that triggers the same shape as
+parse_expr's `_0_wild_pred_inner`.  Goal: a fixture that's currently
+diverging by exactly one capture, so we can iterate at ~30s/cycle.
+
+Promising shape: 2–3 mutually-recursive functions whose bodies have
+a `match` with a wildcard arm whose body itself contains a nested
+`let` or another `match`.  This nests the wild-pred lift two levels
+deep, triggering the same cascade.
+
+Run via `tools/selfcompile.py /tmp/probe.gls` and compare bytes.
+The bootstrap reference is fast (<1s); Reaver part is ~30s.
+
+#### Task E — Diagnose the extra capture
+
+Once Task D's repro is in hand, two complementary probes:
+
+1. **Instrument the Python bootstrap** to print free_vars at each
+   lift site.  Diff against the self-host's emitted captures
+   (visible as the arity bump in lifted-law sigs).  Identify
+   exactly which lift produces the extra capture.
+
+2. **Inline the PMutual check minus the __shared__ branch.**  As a
+   bisection probe: temporarily make `cg_cf_dispatch`'s EVar arm
+   skip the `__shared__` addition.  This will break is_even/is_odd
+   byte identity (the existing fixture will fail), but it'll
+   reveal whether the extra capture comes from the new check or
+   from somewhere else entirely.  Restore after diagnosis.
+
+#### Task F — Fix the extra capture
+
+Almost certainly a one-line tweak once Task E nails the cause.
+Candidate fixes (depending on what E reveals):
+
+* Add a guard so the `__shared__` check only fires when the outer
+  env's `__shared__` slot is exactly slot 1 (the SCC member law's
+  body root).  Skip in deeper lifts.
+
+* Mirror Python's `env.globals.get(fq) or env.globals.get(short)`
+  fallback exactly — my version only checks FQ via
+  `cenv_global_lookup`, which might catch DIFFERENT entries than
+  Python's two-step lookup.
+
+* Wire `cg_global_lookup_by_short` (already exists) into the
+  cg_cf_dispatch check so both FQ and short are tried.
+
+#### Task G — Document and continue past byte 306230
+
+Once Task F lands, re-run compile-self.  Likely several more
+local divergences before the gate fully passes.  Each iteration
+~20 min under Reaver (no jets); cache the bootstrap-compiled
+Compiler.plan to avoid repeating the slow part.
+
+#### Holdover (small, low priority)
+
+* **Dwarf #4** — ambiguity check in short-tail fallbacks.
+  Unchanged from prior session.
+* **Hobbit cuts** — helper-inlining suggestions.  Unchanged.
+* **Compile-self test fixture.**  Once byte-identical, add
+  `TestPhaseHFixedPoint::test_compile_self` gated by env-var.
+
+### Repro recipes (unchanged shape)
+
+```bash
+# Fastest cycle — selfhost byte-identity fixtures (~12s):
+python3 -m pytest tests/reaver/test_selfhost.py -q
+
+# is_even/is_odd target fixture:
+python3 -m pytest tests/reaver/test_selfhost.py::TestPhaseG3ByteIdentity::test_mutual_recursion_two_member_scc -v
+
+# Probe arbitrary source (≈30s for tiny inputs; the Compiler.gls
+# bootstrap-compile happens each run):
+python3 tools/selfcompile.py /path/to/source.gls
+
+# Full compile-self gate (~15-20 min under Reaver, no jets):
+timeout 1500 python3 tools/selfcompile.py compiler/src/Compiler.gls \
+  --timeout 1200 --write-actual /tmp/cs.actual.txt 2>/tmp/cs.diff.txt
+cat /tmp/cs.diff.txt
+```
+
+To find which binding contains a given divergence byte (e.g. 306230):
+
+```bash
+python3 -c "
+import sys, re
+sys.setrecursionlimit(200000)
+from bootstrap.lexer import lex
+from bootstrap.parser import parse
+from bootstrap.scope import resolve
+from bootstrap.codegen import compile_program
+from bootstrap.emit_pla import emit_program
+src = open('compiler/src/Compiler.gls').read()
+prog = parse(lex(src, '<>'), '<>')
+resolved, _ = resolve(prog, 'Compiler', {}, '<>')
+compiled = compile_program(resolved, 'Compiler')
+out = emit_program(compiled)
+binds = [(m.start(), m.group(1)) for m in re.finditer(r'\(#bind (\w+) ', out)]
+TARGET = 306230  # current divergence byte
+for i, (start, name) in enumerate(binds):
+    if start <= TARGET and (i+1 == len(binds) or binds[i+1][0] > TARGET):
+        print(f'Byte {TARGET} is in {name}, offset {TARGET-start}')
+        break
+"
+```
+
+### Key files (current)
+
+- `compiler/src/Compiler.gls`:
+  - L3389-3398 — `nn_top_of_law` and `nn___shared__` constants.
+    `nn___shared__` MUST be declared early (before `cg_cf_dispatch`)
+    because it's used in the implicit-capture rule.
+  - L4060-4108 — `cg_cf_dispatch` EVar arm with `__shared__`
+    implicit capture.  THIS IS THE SUSPECTED SOURCE of the
+    over-capture; see Task E.
+  - L5680-5720 — `planval_is_mutual`, `planval_get_mutual_idx`,
+    `cg_mutual_ref_bapp` (must precede `cg_var_from_env`).
+  - L5731-5763 — `cg_var_from_env` with PMutual interception.
+  - L7106-7415 — SCC emit pipeline.  Six layers in order:
+    * dep graph (`cg_build_dep_graph`)
+    * Tarjan (`cg_tarjan_scc` and supporting `TState` record)
+    * selector law (`cg_build_selector_law`)
+    * shared row (`cg_build_shared_row`)
+    * external wrapper (`cg_build_mutual_wrapper`)
+    * member law (`cg_compile_mutual_law`)
+    * orchestrator (`cg_compile_mutual_scc`)
+  - L7416-7560 — new `cg_pass3` + `cg_pass3_go` + dep-graph
+    plumbing (`cg_fq_to_scc_members`, `cg_lookup_member_bodies`,
+    `cg_scc_rep`).
+
+- `tests/reaver/test_selfhost.py::test_mutual_recursion_two_member_scc`
+  — pins the byte-identity gain from this session.
+
+- `bootstrap/codegen.py`:
+  - L350-405 — `compile_program`'s SCC dispatch.
+  - L1640-1646 — the `__shared__` implicit-capture rule that
+    mirrors my `cg_cf_dispatch` change.  Cross-check carefully
+    during Task E.
+  - L3750-3942 — dep graph, Tarjan, mutual law/wrapper/scc.
