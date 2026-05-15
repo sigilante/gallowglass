@@ -5344,8 +5344,8 @@ let cg_build_unary_handler_body : List MatchArm → Option (Pair (Option Nat) Ex
 -- Falls back to constant 0 if no such arm exists.
 let cg_build_unary_z_body : List MatchArm → CEnv → Nat
                              → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                             → List (Pair Nat (Pair Nat Nat)) → PlanVal
-  = λ field_arms henv arg_idx ce ctab →
+                             → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ field_arms henv arg_idx ce ctab hint →
       let tag0_arms = filter (λ arm →
                                 match (nat_eq (cg_arm_con_arity arm) 1) {
                                   | 0 → 0
@@ -5362,7 +5362,11 @@ let cg_build_unary_z_body : List MatchArm → CEnv → Nat
                        | Nil → henv
                        | Cons f _ → cenv_bind_local henv f arg_idx
                      } in
-            ce (arm_get_con_body arm) ae ctab 0
+            -- Thread `<hint>_<ConName>` so nested lifted laws inside
+            -- the arm body get distinct names — mirrors Python
+            -- `_build_field_arm_law` L2826-2828.
+            let arm_hint = cg_concat_under hint (arm_get_con_name arm) in
+            ce (arm_get_con_body arm) ae ctab arm_hint
       }
 
 -- cg_build_unary_m_body: compile the m (succ) handler for unary (arity=1) arms with tag>0.
@@ -5371,8 +5375,8 @@ let cg_build_unary_z_body : List MatchArm → CEnv → Nat
 -- Each arm's field is bound to arg_idx (= outer_arg) in the extended env.
 let cg_build_unary_m_body : List MatchArm → Option (Pair (Option Nat) Expr) → CEnv → Nat
                              → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                             → List (Pair Nat (Pair Nat Nat)) → PlanVal
-  = λ field_arms wild henv arg_idx ce ctab →
+                             → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ field_arms wild henv arg_idx ce ctab hint →
       let const2_pin = PPin const2_law in
       let unary_gt0 = filter (λ arm →
                                 match (nat_eq (cg_arm_con_arity arm) 1) {
@@ -5413,6 +5417,8 @@ let cg_build_unary_m_body : List MatchArm → Option (Pair (Option Nat) Expr) �
             let n_cap = cenv_arity henv in
             let pred_idx = add n_cap 1 in
             let m_ext_env = cenv_set_arity henv pred_idx in
+            let nn_m_tag = 444016648045 in   -- "m_tag" LE
+            let m_tag_hint = cg_concat_under hint nn_m_tag in
             let m_pairs = cg_sort_pv_pairs (map (λ arm →
                 let fields = arm_get_con_fields arm in
                 let ae = match fields {
@@ -5423,8 +5429,9 @@ let cg_build_unary_m_body : List MatchArm → Option (Pair (Option Nat) Expr) �
                             | None → 0
                             | Some p → contab_tag p
                           } in
-                MkPair (sub tag 1) (ce (arm_get_con_body arm) ae ctab 0)) unary_gt0) in
-            let m_dispatch = cg_build_precompiled_nat_dispatch m_pairs wild (PNat pred_idx) m_ext_env ce ctab 0 in
+                let arm_hint = cg_concat_under hint (arm_get_con_name arm) in
+                MkPair (sub tag 1) (ce (arm_get_con_body arm) ae ctab arm_hint)) unary_gt0) in
+            let m_dispatch = cg_build_precompiled_nat_dispatch m_pairs wild (PNat pred_idx) m_ext_env ce ctab m_tag_hint in
             let m_succ_law = PPin (PLaw 0 (MkPair pred_idx m_dispatch)) in
             cg_apply_params m_succ_law 1 n_cap
       }
@@ -5575,8 +5582,8 @@ let cg_build_binary_handler_body : List MatchArm → Option (Pair (Option Nat) E
       -- Unary arms (arity=1) never reach the inner law: outer_fun is a bare Nat.
       --   tag=0 → outer z fires (handled by cg_build_unary_z_body)
       --   tag>0 → outer m fires with pred=tag-1 (handled by cg_build_unary_m_body)
-      let z_body = cg_build_unary_z_body field_arms henv arg_idx ce ctab in
-      let m_body = cg_build_unary_m_body field_arms wild henv arg_idx ce ctab in
+      let z_body = cg_build_unary_z_body field_arms henv arg_idx ce ctab hint in
+      let m_body = cg_build_unary_m_body field_arms wild henv arg_idx ce ctab hint in
       cg_build_reflect_dispatch r3 z_body m_body (PNat fun_idx) (cenv_arity henv)
 
 -- cg_bodies_use_self: check if any body in list uses self-ref
@@ -5917,32 +5924,48 @@ let cg_resolve_global_val : Nat → PlanVal → CEnv → PlanVal
   = λ fq val env →
       match (nat_eq (cenv_arity env) 0) {
         | 0 →
-            -- Inside law body: nat globals need quoting
+            -- Inside law body.  Three cases, matching Python's
+            -- ``_compile_var`` body-context branch (codegen.py L1287-1298):
+            --   * Nat            → quote.
+            --   * Pin or App     → return as-is (no PPin wrap).
+            --                       Python's emit-side `_maybe_symbol`
+            --                       collapses the value's identity to
+            --                       the bare binding symbol; we mirror
+            --                       that by tagging with `PNamed` at
+            --                       the outer level so emit produces
+            --                       bare `sym`.
+            --   * else (Law)     → wrap in PPin and tag, emitting
+            --                       `(#pin sym)`.  Python uses
+            --                       ``P(val)`` here.
             match (planval_is_nat val) {
               | 0 →
                   match (planval_is_pin val) {
-                    | 0 → cg_tag_global fq (PPin val)
+                    | 0 →
+                        match (planval_is_app val) {
+                          | 0 →
+                              -- Law: wrap in PPin and tag.
+                              cg_tag_global fq (PPin val)
+                          | _ →
+                              -- App: tag without PPin wrap so emit
+                              -- produces the bare binding symbol.
+                              PNamed fq val
+                        }
                     | _ →
-                        -- val is already a Pin (binding is pin'd).
-                        -- cg_tag_global would produce PPin(PNamed …),
-                        -- which emits as `(#pin sym)` — but Python
-                        -- collapses that to bare `sym` via id() dedup
-                        -- (the bound Pin object IS the ref).  Mirror
-                        -- that here: tag with PNamed at the outer
-                        -- level so emit produces bare `sym`.
+                        -- Pin: tag at the outer level (avoids
+                        -- double-pin).
                         PNamed fq val
                   }
               | _ → cg_quote_nat (planval_get_nat val) (cenv_arity env)
             }
         | _ →
-            -- Top level: same double-pin avoidance as the body-context
-            -- branch above.  When the binding's val is itself a Pin
-            -- (e.g. opcode pins like `write_op = PPin(PNat 9)`),
-            -- `cg_tag_global` would produce `PPin(PNamed n inner)`
-            -- which emits `(#pin sym)` — but Python's `_maybe_symbol`
-            -- collapses to bare `sym` at the outer Pin level.
+            -- Top level: same double-pin avoidance.  Apps and Pins
+            -- preserve identity via the binding symbol; Laws wrap.
             match (planval_is_pin val) {
-              | 0 → cg_tag_global fq val
+              | 0 →
+                  match (planval_is_app val) {
+                    | 0 → cg_tag_global fq val
+                    | _ → PNamed fq val
+                  }
               | _ → PNamed fq val
             }
       }
