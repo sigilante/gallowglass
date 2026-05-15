@@ -6737,6 +6737,112 @@ let cg_register_effs
             }
       }
 
+-- ---------------------------------------------------------------------
+-- SCC Analysis for Mutual Recursion (Phase H Task A)
+-- ---------------------------------------------------------------------
+--
+-- Builds a forward-reference dependency graph over top-level let-decls
+-- in source order, in preparation for Tarjan SCC analysis and
+-- shared-pin encoding (spec/02-mutual-recursion.md).
+--
+-- Each binding's dependency list contains FQ names of other top-level
+-- lets that the body references — by FQ form OR by short-tail form,
+-- since the scope resolver may leave some bare names unqualified (the
+-- documented sr_dispatch deep-recursion gap; mirrors the Python
+-- bootstrap's two-way candidate match in _build_dep_graph).
+--
+-- Self-references appear as self-loops; Tarjan groups them into
+-- single-member SCCs with a self-edge, which fall back to the
+-- existing single-let compilation path.
+--
+-- Mirrors bootstrap/codegen.py::_build_dep_graph (~L3750).
+
+-- cg_collect_let_decls_go: accumulator loop for cg_collect_let_decls.
+-- Result is in REVERSE source order; the wrapper reverses to restore.
+-- Skips sentinel name=0 lets (type-alias placeholders — see
+-- cg_compile_let_one for context).
+let cg_collect_let_decls_go : List Decl → Nat → List (Pair Nat Expr)
+                             → List (Pair Nat Expr)
+  = λ decls mod_name acc →
+      match decls {
+        | Nil → acc
+        | Cons decl rest →
+            match (nat_eq (decl_is_let decl) 0) {
+              | 0 →
+                  let nm = decl_get_let_name decl in
+                  match (Reaver.BPLAN.eq nm 0) {
+                    | 0 →
+                        let fq   = name_concat_dot mod_name nm in
+                        let body = decl_get_let_body decl in
+                        cg_collect_let_decls_go rest mod_name
+                          (Cons (MkPair fq body) acc)
+                    | _ → cg_collect_let_decls_go rest mod_name acc
+                  }
+              | _ → cg_collect_let_decls_go rest mod_name acc
+            }
+      }
+
+-- cg_collect_let_decls: extract (fq_name, body) for every DLet in the
+-- module, in source order.  Sentinel placeholders are dropped.
+let cg_collect_let_decls : List Decl → Nat → List (Pair Nat Expr)
+  = λ decls mod_name →
+      reverse (cg_collect_let_decls_go decls mod_name Nil)
+
+-- cg_deps_for_body_go: walk the candidate FQ list, appending each FQ
+-- whose name (or short tail) appears in `body`.  Result is reversed
+-- once at the end so dependencies come out in candidate-list order.
+let cg_deps_for_body_go : Expr → List Nat → List Nat → List Nat
+  = λ body candidates acc →
+      match candidates {
+        | Nil → reverse acc
+        | Cons fq rest →
+            match (cg_has_var body fq) {
+              | 0 →
+                  let short = cg_short_after_dot fq in
+                  match (Reaver.BPLAN.eq short fq) {
+                    | 0 →
+                        match (cg_has_var body short) {
+                          | 0 → cg_deps_for_body_go body rest acc
+                          | _ → cg_deps_for_body_go body rest (Cons fq acc)
+                        }
+                    | _ → cg_deps_for_body_go body rest acc
+                  }
+              | _ → cg_deps_for_body_go body rest (Cons fq acc)
+            }
+      }
+
+-- cg_deps_for_body: subset of `candidates` that `body` references.
+-- Caller responsibility: `candidates` is duplicate-free (the let-decl
+-- FQ list).  Order of result matches order of `candidates`.
+let cg_deps_for_body : Expr → List Nat → List Nat
+  = λ body candidates → cg_deps_for_body_go body candidates Nil
+
+-- cg_dep_graph_go: for each (fq, body) pair, compute deps and prepend
+-- (fq, deps) to acc.  Reversed once at the end.
+let cg_dep_graph_go : List (Pair Nat Expr) → List Nat
+                    → List (Pair Nat (List Nat))
+                    → List (Pair Nat (List Nat))
+  = λ lets candidates acc →
+      match lets {
+        | Nil → reverse acc
+        | Cons pair rest →
+            match pair {
+              | MkPair fq body →
+                  let deps = cg_deps_for_body body candidates in
+                  cg_dep_graph_go rest candidates
+                    (Cons (MkPair fq deps) acc)
+            }
+      }
+
+-- cg_build_dep_graph: build the forward-reference dependency graph
+-- over the DLet declarations of a module.  Output is an assoc list
+-- (List (Pair fq_name (List fq_name))) in source order.
+let cg_build_dep_graph : List Decl → Nat → List (Pair Nat (List Nat))
+  = λ decls mod_name →
+      let lets  = cg_collect_let_decls decls mod_name in
+      let names = map (λ pair → match pair { | MkPair n _ → n }) lets in
+      cg_dep_graph_go lets names Nil
+
 -- cg_pass3: process DLet and DInst declarations
 let cg_pass3 : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat Nat)) → List (Pair Nat PlanVal)
              → List (Pair Nat PlanVal)
