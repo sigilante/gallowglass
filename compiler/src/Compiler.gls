@@ -5480,6 +5480,86 @@ let cg_bodies_use_self : List Expr → CEnv → Nat
                  | _ → 1
                }) 0 bodies
 
+-- cg_build_wild_app_handler: build a 2-arg law over `wild_body` for use
+-- as the App branch of an Elim dispatch when a constructor match has no
+-- field-bearing arms but does have a wildcard, AND the matched type has
+-- at least one field-bearing constructor.  Mirrors
+-- bootstrap/codegen.py::_build_wild_app_handler (L2546-2600).
+--
+-- Without this handler the App branch of Elim defaults to `id_pin`
+-- (returns the App as-is), which is wrong: an App-shaped scrutinee
+-- (e.g. ``TkIdent name`` against ``match t { | TkEof → ... | _ → ... }``)
+-- needs to fire the wild body, not propagate the constructor App.
+--
+-- Caller invariant: only call when the matched type has a field-bearing
+-- sibling.  Currently the self-host can't cheaply tell (the ctab stores
+-- only (tag, arity) per constructor with no type_name), so we route
+-- here for every nullary-only-arms + wild match.  This is safe in
+-- practice because every type in Compiler.gls itself that's matched
+-- with a wildcard has at least one field-bearing sibling (verified by
+-- inspection — Bool isn't matched directly anywhere; List, Option,
+-- Result, Token, Expr, Decl, etc. all have field constructors).  If a
+-- truly nullary-only type is later matched with a wildcard the byte-
+-- identity gate will surface a regression and we'll plumb type_name
+-- through the ctab.
+--
+-- Capture analysis uses `cg_free_vars` + `cg_drop_shared` for the same
+-- reason as `cg_build_app_handler`: Python uses `_collect_all_names`
+-- here (codegen.py L2567) which has no `__shared__` implicit-capture
+-- rule.
+let cg_build_wild_app_handler
+  : Expr → CEnv → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
+  → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  = λ wild_body env ce ctab hint →
+      let const2_pin = PPin const2_law in
+      let nn_wild = 1684826487 in           -- "wild" LE
+      let nn_app = 7368801 in               -- "app" LE
+      let nn_wild_app = cg_concat_under nn_wild nn_app in
+      let wild_hint = cg_concat_under hint nn_wild in
+      match (nat_eq (cenv_arity env) 0) {
+        | 0 →
+            -- In-law: lift outer captures + self-ref into a (n_cap+2)-arity
+            -- law whose last two slots are the unused (outer_fun, outer_arg).
+            let free_locals0 = cg_free_vars wild_body Nil env in
+            let free_locals = cg_drop_shared free_locals0 in
+            let uses_self = cg_body_uses_self wild_body env in
+            let g = cenv_globals env in
+            let henv0 = cenv_make g Nil 0 None in
+            let henv1 = match (nat_eq uses_self 0) {
+                          | 0 →
+                              match (cenv_self env) {
+                                | None → henv0
+                                | Some fq →
+                                    let henv_fq = cenv_new_param henv0 fq in
+                                    let short = cg_short_after_dot fq in
+                                    match (Reaver.BPLAN.eq short fq) {
+                                      | 0 → cenv_bind_local henv_fq short (cenv_arity henv_fq)
+                                      | _ → henv_fq
+                                    }
+                              }
+                          | _ → henv0
+                        } in
+            let henv2 = cg_bind_params free_locals henv1 in
+            let n_cap = cenv_arity henv2 in
+            let handler_arity = add n_cap 2 in
+            let henv = cenv_set_arity henv2 handler_arity in
+            let wv = ce wild_body henv ctab wild_hint in
+            let handler_name = cg_concat_under hint nn_wild_app in
+            let handler_law = PPin (PLaw handler_name (MkPair handler_arity wv)) in
+            let r0 = handler_law in
+            let r1 = match (nat_eq uses_self 0) {
+                       | 0 → cg_bapp r0 (PNat 0)
+                       | _ → r0
+                     } in
+            cg_apply_free_locals r1 free_locals env
+        | _ →
+            -- Top-level (env.arity == 0): no captures or self-ref to lift.
+            -- const2_pin twice over wild_body absorbs the (outer_fun, outer_arg)
+            -- pair the Elim handler receives.
+            let wv = ce wild_body env ctab wild_hint in
+            PApp const2_pin (PApp const2_pin wv)
+      }
+
 -- cg_build_app_handler: build the App-handler law for Case_ dispatch
 let cg_build_app_handler : List MatchArm → Option (Pair (Option Nat) Expr) → CEnv
                           → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
@@ -5565,8 +5645,31 @@ let cg_compile_con_match : PlanVal → List MatchArm → CEnv
       let wild = cg_extract_wild_arm arms in
       match (length field_arms) {
         | 0 →
-            let nat_arms = cg_sort_nat_pairs (cg_arms_to_tag_expr nullary_arms ctab) in
-            cg_build_nat_dispatch nat_arms wild scr env ce ctab hint 0
+            -- No field arms.  If there's a wildcard, the matched type
+            -- may still have field-bearing siblings (e.g. ``match t {
+            -- TkEof → A | _ → B }`` on Token), and App-shaped scrutinees
+            -- must fire the wild body — that requires Elim's App branch
+            -- to be a wild_app_handler, not id_pin.  Mirrors Python's
+            -- _compile_con_match path that routes through
+            -- _compile_adt_dispatch when type_has_field_sibling
+            -- (codegen.py L2380).
+            match wild {
+              | None →
+                  -- No wild: pure nat dispatch (Python's _build_nat_dispatch
+                  -- path).  App branch defaults to id_pin via cg_build_op2.
+                  let nat_arms = cg_sort_nat_pairs (cg_arms_to_tag_expr nullary_arms ctab) in
+                  cg_build_nat_dispatch nat_arms wild scr env ce ctab hint 0
+              | Some wpair →
+                  match wpair {
+                    | MkPair _ wb →
+                        let nullary_nat_arms = cg_sort_nat_pairs (cg_arms_to_tag_expr nullary_arms ctab) in
+                        let z_body = cg_build_z_body nullary_nat_arms wild env ce ctab hint in
+                        let remaining = cg_build_nullary_remaining nullary_nat_arms in
+                        let m_body = cg_build_m_body remaining wild env ce ctab hint in
+                        let app_handler = cg_build_wild_app_handler wb env ce ctab hint in
+                        cg_build_reflect_dispatch app_handler z_body m_body scr (cenv_arity env)
+                  }
+            }
         | _ →
             let nullary_nat_arms = cg_sort_nat_pairs (cg_arms_to_tag_expr nullary_arms ctab) in
             let z_body = cg_build_z_body nullary_nat_arms wild env ce ctab hint in

@@ -823,6 +823,35 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
+    def test_match_nullary_arm_plus_wild_on_field_type(self):
+        """Constructor match with only nullary explicit arms but a
+        wildcard, on a type that has field-bearing siblings.  Python
+        routes this through ``_compile_adt_dispatch`` (codegen.py
+        L2380) and builds an explicit ``wild_app_handler`` for Elim's
+        App branch so an App-shaped scrutinee (e.g. ``Some 42``) fires
+        the wild body instead of being returned as-is by the default
+        ``id_pin`` handler.  Pins ``cg_build_wild_app_handler`` and the
+        ``cg_compile_con_match`` routing change (Phase H Task H).
+
+        Without the fix, the self-host's ``cg_build_nat_dispatch`` path
+        wraps the dispatch with ``cg_build_op2`` (App branch = id_pin),
+        emitting a ``_wild_succ`` law where the bootstrap emits a
+        ``_wild_app`` law.  Observable as the byte-542118 divergence in
+        ``Compiler_collect_record_types_go``.
+        """
+        src = (
+            'type Maybe a = | None | Some a\n'
+            '\n'
+            'let foo : Maybe Nat → Nat\n'
+            '  = λ m → match m {\n'
+            '      | None → 0\n'
+            '      | _ → 1\n'
+            '    }\n'
+            '\n'
+            'let main = foo (Some 42)\n'
+        )
+        self._assert_byte_identical(src)
+
     @unittest.expectedFailure
     def test_same_constructor_literal_field_collapses(self):
         """`match (MkPair 0 99) { | MkPair 0 _ -> 1 | MkPair n _ -> 2 }` —
