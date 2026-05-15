@@ -5209,22 +5209,24 @@ let cg_build_unary_m_body : List MatchArm → Option (Pair (Option Nat) Expr) �
                                 }) field_arms in
       match unary_gt0 {
         | Nil →
-            -- No unary arms with tag>0: fall to constant-0 or wild
-            match wild {
-              | None →
-                  match (nat_eq (cenv_arity henv) 0) {
-                    | 0 → cg_bapp const2_pin (PApp (PNat 0) (PNat 0))
-                    | _ → PApp const2_pin (PNat 0)
-                  }
-              | Some p →
-                  match p {
-                    | MkPair _ wb →
-                        let n_cap = cenv_arity henv in
-                        let m_ext_env = cenv_set_arity henv (add n_cap 1) in
-                        let m_compiled = ce wb m_ext_env ctab 0 in
-                        let m_law = PPin (PLaw 0 (MkPair (add n_cap 1) m_compiled)) in
-                        cg_apply_params m_law 1 n_cap
-                  }
+            -- No unary arms with tag>0: the binary handler's outer Case_ m
+            -- slot is a `const2(body_nat(0))` placeholder regardless of
+            -- whether the surrounding match has a wildcard.  The
+            -- corresponding Python branch is `_build_field_arm_law`'s
+            -- binary-path L2862-2865, which unconditionally uses
+            -- `bapp(const2_pin, A(N(0), N(0)))` (in-law) — the m slot fires
+            -- only when the scrutinee is `Nat>0`, which only happens for
+            -- nullary constructors with tag>0; those are dispatched at the
+            -- OUTER reflect_dispatch level (not inside the binary handler),
+            -- so this slot is "shouldn't happen" in well-formed matches and
+            -- the wild_body never legitimately needs to fire here.  An
+            -- earlier version of this branch lifted wild_body into a succ
+            -- law and partial-applied it; that produced extra structure
+            -- diverging from Python's byte output (compile-self gate's
+            -- `has_guard_sentinel` was the canary).
+            match (nat_eq (cenv_arity henv) 0) {
+              | 0 → cg_bapp const2_pin (PApp (PNat 0) (PNat 0))
+              | _ → PApp const2_pin (PNat 0)
             }
         | Cons _ _ →
             -- Build a succ law: arity = n_cap+1 (captures + pred)
