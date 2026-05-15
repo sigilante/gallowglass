@@ -6843,6 +6843,254 @@ let cg_build_dep_graph : List Decl → Nat → List (Pair Nat (List Nat))
       let names = map (λ pair → match pair { | MkPair n _ → n }) lets in
       cg_dep_graph_go lets names Nil
 
+-- ---------------------------------------------------------------------
+-- Tarjan SCC (Phase H Task A2)
+-- ---------------------------------------------------------------------
+--
+-- Standard Tarjan strongly-connected-components on the dep graph.
+-- Mirrors bootstrap/codegen.py::_tarjan_scc (L3773).
+--
+-- Output: List of SCCs in topological order (dependencies before
+-- dependents).  Each SCC is lex-sorted internally by FQ name —
+-- canonical ordering per spec/02-mutual-recursion.md §3.  Singleton
+-- SCCs are single-element lists; self-recursive bindings appear as
+-- singleton SCCs with a self-edge in the graph.
+
+-- TState: Tarjan working state.
+--   next_idx : Nat                       counter for index assignment
+--   idx      : List (Pair Nat Nat)       vertex → assigned DFS index
+--   lowlink  : List (Pair Nat Nat)       vertex → current lowlink
+--   stack    : List Nat                  vertices on DFS stack (top first)
+--   sccs     : List (List Nat)           accumulated SCCs (newest first;
+--                                        each pre-sorted lex)
+type TState =
+  | MkTState (Pair Nat (List (Pair Nat Nat)))
+             (Pair (List (Pair Nat Nat))
+                   (Pair (List Nat) (List (List Nat))))
+
+let tstate_empty : TState
+  = MkTState (MkPair 0 Nil) (MkPair Nil (MkPair Nil Nil))
+
+let ts_next : TState → Nat
+  = λ ts → match ts { | MkTState p _ → match p { | MkPair n _ → n } }
+
+let ts_idx : TState → List (Pair Nat Nat)
+  = λ ts → match ts { | MkTState p _ → match p { | MkPair _ m → m } }
+
+let ts_low : TState → List (Pair Nat Nat)
+  = λ ts → match ts { | MkTState _ q → match q { | MkPair l _ → l } }
+
+let ts_stack : TState → List Nat
+  = λ ts → match ts { | MkTState _ q →
+      match q { | MkPair _ r → match r { | MkPair s _ → s } } }
+
+let ts_sccs : TState → List (List Nat)
+  = λ ts → match ts { | MkTState _ q →
+      match q { | MkPair _ r → match r { | MkPair _ ss → ss } } }
+
+-- ts_enter: visit v for the first time — assign next_idx as both its
+-- index and lowlink, push onto DFS stack, increment counter.
+let ts_enter : Nat → TState → TState
+  = λ v ts →
+      let n = ts_next ts in
+      MkTState
+        (MkPair (Core.PLAN.inc n) (assoc_insert v n (ts_idx ts)))
+        (MkPair (assoc_insert v n (ts_low ts))
+                (MkPair (Cons v (ts_stack ts)) (ts_sccs ts)))
+
+-- ts_set_low: update v's lowlink to a new (smaller) value.
+let ts_set_low : Nat → Nat → TState → TState
+  = λ v new_low ts →
+      MkTState
+        (MkPair (ts_next ts) (ts_idx ts))
+        (MkPair (assoc_insert v new_low (ts_low ts))
+                (MkPair (ts_stack ts) (ts_sccs ts)))
+
+-- ts_update_low: lowlink[v] := min(lowlink[v], candidate).
+let ts_update_low : Nat → Nat → TState → TState
+  = λ v candidate ts →
+      let cur = match (assoc_lookup v (ts_low ts)) {
+                  | None    → 0
+                  | Some x  → x
+                } in
+      ts_set_low v (min_nat cur candidate) ts
+
+-- cg_name_lt_lex_go: byte-wise lexicographic compare loop.
+-- Returns 1 if x < y under lex byte order, 0 otherwise.
+let cg_name_lt_lex_go : Nat → Nat → Nat → Nat → Nat → Nat
+  = λ x y pos lenx leny →
+      match (lte lenx pos) {
+        | 0 →
+            match (lte leny pos) {
+              | 0 →
+                  let bx = byte_at x pos in
+                  let by = byte_at y pos in
+                  match (Reaver.BPLAN.eq bx by) {
+                    | 0 →
+                        match (lte bx by) {
+                          | 0 → 0
+                          | _ → 1
+                        }
+                    | _ →
+                        cg_name_lt_lex_go x y (Core.PLAN.inc pos) lenx leny
+                  }
+              | _ → 0
+            }
+        | _ →
+            match (lte leny pos) {
+              | 0 → 1
+              | _ → 0
+            }
+      }
+
+-- cg_name_lt_lex: x < y under lexicographic byte order on the LE-
+-- encoded name nats.  NOT the same as numeric `nat_lt` — numeric
+-- ordering on LE encodings does not match string lex order.
+let cg_name_lt_lex : Nat → Nat → Nat
+  = λ x y → cg_name_lt_lex_go x y 0 (nat_byte_len x) (nat_byte_len y)
+
+-- cg_insert_lex: insert x into a lex-sorted list, keeping it sorted.
+let cg_insert_lex : Nat → List Nat → List Nat
+  = λ x xs →
+      match xs {
+        | Nil → Cons x Nil
+        | Cons y rest →
+            match (cg_name_lt_lex x y) {
+              | 0 → Cons y (cg_insert_lex x rest)
+              | _ → Cons x xs
+            }
+      }
+
+-- cg_sort_lex_go: insertion-sort accumulator over an unsorted list.
+let cg_sort_lex_go : List Nat → List Nat → List Nat
+  = λ xs acc →
+      match xs {
+        | Nil → acc
+        | Cons x rest → cg_sort_lex_go rest (cg_insert_lex x acc)
+      }
+
+-- cg_sort_lex: lex-sort an unordered list of FQ name nats.
+let cg_sort_lex : List Nat → List Nat
+  = λ xs → cg_sort_lex_go xs Nil
+
+-- ts_pop_until: pop elements from `stack` until (and including) v,
+-- collecting the popped vertices.  Returns (popped, remaining_stack).
+-- Popped order is top-down (newest first), so the caller can sort.
+let ts_pop_until : Nat → List Nat → List Nat → Pair (List Nat) (List Nat)
+  = λ v stack acc →
+      match stack {
+        | Nil → MkPair acc Nil
+        | Cons top rest →
+            match (Reaver.BPLAN.eq top v) {
+              | 0 → ts_pop_until v rest (Cons top acc)
+              | _ → MkPair (Cons top acc) rest
+            }
+      }
+
+-- ts_emit_scc: pop the SCC rooted at v off the stack, lex-sort the
+-- result, prepend it to the accumulated SCC list.
+let ts_emit_scc : Nat → TState → TState
+  = λ v ts →
+      match (ts_pop_until v (ts_stack ts) Nil) {
+        | MkPair scc new_stack →
+            let sorted = cg_sort_lex scc in
+            MkTState
+              (MkPair (ts_next ts) (ts_idx ts))
+              (MkPair (ts_low ts)
+                      (MkPair new_stack (Cons sorted (ts_sccs ts))))
+      }
+
+-- cg_sc_visit_neighbors: process v's outgoing edges.
+--   sc: pass-self handle on strongconnect (pass-self pattern)
+--   graph: full dep graph (assoc list)
+--   v: source vertex
+--   ws: remaining neighbors to visit
+--   ts: running state
+let cg_sc_visit_neighbors
+      : (List (Pair Nat (List Nat)) → Nat → TState → TState)
+      → List (Pair Nat (List Nat)) → Nat → List Nat → TState → TState
+  = λ sc graph v ws ts →
+      match ws {
+        | Nil → ts
+        | Cons w rest →
+            let ts1 = match (assoc_has w (ts_idx ts)) {
+                        | 0 →
+                            -- w unvisited: recurse, then absorb its lowlink
+                            let ts_after = sc graph w ts in
+                            let lw = match (assoc_lookup w (ts_low ts_after)) {
+                                       | None   → 0
+                                       | Some x → x
+                                     } in
+                            ts_update_low v lw ts_after
+                        | _ →
+                            -- w visited: only matters if still on stack
+                            match (cg_name_in_list w (ts_stack ts)) {
+                              | 0 → ts
+                              | _ →
+                                  let iw = match (assoc_lookup w (ts_idx ts)) {
+                                             | None   → 0
+                                             | Some x → x
+                                           } in
+                                  ts_update_low v iw ts
+                            }
+                      } in
+            cg_sc_visit_neighbors sc graph v rest ts1
+      }
+
+-- cg_sc_dispatch: one iteration of Tarjan's strongconnect on vertex v.
+-- Enters v, recurses over neighbors, then (if v is the SCC root)
+-- pops the SCC off the stack.
+let cg_sc_dispatch
+      : (List (Pair Nat (List Nat)) → Nat → TState → TState)
+      → List (Pair Nat (List Nat)) → Nat → TState → TState
+  = λ sc graph v ts →
+      let ts1 = ts_enter v ts in
+      let ws  = match (assoc_lookup v graph) {
+                  | None   → Nil
+                  | Some n → n
+                } in
+      let ts2 = cg_sc_visit_neighbors sc graph v ws ts1 in
+      let iv = match (assoc_lookup v (ts_idx ts2)) {
+                 | None   → 0
+                 | Some x → x
+               } in
+      let lv = match (assoc_lookup v (ts_low ts2)) {
+                 | None   → 0
+                 | Some x → x
+               } in
+      match (Reaver.BPLAN.eq iv lv) {
+        | 0 → ts2
+        | _ → ts_emit_scc v ts2
+      }
+
+-- cg_strongconnect: pass-self entry point.
+let cg_strongconnect : List (Pair Nat (List Nat)) → Nat → TState → TState
+  = λ graph v ts → cg_sc_dispatch cg_strongconnect graph v ts
+
+-- cg_tarjan_outer: outer loop over graph keys.  Visits each unvisited
+-- vertex, accumulating SCCs in the state.
+let cg_tarjan_outer
+      : List (Pair Nat (List Nat)) → List Nat → TState → TState
+  = λ graph keys ts →
+      match keys {
+        | Nil → ts
+        | Cons k rest →
+            let ts1 = match (assoc_has k (ts_idx ts)) {
+                        | 0 → cg_strongconnect graph k ts
+                        | _ → ts
+                      } in
+            cg_tarjan_outer graph rest ts1
+      }
+
+-- cg_tarjan_scc: full SCC decomposition of the dep graph.
+-- Returns SCCs in topological order (dependencies before dependents),
+-- each internally lex-sorted by FQ name.
+let cg_tarjan_scc : List (Pair Nat (List Nat)) → List (List Nat)
+  = λ graph →
+      let keys  = assoc_keys graph in
+      let final = cg_tarjan_outer graph keys tstate_empty in
+      reverse (ts_sccs final)
+
 -- cg_pass3: process DLet and DInst declarations
 let cg_pass3 : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat Nat)) → List (Pair Nat PlanVal)
              → List (Pair Nat PlanVal)
