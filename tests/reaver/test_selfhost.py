@@ -742,6 +742,43 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
+    def test_mutual_recursion_two_member_scc(self):
+        """``is_even``/``is_odd`` — two mutually recursive lets that form
+        a single SCC.  Pins the Phase H Task A shared-pin encoding:
+        Tarjan SCC detection (cg_build_dep_graph + cg_tarjan_scc), a
+        selector law `{0 (n+1) 0}` partially applied to the n lambda-
+        lifted member laws (cg_build_selector_law + cg_build_shared_row),
+        external wrappers of the original arity per member
+        (cg_build_mutual_wrapper), and the PMutual sentinel routed
+        through cg_var_from_env to emit the `((_1 j) _1)` cross-call.
+
+        Also pins the implicit-``__shared__`` capture rule in
+        ``cg_cf_dispatch``: when a body EVar resolves to PMutual in
+        globals, ``__shared__`` joins the free-var set so lifted wild-
+        arm laws capture slot 1 (the shared row).  Without this, the
+        lifted ``_wild_succ`` law would have arity 2 instead of 3 and
+        cross-calls would target the wrong slot — see
+        ``bootstrap/codegen.py::_collect_free`` L1640-1646.
+        """
+        src = (
+            'external mod Reaver.BPLAN {\n'
+            '  sub : Nat → Nat → Nat\n'
+            '}\n'
+            '\n'
+            'let is_even : Nat → Nat\n'
+            '  = λ n → match n {\n'
+            '      | 0 → 1\n'
+            '      | _ → is_odd (Reaver.BPLAN.sub n 1)\n'
+            '    }\n'
+            '\n'
+            'let is_odd : Nat → Nat\n'
+            '  = λ n → match n {\n'
+            '      | 0 → 0\n'
+            '      | _ → is_even (Reaver.BPLAN.sub n 1)\n'
+            '    }\n'
+        )
+        self._assert_byte_identical(src)
+
     @unittest.expectedFailure
     def test_same_constructor_literal_field_collapses(self):
         """`match (MkPair 0 99) { | MkPair 0 _ -> 1 | MkPair n _ -> 2 }` —
