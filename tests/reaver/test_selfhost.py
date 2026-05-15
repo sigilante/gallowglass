@@ -895,6 +895,207 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
+    # ------------------------------------------------------------------
+    # Phase I — language-coverage parity for 1.0.0-rc3.  Each fixture
+    # below exercises a feature that the bootstrap supports but that
+    # ``Compiler.gls`` itself does not use directly (so Phase H's
+    # compile-self gate doesn't pin them).  A passing fixture proves
+    # the self-host's codegen for that feature is byte-identical to
+    # the bootstrap; an ``xfail`` flags a known gap.
+    # ------------------------------------------------------------------
+
+    def test_fix_lambda_anonymous_recursion(self):
+        """``fix λ self n → …`` — anonymous recursion via fix.
+
+        Pins ``cg_compile_fix`` in the self-host: the fix expression
+        binds the lambda's first param to the law's own self-pin so
+        the body can recurse without a top-level name.
+        """
+        src = (
+            'external mod Reaver.BPLAN {\n'
+            '  sub : Nat → Nat → Nat\n'
+            '}\n'
+            'let countdown : Nat → Nat\n'
+            '  = fix λ self n → match n {\n'
+            '      | 0 → 999\n'
+            '      | _ → self (Reaver.BPLAN.sub n 1)\n'
+            '    }\n'
+            'let main = countdown 5\n'
+        )
+        self._assert_byte_identical(src)
+
+    @unittest.expectedFailure
+    def test_or_pattern_constructor(self):
+        """``match c { | Red | Green → 1 | _ → 0 }`` — or-pattern
+        across two nullary constructors of the same type.
+
+        Bootstrap M15.4 added or-patterns at the parser level and
+        Python codegen handles them.  Self-host's ``cg_compile_match``
+        does not yet split or-pattern arms into separate dispatch
+        entries, so only the first alternative fires.  Gap.
+        """
+        src = (
+            'type Color = | Red | Green | Blue\n'
+            'let is_warm : Color → Nat\n'
+            '  = λ c → match c {\n'
+            '      | Red | Green → 1\n'
+            '      | _ → 0\n'
+            '    }\n'
+            'let main = is_warm Red\n'
+        )
+        self._assert_byte_identical(src)
+
+    @unittest.expectedFailure
+    def test_or_pattern_nat(self):
+        """``match n { | 0 | 1 → 0 | _ → 1 }`` — or-pattern across
+        two Nat literals.  Same self-host gap as
+        ``test_or_pattern_constructor``."""
+        src = (
+            'let classify : Nat → Nat\n'
+            '  = λ n → match n {\n'
+            '      | 0 | 1 → 0\n'
+            '      | _ → 1\n'
+            '    }\n'
+            'let main = classify 0\n'
+        )
+        self._assert_byte_identical(src)
+
+    def test_list_literal_empty(self):
+        """``[]`` desugars to ``Nil``."""
+        src = (
+            'type List a = | Nil | Cons a (List a)\n'
+            'let xs : List Nat = []\n'
+            'let main = xs\n'
+        )
+        self._assert_byte_identical(src)
+
+    @unittest.expectedFailure
+    def test_list_literal_three(self):
+        """``[1, 2, 3]`` desugars to ``Cons 1 (Cons 2 (Cons 3 Nil))``.
+
+        Bootstrap M15.3 added list-literal desugaring.  Self-host's
+        parser/desugarer handles ``[]`` but not multi-element list
+        literals byte-identically — the produced Cons chain differs
+        in structure from the bootstrap's.  Gap."""
+        src = (
+            'type List a = | Nil | Cons a (List a)\n'
+            'let xs : List Nat = [1, 2, 3]\n'
+            'let main = xs\n'
+        )
+        self._assert_byte_identical(src)
+
+    def test_list_cons_pattern(self):
+        """``match xs { | [] → 0 | h :: t → h }`` — list patterns
+        with the cons operator."""
+        src = (
+            'type List a = | Nil | Cons a (List a)\n'
+            'let head_or_zero : List Nat → Nat\n'
+            '  = λ xs → match xs {\n'
+            '      | [] → 0\n'
+            '      | h :: t → h\n'
+            '    }\n'
+            'let main = head_or_zero [42]\n'
+        )
+        self._assert_byte_identical(src)
+
+    @unittest.expectedFailure
+    def test_guard_pattern(self):
+        """``match n { | x | guard → 1 | _ → 0 }`` — guarded match arm.
+
+        Bootstrap M15.5 added guards (`| pat | guard → body`).  Self-
+        host parses guards but the codegen path that synthesises the
+        if-then-else around the arm body isn't yet byte-identical to
+        the bootstrap's.  Gap."""
+        src = (
+            'external mod Reaver.BPLAN {\n'
+            '  eq : Nat → Nat → Nat\n'
+            '}\n'
+            'let is_seven : Nat → Nat\n'
+            '  = λ n → match n {\n'
+            '      | x | Reaver.BPLAN.eq x 7 → 1\n'
+            '      | _ → 0\n'
+            '    }\n'
+            'let main = is_seven 7\n'
+        )
+        self._assert_byte_identical(src)
+
+    @unittest.expectedFailure
+    def test_record_construct(self):
+        """``type Pt = { x : Nat, y : Nat }; let p = { x = 1, y = 2 }`` —
+        record type and construction.  Bootstrap M15.1.
+
+        Gap: self-host emits ``0`` for both the type declaration and
+        any record-construction expression.  The parser likely
+        recognises the syntax but codegen has no handler — needs the
+        record-as-tagged-record codegen (mirror of
+        ``bootstrap/codegen.py``'s record desugar)."""
+        src = (
+            'type Pt = { x : Nat, y : Nat }\n'
+            'let origin : Pt = { x = 0, y = 0 }\n'
+            'let main = origin\n'
+        )
+        self._assert_byte_identical(src)
+
+    @unittest.expectedFailure
+    def test_record_pattern(self):
+        """``match p { | { x = a, y = b } → add a b }`` — record
+        pattern.  Same self-host gap as ``test_record_construct``."""
+        src = (
+            'external mod Reaver.BPLAN {\n'
+            '  add : Nat → Nat → Nat\n'
+            '}\n'
+            'type Pt = { x : Nat, y : Nat }\n'
+            'let sum_xy : Pt → Nat\n'
+            '  = λ p → match p {\n'
+            '      | { x = a, y = b } → Reaver.BPLAN.add a b\n'
+            '    }\n'
+            'let main = sum_xy { x = 3, y = 4 }\n'
+        )
+        self._assert_byte_identical(src)
+
+    @unittest.expectedFailure
+    def test_typeclass_simple(self):
+        """``class Eq_t a { eq_t : a → a → Bool }; instance Eq_t Nat {…}``
+        — single-method typeclass, single Nat instance.  Bootstrap M11.
+
+        Gap: self-host does not yet desugar ``class`` / ``instance``
+        declarations into dictionary-passing.  Bootstrap's
+        ``DeclClass`` / ``DeclInst`` handling needs to be ported."""
+        src = (
+            'external mod Reaver.BPLAN {\n'
+            '  eq : Nat → Nat → Nat\n'
+            '}\n'
+            'class Eq_t a {\n'
+            '  eq_t : a → a → Nat\n'
+            '}\n'
+            'instance Eq_t Nat {\n'
+            '  eq_t = λ a b → Reaver.BPLAN.eq a b\n'
+            '}\n'
+            'let main : Nat = eq_t 7 7\n'
+        )
+        self._assert_byte_identical(src)
+
+    @unittest.expectedFailure
+    def test_do_notation_simple(self):
+        """``x ← rhs in body`` — do-notation bind inside ``handle``.
+        Bootstrap M10 (CPS transform for effect handlers).
+
+        Gap: self-host's CPS codegen for effects doesn't match the
+        bootstrap byte-for-byte (or doesn't fire at all in some
+        paths).  Needs investigation."""
+        src = (
+            'eff State {\n'
+            '  get : Nat → Nat\n'
+            '}\n'
+            'let prog : Nat\n'
+            '  = handle (do n ← State.get 0 in pure n) {\n'
+            '      | return v → v\n'
+            '      | get _ k → k 42\n'
+            '    }\n'
+            'let main = prog\n'
+        )
+        self._assert_byte_identical(src)
+
     @unittest.expectedFailure
     def test_same_constructor_literal_field_collapses(self):
         """`match (MkPair 0 99) { | MkPair 0 _ -> 1 | MkPair n _ -> 2 }` —
