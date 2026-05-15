@@ -852,6 +852,49 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
+    def test_nat_dispatch_first_tag_positive(self):
+        """``cg_build_nat_dispatch``'s ``first_tag > 0`` shift path.
+
+        When the outermost nullary tag in a constructor match is > 0
+        (e.g. matching only ``TkEof`` from a Token type, where TkEof's
+        tag is 4), the dispatch's z slot must be the wild body and the
+        m slot must shift down through tag values until reaching tag 0.
+        Mirrors bootstrap/codegen.py::_build_nat_dispatch L2025-2078.
+
+        Without the shift path, self-host emits ``body0`` as z
+        (incorrect tag semantics) and byte-diverges from REF, which
+        chains ``_shifted_…`` sub-laws.  Observable as the byte-550551
+        divergence in ``Compiler_collect_record_types_go``.  The guard
+        ``idx == 0`` ensures the shift only fires at the outer entry
+        (Python checks ``tag0 > 0`` at the top of ``_build_nat_dispatch``,
+        not inside its recursive ``dispatch()`` helper).
+        """
+        src = (
+            'external mod Reaver.BPLAN {\n'
+            '  sub : Nat → Nat → Nat\n'
+            '  eq : Nat → Nat → Nat\n'
+            '}\n'
+            'type Token = | TkA | TkB | TkC | TkD Nat | TkEof\n'
+            'let tok_peek : Nat → Token\n'
+            '  = λ n → TkA\n'
+            'let tok_tail : Nat → Nat\n'
+            '  = λ n → Reaver.BPLAN.sub n 1\n'
+            'let tok_is : Nat → Nat → Nat\n'
+            '  = λ n k → Reaver.BPLAN.eq n k\n'
+            'let go : Nat → Nat → Nat\n'
+            '  = λ toks acc →\n'
+            '      match (tok_peek toks) {\n'
+            '        | TkEof → acc\n'
+            '        | _ →\n'
+            '            match (tok_is toks 5) {\n'
+            '              | 0 → go (tok_tail toks) acc\n'
+            '              | k → go (tok_tail (tok_tail toks)) acc\n'
+            '            }\n'
+            '      }\n'
+            'let main = go 100 0\n'
+        )
+        self._assert_byte_identical(src)
+
     @unittest.expectedFailure
     def test_same_constructor_literal_field_collapses(self):
         """`match (MkPair 0 99) { | MkPair 0 _ -> 1 | MkPair n _ -> 2 }` —

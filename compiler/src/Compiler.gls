@@ -4654,78 +4654,186 @@ let cg_build_nat_dispatch : List (Pair Nat Expr) → Option (Pair (Option Nat) E
         | Cons arm0 rest →
             match arm0 {
               | MkPair tag body0 →
-                  -- Thread `_{tag}` into the arm-body's hint so nested
-                  -- lifted laws inside the arm body get distinct names
-                  -- like `nat_eq_0_wild_succ` instead of colliding on
-                  -- `nat_eq_wild_succ`.  Mirrors Python's
-                  -- `_compile_expr(body_expr, cur_env, f'{name_hint}_{tag}')`
-                  -- in `_build_nat_dispatch.dispatch` (codegen.py L1983).
-                  let body_hint = cg_concat_under hint (cg_b_decimal tag) in
-                  let zero_val = ce body0 env ctab body_hint in
-                  let succ = match rest {
-                                | Nil →
-                                    cg_make_wild_succ wild env ce ctab hint
-                                | Cons _ _ →
-                                    let nn_succ = 1667462515 in  -- "succ" LE
-                                    let next_idx = add idx 1 in
-                                    let idx_name = cg_b_decimal next_idx in
-                                    let succ_base = cg_concat_under hint nn_succ in
-                                    let succ_name = cg_concat_under succ_base idx_name in
-                                    -- Free-var analysis: capture only the outer
-                                    -- locals that remaining arm bodies (or the
-                                    -- wild body) actually reference.  Mirrors
-                                    -- Python's `make_succ_law`.  Without this,
-                                    -- a body like `match s { | Red → d | Green
-                                    -- → d | Blue → d }` (with `d` an outer
-                                    -- lambda param) compiles `d` to PNat 0
-                                    -- (the succ-law's own self) instead of the
-                                    -- captured slot.
-                                    let rest_bodies = map (λ p →
-                                          match p { | MkPair _ b → b }) rest in
-                                    let all_bodies = match wild {
-                                          | None → rest_bodies
-                                          | Some p → match p {
-                                              | MkPair _ wb → Cons wb rest_bodies
-                                            }
-                                        } in
-                                    let free_vars = cg_free_vars_bodies all_bodies Nil env in
-                                    let uses_self = foldl (λ acc b →
-                                          match (nat_eq acc 1) {
-                                            | 0 → cg_body_uses_self b env
-                                            | _ → 1
-                                          }) 0 all_bodies in
-                                    let g = cenv_globals env in
-                                    let env0 = cenv_make g Nil 0 None in
-                                    let env1 = match (nat_eq uses_self 0) {
-                                          | 0 →
-                                              match (cenv_self env) {
-                                                | None → env0
-                                                | Some fq →
-                                                    let env_fq = cenv_new_param env0 fq in
-                                                    let short = cg_short_after_dot fq in
-                                                    match (Reaver.BPLAN.eq short fq) {
-                                                      | 0 → cenv_bind_local env_fq short (cenv_arity env_fq)
-                                                      | _ → env_fq
+                  -- The `tag0 > 0` shift handling fires only at the OUTER
+                  -- entry to cg_build_nat_dispatch (idx == 0), mirroring
+                  -- Python's check at codegen.py L2025 — which is at the
+                  -- top of _build_nat_dispatch, not inside its recursive
+                  -- `dispatch()` helper.  Recursive succ-law calls
+                  -- (idx > 0) take arm0.body as zero_val regardless of
+                  -- arm0.tag: the scrutinee at that level is the
+                  -- predecessor, so "scr==0 in this dispatch level"
+                  -- already means "scr==orig_tag in the original".
+                  -- Returns 0 (firing `| 0 →` arm = shift) only when
+                  -- idx == 0 AND tag > 0; else returns 1 (firing
+                  -- `| _ →` arm = existing path).
+                  let shift_guard =
+                        match (nat_eq idx 0) {
+                          | 0 → 1
+                          | _ →
+                              match (nat_eq tag 0) {
+                                | 0 → 0
+                                | _ → 1
+                              }
+                        } in
+                  match shift_guard {
+                    | 0 →
+                        -- idx == 0 AND tag > 0: shift path (Python
+                        -- L2025-2078).  No arm matches scrutinee==0, so
+                        -- the outer op2's z slot is the wild body and
+                        -- the m slot recurses on a shifted-down arm
+                        -- list with the predecessor as the new
+                        -- scrutinee.
+                        let nn_wild = 1684826487 in     -- "wild" LE
+                        let nn_shifted = 28259048279861363 in  -- "shifted" LE
+                        let wild_hint = cg_concat_under hint nn_wild in
+                        let shifted_hint = cg_concat_under hint nn_shifted in
+                        let wild_val = match wild {
+                                         | None → cg_quote_nat 0 (cenv_arity env)
+                                         | Some p →
+                                             match p { | MkPair _ wb → ce wb env ctab wild_hint }
+                                       } in
+                        let wild_body_opt = match wild {
+                                              | None → None
+                                              | Some p → match p { | MkPair _ wb → Some wb }
+                                            } in
+                        let wild_var_opt = match wild {
+                                             | None → None
+                                             | Some p → match p { | MkPair v _ → v }
+                                           } in
+                        let shifted_arms = map (λ p →
+                              match p {
+                                | MkPair t body → MkPair (sub t 1) body
+                              }) arms in
+                        let shifted_bodies = map (λ p →
+                              match p { | MkPair _ b → b }) shifted_arms in
+                        let bound_for_free = match wild_var_opt {
+                                               | None → Nil
+                                               | Some v → Cons v Nil
+                                             } in
+                        let all_bodies = match wild_body_opt {
+                                           | None → shifted_bodies
+                                           | Some wb → Cons wb shifted_bodies
+                                         } in
+                        let free_vars = cg_free_vars_bodies all_bodies bound_for_free env in
+                        let uses_self = foldl (λ acc b →
+                              match (nat_eq acc 1) {
+                                | 0 → cg_body_uses_self b env
+                                | _ → 1
+                              }) 0 all_bodies in
+                        match (nat_eq (cenv_arity env) 0) {
+                          | 0 →
+                              -- in-law: lambda-lift outer captures + self-ref
+                              -- into the shifted-dispatch sub-law.
+                              let g = cenv_globals env in
+                              let env0 = cenv_make g Nil 0 None in
+                              let env1 = match (nat_eq uses_self 0) {
+                                           | 0 →
+                                               match (cenv_self env) {
+                                                 | None → env0
+                                                 | Some fq →
+                                                     let env_fq = cenv_new_param env0 fq in
+                                                     let short = cg_short_after_dot fq in
+                                                     match (Reaver.BPLAN.eq short fq) {
+                                                       | 0 → cenv_bind_local env_fq short (cenv_arity env_fq)
+                                                       | _ → env_fq
+                                                     }
+                                               }
+                                           | _ → env0
+                                         } in
+                              let env2 = cg_bind_params free_vars env1 in
+                              let pred_idx = add (cenv_arity env2) 1 in
+                              let pred_env = cenv_set_arity env2 pred_idx in
+                              let inner = cg_build_nat_dispatch shifted_arms wild (PNat pred_idx) pred_env ce ctab shifted_hint 0 in
+                              let lifted_law = PPin (PLaw 0 (MkPair pred_idx inner)) in
+                              let succ_partial = match (nat_eq uses_self 0) {
+                                                   | 0 → cg_bapp lifted_law (PNat 0)
+                                                   | _ → lifted_law
+                                                 } in
+                              let succ = cg_apply_free_locals succ_partial free_vars env in
+                              cg_build_op2 wild_val succ scr (cenv_arity env)
+                          | _ →
+                              -- top-level: fresh pred env with arity 1, no captures.
+                              let g = cenv_globals env in
+                              let pred_env = cenv_make g Nil 1 (cenv_self env) in
+                              let inner = cg_build_nat_dispatch shifted_arms wild (PNat 1) pred_env ce ctab shifted_hint 0 in
+                              let succ = PPin (PLaw 0 (MkPair 1 inner)) in
+                              cg_build_op2 wild_val succ scr (cenv_arity env)
+                        }
+                    | _ →
+                        -- tag == 0: existing path.
+                        -- Thread `_{tag}` into the arm-body's hint so nested
+                        -- lifted laws inside the arm body get distinct names
+                        -- like `nat_eq_0_wild_succ` instead of colliding on
+                        -- `nat_eq_wild_succ`.  Mirrors Python's
+                        -- `_compile_expr(body_expr, cur_env, f'{name_hint}_{tag}')`
+                        -- in `_build_nat_dispatch.dispatch` (codegen.py L1983).
+                        let body_hint = cg_concat_under hint (cg_b_decimal tag) in
+                        let zero_val = ce body0 env ctab body_hint in
+                        let succ = match rest {
+                                      | Nil →
+                                          cg_make_wild_succ wild env ce ctab hint
+                                      | Cons _ _ →
+                                          let nn_succ = 1667462515 in  -- "succ" LE
+                                          let next_idx = add idx 1 in
+                                          let idx_name = cg_b_decimal next_idx in
+                                          let succ_base = cg_concat_under hint nn_succ in
+                                          let succ_name = cg_concat_under succ_base idx_name in
+                                          -- Free-var analysis: capture only the outer
+                                          -- locals that remaining arm bodies (or the
+                                          -- wild body) actually reference.  Mirrors
+                                          -- Python's `make_succ_law`.  Without this,
+                                          -- a body like `match s { | Red → d | Green
+                                          -- → d | Blue → d }` (with `d` an outer
+                                          -- lambda param) compiles `d` to PNat 0
+                                          -- (the succ-law's own self) instead of the
+                                          -- captured slot.
+                                          let rest_bodies = map (λ p →
+                                                match p { | MkPair _ b → b }) rest in
+                                          let all_bodies = match wild {
+                                                | None → rest_bodies
+                                                | Some p → match p {
+                                                    | MkPair _ wb → Cons wb rest_bodies
+                                                  }
+                                              } in
+                                          let free_vars = cg_free_vars_bodies all_bodies Nil env in
+                                          let uses_self = foldl (λ acc b →
+                                                match (nat_eq acc 1) {
+                                                  | 0 → cg_body_uses_self b env
+                                                  | _ → 1
+                                                }) 0 all_bodies in
+                                          let g = cenv_globals env in
+                                          let env0 = cenv_make g Nil 0 None in
+                                          let env1 = match (nat_eq uses_self 0) {
+                                                | 0 →
+                                                    match (cenv_self env) {
+                                                      | None → env0
+                                                      | Some fq →
+                                                          let env_fq = cenv_new_param env0 fq in
+                                                          let short = cg_short_after_dot fq in
+                                                          match (Reaver.BPLAN.eq short fq) {
+                                                            | 0 → cenv_bind_local env_fq short (cenv_arity env_fq)
+                                                            | _ → env_fq
+                                                          }
                                                     }
-                                              }
-                                          | _ → env0
-                                        } in
-                                    let env2 = cg_bind_params free_vars env1 in
-                                    let pred_idx = add (cenv_arity env2) 1 in
-                                    let pred_env = cenv_set_arity env2 pred_idx in
-                                    let inner = cg_build_nat_dispatch rest wild (PNat pred_idx) pred_env ce ctab hint next_idx in
-                                    let succ_law = PPin (PLaw succ_name (MkPair pred_idx inner)) in
-                                    let result0 = match (nat_eq uses_self 0) {
-                                          | 0 →
-                                              match (nat_eq (cenv_arity env) 0) {
-                                                | 0 → cg_bapp succ_law (PNat 0)
-                                                | _ → PApp succ_law (PNat 0)
-                                              }
-                                          | _ → succ_law
-                                        } in
-                                    cg_apply_free_locals result0 free_vars env
-                              } in
-                  cg_build_op2 zero_val succ scr (cenv_arity env)
+                                                | _ → env0
+                                              } in
+                                          let env2 = cg_bind_params free_vars env1 in
+                                          let pred_idx = add (cenv_arity env2) 1 in
+                                          let pred_env = cenv_set_arity env2 pred_idx in
+                                          let inner = cg_build_nat_dispatch rest wild (PNat pred_idx) pred_env ce ctab hint next_idx in
+                                          let succ_law = PPin (PLaw succ_name (MkPair pred_idx inner)) in
+                                          let result0 = match (nat_eq uses_self 0) {
+                                                | 0 →
+                                                    match (nat_eq (cenv_arity env) 0) {
+                                                      | 0 → cg_bapp succ_law (PNat 0)
+                                                      | _ → PApp succ_law (PNat 0)
+                                                    }
+                                                | _ → succ_law
+                                              } in
+                                          cg_apply_free_locals result0 free_vars env
+                                    } in
+                        cg_build_op2 zero_val succ scr (cenv_arity env)
+                  }
             }
       }
 
