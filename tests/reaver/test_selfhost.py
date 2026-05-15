@@ -915,5 +915,70 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         self._assert_byte_identical(src)
 
 
+@requires_reaver
+@unittest.skipUnless(
+    os.environ.get('GALLOWGLASS_RUN_COMPILE_SELF') == '1',
+    'compile-self fixed-point gate is slow (~20-25 min under Reaver, '
+    'no jets); set GALLOWGLASS_RUN_COMPILE_SELF=1 to run it.',
+)
+class TestPhaseHFixedPoint(unittest.TestCase):
+    """Phase H — compile-self fixed point.
+
+    The Reaver-hosted self-host compiler (``main_reaver`` driving the
+    bootstrap-compiled ``Compiler.gls``) must produce output
+    byte-identical to the Python bootstrap when both compile
+    ``compiler/src/Compiler.gls`` itself.  This is the canonical
+    self-hosting property — once true, the self-host can replace the
+    Python bootstrap.
+
+    Gated behind ``GALLOWGLASS_RUN_COMPILE_SELF=1`` because the run
+    takes ~20-25 minutes under Reaver (no jet substrate for arithmetic
+    yet — post-1.0).  CI and slow-suites should set the var; default
+    pytest runs skip it.
+    """
+
+    _TIMEOUT = 1800  # 30 min — Reaver no-jets is slow.
+
+    def test_compile_self(self):
+        """Feed ``compiler/src/Compiler.gls`` to the Reaver-hosted
+        self-host; assert byte-identity to the Python bootstrap output
+        of the same source.
+        """
+        with open(COMPILER_GLS) as f:
+            src = f.read()
+
+        # Python reference
+        prog = parse(lex(src, COMPILER_GLS), COMPILER_GLS)
+        resolved, _ = resolve(prog, 'Compiler', {}, COMPILER_GLS)
+        compiled = compile_program(resolved, 'Compiler')
+        reference = emit_program(compiled).encode()
+
+        try:
+            stdout, stderr, exit_code = _run_compiler(
+                src.encode(), timeout=self._TIMEOUT
+            )
+        except subprocess.TimeoutExpired:
+            self.fail(
+                f'compile-self timed out after {self._TIMEOUT}s.  '
+                f'Reaver no-jet arithmetic is slow; raise _TIMEOUT or '
+                f'wait for jets.'
+            )
+        self.assertEqual(
+            exit_code, 0,
+            f'main_reaver failed (exit {exit_code}):\n'
+            f'stderr-tail={stderr[-1500:]!r}',
+        )
+        self.assertEqual(
+            len(stdout), len(reference),
+            f'compile-self output length mismatch: '
+            f'actual={len(stdout)} bytes, reference={len(reference)} bytes',
+        )
+        self.assertEqual(
+            stdout, reference,
+            f'compile-self byte-identity FAILED.  '
+            f'First mismatch position: {next((i for i in range(min(len(stdout), len(reference))) if stdout[i:i+1] != reference[i:i+1]), -1)}',
+        )
+
+
 if __name__ == '__main__':
     unittest.main()

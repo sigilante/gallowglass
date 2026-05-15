@@ -1,7 +1,67 @@
-# Phase H — Session handoff (2026-05-14 / 2026-05-15)
+# Phase H — Session handoff (2026-05-14 / 2026-05-15 / 2026-05-16)
 
-**Status:** in progress, multi-session.
+**Status:** ✅ **COMPLETE.** Compile-self is byte-identical.
 **Roadmap reference:** `ROADMAP.md § "Phase H — Compile-self fixed point"`.
+
+## 🎉 Phase H complete — byte-identical compile-self (2026-05-16)
+
+The Reaver-hosted self-host compiler (`main_reaver` driving the
+bootstrap-compiled `Compiler.gls`) produces output **byte-identical**
+to the Python bootstrap when both compile `compiler/src/Compiler.gls`
+itself.  Output: **1,234,064 bytes** in **1253 seconds** under Reaver
+(no jets).
+
+The fixed point is pinned by
+`tests/reaver/test_selfhost.py::TestPhaseHFixedPoint::test_compile_self`,
+gated behind `GALLOWGLASS_RUN_COMPILE_SELF=1`.  Default pytest runs
+skip it (30-min timeout would derail fast iteration); CI and slow
+suites should set the env var.
+
+### Compile-self gate progression (this session — 2026-05-16)
+
+| After commit  | First divergence byte    | Cumulative % byte-identical | Cause                                                              |
+| ------------- | ------------------------ | --------------------------- | ------------------------------------------------------------------ |
+| (start)       | 306230 of 1218740        | ~25%                        | (anchor from prior session)                                        |
+| f10457b (F)   | 542118 of 1219621        | ~44%                        | `__shared__` over-capture in App handler                           |
+| 39d741a (H)   | 550551 of 1223796        | ~45%                        | No wild_app_handler for nullary-only + wild matches                |
+| dfb07c0 (I)   | 774580 of 1231445        | ~63%                        | `cg_build_nat_dispatch` missing `first_tag > 0` shift              |
+| a550e4b (J)   | 1232382 of 1232496       | ~99.99%                     | Double-pin for App globals; hint lost in unary z/m body            |
+| 2eaeaa0 (K)   | **OK 1234064 bytes**     | **100%**                    | `parse_lambda_params` rejected `λ _ → body`                        |
+
+Total: five fixes, each ~1-10 lines of substantive code change, plus
+test fixtures pinning each fix.  Selfhost suite: **27 passed + 1
+skipped (compile-self gate, env-gated) + 1 xfailed** at session end.
+
+### Commits this session
+
+```
+2eaeaa0 fix(self-host): parse_lambda_params accepts TkUnderscore (Phase H Task K)
+a550e4b fix(self-host): double-pin and unary z/m hint propagation (Phase H Task J)
+dfb07c0 fix(self-host): first_tag > 0 shift in nat_dispatch (Phase H Task I)
+39d741a feat(self-host): wild_app_handler for nullary-only + wild matches (Phase H)
+f10457b fix(self-host): drop __shared__ from App-handler captures (Phase H)
+```
+
+### What's still open (low priority)
+
+* **Dwarf #4** — ambiguity check in short-tail fallbacks
+  (`cg_global_lookup_by_short`, `cg_contab_lookup_by_short`).  No
+  current trigger.
+* **Hobbit cuts** — helper-inlining suggestions.  Re-evaluated
+  multiple times; left in place.
+* **xfail** `test_same_constructor_literal_field_collapses` — the
+  same-constructor collapse pass isn't ported to Compiler.gls.
+  AUDIT.md D9.
+* **Compile-self runtime under Reaver** — 1253s (~21 min) per run
+  is fine for slow-CI but too slow for default pytest.  Will
+  improve with jets (post-1.0).
+
+The earlier session-by-session sections below (compile-self at byte
+306230, 542118, 550551, 774580) are now historical — preserved for
+context on the bugs found, but no longer reflect the current state of
+the gate.
+
+---
 
 > **Next session: see [§ Work plan for next session (2026-05-15)](#work-plan-for-next-session-2026-05-15) at the bottom.**
 > That section is the actionable starting point. The earlier sections are
