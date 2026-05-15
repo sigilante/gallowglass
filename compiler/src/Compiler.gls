@@ -545,6 +545,18 @@ type PlanVal =
                                     -- emit_pval/emit_body_val.  All other
                                     -- helpers see PNamed as opaque (fall
                                     -- through their wildcard arms).
+  | PMutual Nat                     -- mutual-SCC sentinel; the Nat is the
+                                    -- 0-based SCC index.  Lives ONLY in
+                                    -- env.globals during compilation of a
+                                    -- mutual-recursion member law body;
+                                    -- cg_var_from_env intercepts it and
+                                    -- emits the shared-pin bapp pattern.
+                                    -- Mirrors bootstrap/codegen.py::
+                                    -- _MutualRef (L41) and its _compile_var
+                                    -- handler (L1268).  Should NEVER reach
+                                    -- the emit path; if it does, the
+                                    -- emit-side fallback arms produce a
+                                    -- '!' sentinel to fail loud.
 
 -- Compilation environment (4 fields → nested Pairs)
 -- globals : List (Pair Nat PlanVal)
@@ -3376,6 +3388,13 @@ let cenv_bind_global : CEnv → Nat → PlanVal → CEnv
 -- so nested lets must be lambda-lifted to sub-laws instead.
 let nn_top_of_law : Nat = 1934392534279512447088758627786591
 
+-- nn___shared__: synthetic param name for the shared-pin slot in a
+-- mutual-recursion member law's lifted body.  See the SCC emit
+-- pipeline (cg_compile_mutual_law) for why this exists; declared
+-- here so cg_cf_dispatch can name it when adding the implicit
+-- capture triggered by a PMutual reference.  LE-packed "__shared__".
+let nn___shared__ : Nat = 450384490873757833060191
+
 -- cenv_top_of_law: 1 if env is at the body root of some law, 0 otherwise.
 let cenv_top_of_law : CEnv → Nat
   = λ env →
@@ -4056,14 +4075,37 @@ let cg_cf_dispatch : (Expr → List Nat → CEnv → List Nat → List Nat)
               | _ → acc  -- ENat: no free vars
             }
         | _ →
-            -- EVar: check if name is free (in env.locals, not in bound)
+            -- EVar: check if name is free (in env.locals, not in bound).
+            -- Also: if the name resolves to a PMutual in env.globals,
+            -- the body's compiled form implicitly references slot 1
+            -- (the shared row), so add __shared__ as a captured local.
+            -- Mirrors bootstrap/codegen.py::_collect_free L1640-1646.
             match expr {
               | EVar n →
                   match (cg_name_in_list n bound) {
                     | 0 →
-                        match (assoc_has n (cenv_locals env)) {
-                          | 0 → acc
-                          | _ → cg_add_name_once n acc
+                        let acc1 = match (assoc_has n (cenv_locals env)) {
+                                     | 0 → acc
+                                     | _ → cg_add_name_once n acc
+                                   } in
+                        match (cenv_global_lookup env n) {
+                          | None → acc1
+                          | Some val →
+                              match val {
+                                | PMutual _ →
+                                    match (assoc_has nn___shared__
+                                             (cenv_locals env)) {
+                                      | 0 → acc1
+                                      | _ →
+                                          match (cg_name_in_list
+                                                   nn___shared__ bound) {
+                                            | 0 → cg_add_name_once
+                                                    nn___shared__ acc1
+                                            | _ → acc1
+                                          }
+                                    }
+                                | _ → acc1
+                              }
                         }
                     | _ → acc
                   }
@@ -5660,6 +5702,33 @@ let cg_resolve_global_val : Nat → PlanVal → CEnv → PlanVal
       }
 
 -- cg_var_from_env: look up variable name in locals then globals.
+-- ---------------------------------------------------------------------
+-- Mutual-recursion sentinel helpers (Phase H Task A3-6)
+-- ---------------------------------------------------------------------
+-- These must be declared before cg_var_from_env, which calls them to
+-- intercept PMutual lookups.  The heavier SCC emit pipeline that
+-- depends on cg_compile_expr lives much later, just before cg_pass3.
+
+-- planval_is_mutual: predicate for the PMutual sentinel.
+let planval_is_mutual : PlanVal → Nat
+  = λ v → match v { | PMutual _ → 1 | _ → 0 }
+
+-- planval_get_mutual_idx: extract the SCC index from a PMutual.  Returns
+-- 0 on a non-PMutual value (caller responsibility to gate via
+-- planval_is_mutual first).
+let planval_get_mutual_idx : PlanVal → Nat
+  = λ v → match v { | PMutual i → i | _ → 0 }
+
+-- cg_mutual_ref_bapp: emit `(_1 j) _1` — extract law_j from the shared
+-- row at slot 1, then apply law_j to the shared row (its __shared__
+-- arg).  The caller's body context must have arity ≥ 1; PMutual lives
+-- only inside member law bodies so this invariant always holds at
+-- emit time.
+let cg_mutual_ref_bapp : Nat → CEnv → PlanVal
+  = λ idx env →
+      let j_val = cg_quote_nat idx (cenv_arity env) in
+      cg_bapp (cg_bapp (PNat 1) j_val) (PNat 1)
+
 -- Lookup order: locals (de Bruijn slot), globals (by FQ), globals (by short
 -- tail).  The short-tail fallback resolves bare EVars that sr_dispatch
 -- failed to qualify; without it, bare cross-binding refs in deeply-nested
@@ -5671,7 +5740,14 @@ let cg_var_from_env : Nat → CEnv → PlanVal
         | Some idx → PNat idx
         | None →
             match (cenv_global_lookup env n) {
-              | Some val → cg_resolve_global_val n val env
+              | Some val →
+                  -- PMutual sentinel (mutual-SCC member): emit the
+                  -- shared-pin bapp pattern instead of tagging the
+                  -- value.  See cg_compile_mutual_law for setup.
+                  match (planval_is_mutual val) {
+                    | 0 → cg_resolve_global_val n val env
+                    | _ → cg_mutual_ref_bapp (planval_get_mutual_idx val) env
+                  }
               | None →
                   -- Bare-name fallback: scan globals for the first FQ whose
                   -- short tail matches `n` (e.g. bare `helper` → FQ
@@ -5680,7 +5756,12 @@ let cg_var_from_env : Nat → CEnv → PlanVal
                     | None → PNat 0  -- unbound: return 0 (error in source)
                     | Some pair →
                         match pair {
-                          | MkPair fq val → cg_resolve_global_val fq val env
+                          | MkPair fq val →
+                              match (planval_is_mutual val) {
+                                | 0 → cg_resolve_global_val fq val env
+                                | _ → cg_mutual_ref_bapp
+                                        (planval_get_mutual_idx val) env
+                              }
                         }
                   }
             }
@@ -7091,40 +7172,442 @@ let cg_tarjan_scc : List (Pair Nat (List Nat)) → List (List Nat)
       let final = cg_tarjan_outer graph keys tstate_empty in
       reverse (ts_sccs final)
 
--- cg_pass3: process DLet and DInst declarations
-let cg_pass3 : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat Nat)) → List (Pair Nat PlanVal)
-             → List (Pair Nat PlanVal)
-  = λ decls mod_name env ctab compiled →
+-- ---------------------------------------------------------------------
+-- Shared-pin SCC emit pipeline (Phase H Task A3-6)
+-- ---------------------------------------------------------------------
+--
+-- For an SCC of n ≥ 2 mutually recursive lets, the bootstrap emits:
+--
+--   shared_row = (((selector_law law_0) law_1) ... law_{n-1})
+--
+-- where selector_law is L(n+1, 0, dispatch-on-last-slot) and each law_i
+-- is a lambda-lifted version of member i with __shared__ inserted as
+-- its first explicit argument (slot 1).  Cross-SCC references in a
+-- member body compile to `(_1 j) _1` — extract law_j from the shared
+-- row, then pass the shared row as that law's __shared__ arg.
+--
+-- External wrappers of the original arity are emitted per member so
+-- the rest of the compiler sees normal pinned bindings.  Inside the
+-- wrapper body, the shared row tree is inlined twice (once for index
+-- extraction, once as the __shared__ arg) — same as the Python
+-- bootstrap (bootstrap/codegen.py::_build_mutual_wrapper L3916).
+--
+-- See spec/02-mutual-recursion.md and bootstrap/codegen.py::
+-- _compile_mutual_scc (L3822).
+
+-- ---------------------------------------------------------------------
+-- A3: Selector law
+-- ---------------------------------------------------------------------
+
+-- cg_build_selector_pairs_go: build the (tag, slot) pairs (0..n-1) →
+-- (PNat 1..PNat n) feeding cg_build_precompiled_nat_dispatch.
+let cg_build_selector_pairs_go : Nat → Nat → List (Pair Nat PlanVal)
+                                → List (Pair Nat PlanVal)
+  = λ i n acc →
+      match (lte n i) {
+        | 0 →
+            cg_build_selector_pairs_go (Core.PLAN.inc i) n
+              (Cons (MkPair i (PNat (add i 1))) acc)
+        | _ → reverse acc
+      }
+
+let cg_build_selector_pairs : Nat → List (Pair Nat PlanVal)
+  = λ n → cg_build_selector_pairs_go 0 n Nil
+
+-- cg_build_selector_law: build the bare selector law for an n-member SCC.
+--   L(n+1, 0, dispatch(scr=slot_{n+1}, pairs={0→_1, 1→_2, ..., n-1→_n}))
+-- No PPin wrap — the law is App'd into the shared_row chain directly.
+let cg_build_selector_law : Nat → CEnv → PlanVal
+  = λ n env →
+      let pairs = cg_build_selector_pairs n in
+      let body_arity = add n 1 in
+      let body_env = cenv_set_arity (cenv_set_self env None) body_arity in
+      let scr = PNat body_arity in
+      let body = cg_build_precompiled_nat_dispatch pairs None scr body_env
+                   cg_compile_expr Nil 0 in
+      PLaw 0 (MkPair body_arity body)
+
+-- ---------------------------------------------------------------------
+-- A5: Shared row builder
+-- ---------------------------------------------------------------------
+
+-- cg_build_shared_row_go: left-fold App selector to each member law.
+-- Variable named `lv` (not `law`) because `law` is a reserved keyword.
+let cg_build_shared_row_go : PlanVal → List PlanVal → PlanVal
+  = λ acc laws →
+      match laws {
+        | Nil → acc
+        | Cons lv rest → cg_build_shared_row_go (PApp acc lv) rest
+      }
+
+-- cg_build_shared_row: returns A(...A(A(selector, law_0), law_1)..., law_{n-1}).
+-- Not pinned — the row is partially-applied (awaits the index argument)
+-- and gets inlined twice into each wrapper body.
+let cg_build_shared_row : PlanVal → List PlanVal → PlanVal
+  = λ selector laws → cg_build_shared_row_go selector laws
+
+-- ---------------------------------------------------------------------
+-- A6: External wrapper
+-- ---------------------------------------------------------------------
+
+-- cg_apply_user_params_go: bapp `acc` to N(i), N(i+1), ..., N(u).
+-- Loop runs while i <= u (inclusive); stops once i exceeds u.
+let cg_apply_user_params_go : PlanVal → Nat → Nat → PlanVal
+  = λ acc i u →
+      match (lte i u) {
+        | 0 → acc
+        | _ → cg_apply_user_params_go (cg_bapp acc (PNat i))
+                                       (Core.PLAN.inc i) u
+      }
+
+let cg_apply_user_params : PlanVal → Nat → PlanVal
+  = λ acc u → cg_apply_user_params_go acc 1 u
+
+-- cg_build_mutual_wrapper: build the top-level wrapper binding for a
+-- single SCC member.  External callers see this as a normal pinned-ish
+-- law of the original arity u.  Body:
+--
+--   For u >= 1:
+--     L(u, name_nat,
+--       bapp(bapp(bapp(shared_row, quote(index)), shared_row), _1, ..., _u))
+--
+--   For u = 0:
+--     App(App(shared_row, N(index)), shared_row)
+let cg_build_mutual_wrapper : PlanVal → Nat → Nat → Nat → PlanVal
+  = λ shared_row index name_nat u →
+      match (nat_eq u 0) {
+        | 0 →
+            let i_val   = cg_quote_nat index u in
+            let extract = cg_bapp shared_row i_val in
+            let call    = cg_bapp extract shared_row in
+            let full    = cg_apply_user_params call u in
+            PLaw name_nat (MkPair u full)
+        | _ →
+            PApp (PApp shared_row (PNat index)) shared_row
+      }
+
+-- ---------------------------------------------------------------------
+-- A4: Lambda-lifted member law compilation
+-- ---------------------------------------------------------------------
+
+-- cg_register_mutual_refs_go: register PMutual(idx) in env.globals for
+-- each SCC member's FQ name AND its short tail.  Both forms must be
+-- registered so the body's bare or fully-qualified references both
+-- resolve.  Mirrors bootstrap/codegen.py::_compile_mutual_law L3905.
+let cg_register_mutual_refs_go : List (Pair Nat Nat) → CEnv → CEnv
+  = λ pairs env →
+      match pairs {
+        | Nil → env
+        | Cons p rest →
+            match p {
+              | MkPair fq idx →
+                  let env1 = cenv_bind_global env fq (PMutual idx) in
+                  let short = cg_short_after_dot fq in
+                  let env2 = match (Reaver.BPLAN.eq short fq) {
+                               | 0 → cenv_bind_global env1 short (PMutual idx)
+                               | _ → env1
+                             } in
+                  cg_register_mutual_refs_go rest env2
+            }
+      }
+
+let cg_register_mutual_refs : List (Pair Nat Nat) → CEnv → CEnv
+  = λ pairs env → cg_register_mutual_refs_go pairs env
+
+-- cg_compile_mutual_law: compile one SCC member's body as a lambda-
+-- lifted law of arity 1+u (shared row at slot 1, user params at
+-- slots 2..u+1).  Self-references and cross-references both route
+-- through the shared row via PMutual sentinels in env.globals.
+--
+-- Bypasses cg_compile_lam_as_law because that helper uses the same
+-- `hint` for both the law's name AND the body's lifted-sub-law name
+-- prefix.  For byte identity with bootstrap/codegen.py::
+-- _compile_mutual_law (L3912), the body must compile with an EMPTY
+-- hint (Python doesn't thread name_hint through) while the outer law
+-- still carries the original short name.
+let cg_compile_mutual_law
+  : Nat → Expr → List (Pair Nat Nat) → CEnv → List (Pair Nat (Pair Nat Nat)) → PlanVal
+  = λ name_nat body scc_idx_pairs env ctab →
+      match (cg_flatten_lam body) {
+        | MkPair user_params inner_body →
+            -- Synthetic outer parameter is __shared__ at slot 1; the
+            -- original user params slide one slot down to 2..1+u.
+            let all_params = Cons nn___shared__ user_params in
+            -- Clear self_ref so a body-internal reference to the
+            -- member's own name falls through to the PMutual entry
+            -- in env.globals (Python L3899: self_ref_name='').
+            let env0 = cenv_set_self env None in
+            let env1 = cg_register_mutual_refs scc_idx_pairs env0 in
+            let g = cenv_globals env1 in
+            let body_env = cenv_mark_top_of_law
+                             (cg_make_lifted_env Nil all_params g None) in
+            let body_val = cg_compile_expr inner_body body_env ctab 0 in
+            PLaw name_nat (MkPair (length all_params) body_val)
+      }
+
+-- ---------------------------------------------------------------------
+-- Orchestrator
+-- ---------------------------------------------------------------------
+
+-- cg_zip_indices_go: zip a (fq, body) list with 0-based indices.
+-- Result: List (Pair fq idx) — the canonical mapping for an SCC.
+let cg_zip_indices_go : List (Pair Nat Expr) → Nat → List (Pair Nat Nat)
+                       → List (Pair Nat Nat)
+  = λ members idx acc →
+      match members {
+        | Nil → reverse acc
+        | Cons p rest →
+            match p {
+              | MkPair fq _ →
+                  cg_zip_indices_go rest (Core.PLAN.inc idx)
+                    (Cons (MkPair fq idx) acc)
+            }
+      }
+
+-- cg_compile_member_laws_go: compile each member's body via
+-- cg_compile_mutual_law, accumulating laws in canonical order.
+let cg_compile_member_laws_go
+  : List (Pair Nat Expr) → List (Pair Nat Nat) → CEnv
+  → List (Pair Nat (Pair Nat Nat)) → List PlanVal → List PlanVal
+  = λ members scc_idx_pairs env ctab acc →
+      match members {
+        | Nil → reverse acc
+        | Cons p rest →
+            match p {
+              | MkPair fq body →
+                  let name_nat = cg_short_after_dot fq in
+                  let lv = cg_compile_mutual_law name_nat body
+                             scc_idx_pairs env ctab in
+                  cg_compile_member_laws_go rest scc_idx_pairs env ctab
+                    (Cons lv acc)
+            }
+      }
+
+-- cg_arity_of_lambda: count outer lambdas to get the wrapper's user arity.
+let cg_arity_of_lambda : Expr → Nat
+  = λ e → match (cg_flatten_lam e) {
+            | MkPair params _ → length params
+          }
+
+-- cg_emit_wrappers_go: for each member, build its wrapper, bind it in
+-- env.globals (tagged with FQ for cross-ref dedup), prepend (fq, val)
+-- to compiled.  Index counts up from 0 in member order (canonical).
+let cg_emit_wrappers_go
+  : List (Pair Nat Expr) → PlanVal → Nat → CEnv → List (Pair Nat PlanVal)
+  → Pair CEnv (List (Pair Nat PlanVal))
+  = λ members shared_row idx env compiled →
+      match members {
+        | Nil → MkPair env compiled
+        | Cons p rest →
+            match p {
+              | MkPair fq body →
+                  let name_nat = cg_short_after_dot fq in
+                  let u = cg_arity_of_lambda body in
+                  let wrapper = cg_build_mutual_wrapper shared_row idx
+                                  name_nat u in
+                  let new_env = cenv_bind_global env fq wrapper in
+                  let new_compiled = Cons (MkPair fq wrapper) compiled in
+                  cg_emit_wrappers_go rest shared_row (Core.PLAN.inc idx)
+                    new_env new_compiled
+            }
+      }
+
+-- cg_compile_mutual_scc: end-to-end compilation of one multi-member SCC.
+-- `members` is the (FQ, body) list in canonical (lex-sorted) order.
+let cg_compile_mutual_scc
+  : List (Pair Nat Expr) → CEnv → List (Pair Nat (Pair Nat Nat))
+  → List (Pair Nat PlanVal)
+  → Pair CEnv (List (Pair Nat PlanVal))
+  = λ members env ctab compiled →
+      let n = length members in
+      let scc_idx_pairs = cg_zip_indices_go members 0 Nil in
+      let selector = cg_build_selector_law n env in
+      let member_laws = cg_compile_member_laws_go members scc_idx_pairs
+                          env ctab Nil in
+      let shared_row = cg_build_shared_row selector member_laws in
+      cg_emit_wrappers_go members shared_row 0 env compiled
+
+-- cg_fan_scc_go / cg_fan_scc: turn one canonical-order SCC member list
+-- into entries (fq → member list) for every member.  Each member maps
+-- to the SAME shared list so cg_pass3 can recover the SCC from any of
+-- its members.
+let cg_fan_scc_go : List Nat → List Nat → List (Pair Nat (List Nat))
+                  → List (Pair Nat (List Nat))
+  = λ remaining all_members acc →
+      match remaining {
+        | Nil → acc
+        | Cons fq rest →
+            cg_fan_scc_go rest all_members (Cons (MkPair fq all_members) acc)
+      }
+
+let cg_fan_scc : List Nat → List (Pair Nat (List Nat))
+                → List (Pair Nat (List Nat))
+  = λ scc acc → cg_fan_scc_go scc scc acc
+
+-- cg_fq_to_scc_members_go: build the fq → member-list assoc by scanning
+-- every SCC.  Result keys cover every binding in every multi/single SCC.
+let cg_fq_to_scc_members_go : List (List Nat) → List (Pair Nat (List Nat))
+                             → List (Pair Nat (List Nat))
+  = λ sccs acc →
+      match sccs {
+        | Nil → acc
+        | Cons scc rest →
+            cg_fq_to_scc_members_go rest (cg_fan_scc scc acc)
+      }
+
+let cg_fq_to_scc_members : List (List Nat) → List (Pair Nat (List Nat))
+  = λ sccs → cg_fq_to_scc_members_go sccs Nil
+
+-- cg_lookup_member_bodies_go: for each member FQ, look up its body in
+-- lets_by_fq; result is (fq, body) pairs in member-list (canonical)
+-- order.  Returns the list in REVERSE order; wrapper reverses once.
+let cg_lookup_member_bodies_go : List Nat → List (Pair Nat Expr)
+                                → List (Pair Nat Expr)
+                                → List (Pair Nat Expr)
+  = λ members lets_by_fq acc →
+      match members {
+        | Nil → reverse acc
+        | Cons fq rest →
+            match (assoc_lookup fq lets_by_fq) {
+              | None → cg_lookup_member_bodies_go rest lets_by_fq acc
+              | Some body →
+                  cg_lookup_member_bodies_go rest lets_by_fq
+                    (Cons (MkPair fq body) acc)
+            }
+      }
+
+let cg_lookup_member_bodies : List Nat → List (Pair Nat Expr)
+                             → List (Pair Nat Expr)
+  = λ members lets_by_fq →
+      cg_lookup_member_bodies_go members lets_by_fq Nil
+
+-- cg_scc_rep: canonical representative of an SCC (the lex-smallest FQ,
+-- which is the first element of the canonically-sorted member list).
+-- Sentinel 0 for an empty list shouldn't arise in practice — Tarjan
+-- never emits empty SCCs.
+let cg_scc_rep : List Nat → Nat
+  = λ scc → match scc { | Nil → 0 | Cons rep _ → rep }
+
+-- cg_pass3_go: source-order walk over decls, dispatching DLets through
+-- their SCC's emit shape (single-member → cg_compile_let_one,
+-- multi-member → cg_compile_mutual_scc).  DInsts are compiled in-line
+-- as before.  `emitted` tracks SCC representative FQs already produced.
+let cg_pass3_go
+  : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat Nat))
+  → List (Pair Nat PlanVal)
+  → List (Pair Nat Expr) → List (Pair Nat (List Nat)) → List Nat
+  → List (Pair Nat PlanVal)
+  = λ decls mod_name env ctab compiled lets_by_fq fq_to_members emitted →
       match decls {
         | Nil → compiled
         | Cons decl rest →
-            let result = match (nat_eq (decl_is_let decl) 0) {
-                           | 0 →
-                               cg_compile_let_one
-                                 (decl_get_let_name decl)
-                                 (decl_get_let_body decl)
-                                 mod_name env ctab compiled
-                           | _ →
-                               match (nat_eq (decl_is_inst decl) 0) {
-                                 | 0 →
-                                     match (decl_get_inst_body decl) {
-                                       | MkPair type_name members →
-                                           let inst_prefix =
-                                             name_concat_under
-                                               (name_concat_under nn_inst
-                                                  (decl_get_inst_class decl))
-                                               type_name in
-                                           cg_compile_inst_members members inst_prefix
-                                             mod_name env ctab compiled
-                                     }
-                                 | _ → MkPair env compiled
-                               }
-                         } in
-            match result {
-              | MkPair new_env new_compiled →
-                  cg_pass3 rest mod_name new_env ctab new_compiled
+            match (nat_eq (decl_is_let decl) 0) {
+              | 0 →
+                  -- DLet: route through SCC.
+                  let nm = decl_get_let_name decl in
+                  match (Reaver.BPLAN.eq nm 0) {
+                    | 0 →
+                        let fq = name_concat_dot mod_name nm in
+                        match (assoc_lookup fq fq_to_members) {
+                          | None →
+                              -- No SCC entry (shouldn't happen): fall
+                              -- back to single-let compile.
+                              match (cg_compile_let_one nm
+                                       (decl_get_let_body decl)
+                                       mod_name env ctab compiled) {
+                                | MkPair new_env new_compiled →
+                                    cg_pass3_go rest mod_name new_env ctab
+                                      new_compiled lets_by_fq fq_to_members
+                                      emitted
+                              }
+                          | Some members →
+                              let rep = cg_scc_rep members in
+                              match (cg_name_in_list rep emitted) {
+                                | 0 →
+                                    -- First time this SCC is seen.
+                                    let new_emitted = Cons rep emitted in
+                                    match (nat_eq (length members) 1) {
+                                      | 0 →
+                                          -- Multi-member SCC: compile via
+                                          -- shared-pin encoding.
+                                          let pairs =
+                                            cg_lookup_member_bodies members
+                                              lets_by_fq in
+                                          match (cg_compile_mutual_scc
+                                                   pairs env ctab compiled) {
+                                            | MkPair new_env new_compiled →
+                                                cg_pass3_go rest mod_name
+                                                  new_env ctab new_compiled
+                                                  lets_by_fq fq_to_members
+                                                  new_emitted
+                                          }
+                                      | _ →
+                                          -- Singleton SCC: today's path.
+                                          match (cg_compile_let_one nm
+                                                   (decl_get_let_body decl)
+                                                   mod_name env ctab
+                                                   compiled) {
+                                            | MkPair new_env new_compiled →
+                                                cg_pass3_go rest mod_name
+                                                  new_env ctab new_compiled
+                                                  lets_by_fq fq_to_members
+                                                  new_emitted
+                                          }
+                                    }
+                                | _ →
+                                    -- SCC already emitted; skip this decl.
+                                    cg_pass3_go rest mod_name env ctab
+                                      compiled lets_by_fq fq_to_members
+                                      emitted
+                              }
+                        }
+                    | _ →
+                        -- Sentinel name=0: type-alias placeholder, skip.
+                        cg_pass3_go rest mod_name env ctab compiled
+                          lets_by_fq fq_to_members emitted
+                  }
+              | _ →
+                  -- DInst or other non-let: compile in-line.
+                  match (nat_eq (decl_is_inst decl) 0) {
+                    | 0 →
+                        match (decl_get_inst_body decl) {
+                          | MkPair type_name members →
+                              let inst_prefix =
+                                name_concat_under
+                                  (name_concat_under nn_inst
+                                     (decl_get_inst_class decl))
+                                  type_name in
+                              match (cg_compile_inst_members members
+                                       inst_prefix mod_name env ctab
+                                       compiled) {
+                                | MkPair new_env new_compiled →
+                                    cg_pass3_go rest mod_name new_env ctab
+                                      new_compiled lets_by_fq fq_to_members
+                                      emitted
+                              }
+                        }
+                    | _ →
+                        cg_pass3_go rest mod_name env ctab compiled
+                          lets_by_fq fq_to_members emitted
+                  }
             }
       }
+
+-- cg_pass3: process DLet and DInst declarations.  Builds dep graph +
+-- SCC decomposition first, then walks decls in source order and emits
+-- each SCC the first time one of its members is encountered.  This
+-- mirrors bootstrap/codegen.py::compile_program L350-405 — multi-
+-- member SCCs use the shared-pin encoding (spec/02-mutual-recursion.md).
+let cg_pass3 : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat Nat))
+             → List (Pair Nat PlanVal)
+             → List (Pair Nat PlanVal)
+  = λ decls mod_name env ctab compiled →
+      let lets_by_fq    = cg_collect_let_decls decls mod_name in
+      let graph         = cg_build_dep_graph decls mod_name in
+      let sccs          = cg_tarjan_scc graph in
+      let fq_to_members = cg_fq_to_scc_members sccs in
+      cg_pass3_go decls mod_name env ctab compiled lets_by_fq
+        fq_to_members Nil
 
 -- compile_program: compile a full program to a list of (fq_name, PlanVal) pairs
 -- compile_program: thread the four codegen passes and reverse the
@@ -7898,6 +8381,11 @@ let emit_bval_dispatch
             -- Lambda-lifted laws appear as PPin(PLaw ...) in law bodies.
             ep pval
         | PNamed n _ → name_to_symbol n
+        | PMutual _ →
+            -- Sentinel: PMutual should be resolved during codegen, never
+            -- reach emit.  Produce a '!' byte so any leak fails Reaver's
+            -- Plan Asm parse and points at the responsible law.
+            bytes_singleton 0x21
       }
 
 -- emit_body_val: ties the knot for emit_bval_dispatch.
@@ -7965,6 +8453,9 @@ let emit_pval_dispatch : (PlanVal → Bytes) → PlanVal → Bytes
                   }
             }
         | PNamed n _ → name_to_symbol n
+        | PMutual _ →
+            -- See emit_bval_dispatch: PMutual should never reach emit.
+            bytes_singleton 0x21
       }
 
 -- emit_pval: ties the knot for emit_pval_dispatch.
