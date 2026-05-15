@@ -2047,24 +2047,43 @@ let parse_match_arms_pe : List (Pair Nat (List Nat)) → (List Token → Pair Ex
             }
       }
 
--- parse_lambda_params: collect TkIdent params until TkArrow
+-- parse_lambda_params: collect TkIdent or TkUnderscore params until TkArrow.
+-- Underscore params are bound to the synthetic sentinel `nn_pat_wild` —
+-- they occupy a slot but are never referenced in the body.  Mirrors
+-- Python's `_parse_lambda_expr` which uses `_parse_atom_pat` (accepts
+-- PatVar and PatWild).
+--
 -- Two arms with the same constructor (MkPair) but a literal in the first
 -- field aren't disambiguated by the bootstrap codegen — extract `n` first,
 -- then dispatch on it.  Same workaround used in parse_decl.
 let parse_lambda_params : List Token → Pair (List Nat) (List Token)
   = λ toks →
-      match (tok_eat_ident toks) {
-        | MkPair n rest →
-            match n {
-              | 0 → MkPair Nil toks
-              | _ →
-                  match (tok_is rest TkArrow) {
-                    | 0 →
-                        match (parse_lambda_params rest) {
-                          | MkPair ps rest2 → MkPair (Cons n ps) rest2
+      let nn_pat_wild = 29516398122387466075270831967 in  -- "__pat_wild__" LE
+      match (tok_is toks TkUnderscore) {
+        | 0 →
+            match (tok_eat_ident toks) {
+              | MkPair n rest →
+                  match n {
+                    | 0 → MkPair Nil toks
+                    | _ →
+                        match (tok_is rest TkArrow) {
+                          | 0 →
+                              match (parse_lambda_params rest) {
+                                | MkPair ps rest2 → MkPair (Cons n ps) rest2
+                              }
+                          | k → MkPair (Cons n Nil) rest
                         }
-                    | k → MkPair (Cons n Nil) rest
                   }
+            }
+        | _ →
+            -- TkUnderscore param: bind to nn_pat_wild sentinel and continue.
+            let rest = tok_tail toks in
+            match (tok_is rest TkArrow) {
+              | 0 →
+                  match (parse_lambda_params rest) {
+                    | MkPair ps rest2 → MkPair (Cons nn_pat_wild ps) rest2
+                  }
+              | k → MkPair (Cons nn_pat_wild Nil) rest
             }
       }
 
