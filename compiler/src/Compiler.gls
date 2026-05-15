@@ -4157,6 +4157,35 @@ let cg_free_vars_bodies : List Expr → List Nat → CEnv → List Nat
       let all_found = foldl (λ acc body → cg_collect_free body bound env acc) Nil bodies in
       cg_keep_free_locals (reverse (cenv_locals env)) all_found bound
 
+-- cg_drop_shared: drop the synthetic `__shared__` name from a free-locals
+-- list.  Used at the `cg_build_app_handler` call site, where Python's
+-- counterpart (`_build_field_arm_law`, codegen.py L2629) computes its
+-- captures via `_collect_all_names` — a purely syntactic walker with no
+-- `__shared__` implicit-capture rule.  Our `cg_free_vars_bodies` uses
+-- `cg_cf_dispatch`, which DOES add `__shared__` whenever a body resolves
+-- to a PMutual in globals.  In an App handler nested inside a wild-pred
+-- sub-law, the outer pred-succ law already captures `__shared__` from
+-- its own free_vars analysis (via `cg_make_pred_succ_law`'s
+-- `cg_free_vars`), so adding it again here grows the App handler's
+-- arity by 1 and breaks byte-identity with the bootstrap.  The
+-- synthetic name never appears in source, so filtering it out is safe.
+--
+-- IMPORTANT: comparisons against encoded FQ nats MUST use
+-- `Reaver.BPLAN.eq` (O(1) BPLAN primitive), NOT the recursive `nat_eq`
+-- — `nn___shared__` is ~78 bits, and the Peano walker would take ~2^78
+-- Case_ reductions per comparison under Reaver (no jets), hanging
+-- compile-self.  Cf. the analogous warning in [[cg_short_after_dot]].
+let cg_drop_shared : List Nat → List Nat
+  = λ names →
+      match names {
+        | Nil → Nil
+        | Cons n rest →
+            match (Reaver.BPLAN.eq n nn___shared__) {
+              | 0 → Cons n (cg_drop_shared rest)
+              | _ → cg_drop_shared rest
+            }
+      }
+
 -- -------------------------------------------------------------------
 -- Layer 4b: Self-reference detection (same pass-self pattern)
 -- -------------------------------------------------------------------
@@ -5473,7 +5502,13 @@ let cg_build_app_handler : List MatchArm → Option (Pair (Option Nat) Expr) →
                              }
                        } in
       let field_names = cg_all_field_names field_arms in
-      let free_locals = cg_free_vars_bodies all_bodies field_names env in
+      -- Strip `__shared__` from the App-handler's captures: Python's
+      -- `_build_field_arm_law` uses `_collect_all_names` (no __shared__
+      -- rule); our generic `cg_free_vars_bodies` adds it via the
+      -- `cg_cf_dispatch` PMutual rule.  See `cg_drop_shared` for the
+      -- full rationale.
+      let free_locals = cg_drop_shared
+                          (cg_free_vars_bodies all_bodies field_names env) in
       let uses_self = cg_bodies_use_self all_bodies env in
       let max_arity = cg_max_con_arity field_arms in
       let g = cenv_globals env in

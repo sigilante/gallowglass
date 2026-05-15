@@ -779,6 +779,50 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
+    def test_mutual_recursion_app_handler_no_extra_shared(self):
+        """Two mutually-recursive lets whose bodies have a constructor
+        match referencing the other SCC member; the lifted App-handler law
+        therefore sees a PMutual in its arm bodies.
+
+        Pins ``cg_drop_shared`` (the filter that strips the synthetic
+        ``__shared__`` name from the App-handler's free-locals).  Python's
+        ``_build_field_arm_law`` collects captures via ``_collect_all_names``
+        — a purely syntactic walker with no ``__shared__`` implicit-capture
+        rule.  Self-host's generic ``cg_free_vars_bodies`` uses
+        ``cg_cf_dispatch``, which DOES add ``__shared__`` whenever a body
+        resolves to a PMutual.  In an App handler nested inside a wild-pred
+        sub-law (whose outer ``_make_pred_succ_law`` frame already captures
+        ``__shared__``), the extra capture grew the App handler's arity by 1
+        and broke byte-identity with the bootstrap — observable as a
+        cascade of +1-arity laws ``_0_wild_pred_app`` and
+        ``_0_wild_pred_inner`` inside ``Compiler_parse_expr``.  See
+        ``bootstrap/codegen.py::_build_field_arm_law`` L2629 for the
+        Python reference.
+        """
+        src = (
+            'external mod Reaver.BPLAN {\n'
+            '  sub : Nat → Nat → Nat\n'
+            '}\n'
+            'type Shape = | Empty | Circle Nat | Square Nat\n'
+            '\n'
+            'let foo : Nat → Nat\n'
+            '  = λ n → match n {\n'
+            '      | 0 → 1\n'
+            '      | _ → match (Circle n) {\n'
+            '          | Empty → 0\n'
+            '          | Circle x → bar x\n'
+            '          | Square x → bar (Reaver.BPLAN.sub x 1)\n'
+            '        }\n'
+            '    }\n'
+            '\n'
+            'let bar : Nat → Nat\n'
+            '  = λ n → match n {\n'
+            '      | 0 → 2\n'
+            '      | _ → foo (Reaver.BPLAN.sub n 1)\n'
+            '    }\n'
+        )
+        self._assert_byte_identical(src)
+
     @unittest.expectedFailure
     def test_same_constructor_literal_field_collapses(self):
         """`match (MkPair 0 99) { | MkPair 0 _ -> 1 | MkPair n _ -> 2 }` —
