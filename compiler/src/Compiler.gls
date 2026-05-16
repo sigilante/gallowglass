@@ -6098,19 +6098,16 @@ let cg_resolve_global_val : Nat → PlanVal → CEnv → PlanVal
               | _ → cg_quote_nat (planval_get_nat val) (cenv_arity env)
             }
         | _ →
-            -- Top level (env.arity == 0).  PNamed tag for all
-            -- non-Nat values so emit produces the bare binding
-            -- symbol.  Matches the previous (Phase H) behaviour
-            -- needed for compile-self byte-identity on Compiler.gls
-            -- itself.
-            --
-            -- Sub-rc3 follow-up: Python's emit-side suppresses
-            -- dedup for the value currently being emitted, so a
-            -- top-level ``let main = xs`` whose RHS is an App-valued
-            -- global emits the structural App inlined.  Replicating
-            -- that here breaks Phase H by ~121 bytes — investigate
-            -- before reapplying.  See `test_list_literal_three`
-            -- (xfailed) for the user-visible shape.
+            -- Top level (env.arity == 0).  Always PNamed-tag so emit
+            -- produces the bare binding symbol — this is correct for
+            -- EVery cross-binding reference embedded inside a larger
+            -- expression.  The special case where Python instead
+            -- *inlines* — namely a top-level ``let foo = bar`` whose
+            -- RHS is a bare EVar — is handled one level up in
+            -- ``cg_compile_let_one`` (Phase I rc3-3): it returns the
+            -- raw, untagged val so emit walks the structure inlined.
+            -- See ``test_list_literal_three`` for the user-visible
+            -- shape and ``plans/phase_i_rc3.md`` for the analysis.
             match (planval_is_pin val) {
               | 0 → cg_tag_global fq val
               | _ → PNamed fq val
@@ -7188,7 +7185,29 @@ let cg_compile_let_one : Nat → Expr → Nat → CEnv → List (Pair Nat (Pair 
             -- `(1 rhs body)` form rather than lambda-lifting.
             let fq_env = cenv_mark_top_of_law
                            (cenv_set_self (cenv_set_arity env 0) (Some fq_name)) in
-            let val = cg_compile_expr body fq_env ctab name in
+            -- Special case: ``let foo = bar`` where the RHS is a bare
+            -- EVar reference to another top-level binding.  Python
+            -- emits this as the inlined structural value of bar (the
+            -- emit-side `_bind_skip_id` suppresses bind-symbol dedup
+            -- for the value currently being emitted, so the App / Law
+            -- is structurally embedded rather than referenced by name).
+            -- Self-host's normal cg_compile_expr → cg_resolve_global_val
+            -- path PNamed-tags the val, which produces a symbol
+            -- reference.  Look up the raw, untagged val here so emit
+            -- walks the structure.  Cross-binding refs that are
+            -- *embedded* inside a larger expression (e.g.
+            -- ``let foo = PPin bar``) still go through the normal path
+            -- and emit ``bar`` as a symbol — Python does the same.
+            -- See `test_list_literal_three` for the user-visible shape
+            -- and `plans/phase_i_rc3.md` for the analysis.
+            let val = match body {
+                        | EVar ref_name →
+                            match (cenv_global_lookup env ref_name) {
+                              | None → cg_compile_expr body fq_env ctab name
+                              | Some ref_val → ref_val
+                            }
+                        | _ → cg_compile_expr body fq_env ctab name
+                      } in
             let new_env = cenv_bind_global env fq_name val in
             MkPair new_env (Cons (MkPair fq_name val) compiled)
         | _ → MkPair env compiled
