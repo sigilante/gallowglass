@@ -5,6 +5,7 @@ __pycache__/
 .Python
 *.egg-info/
 dist/
+!compiler/dist/
 build/
 .eggs/
 vendor/
