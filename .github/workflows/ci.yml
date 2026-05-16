@@ -181,6 +181,12 @@ jobs:
         working-directory: vendor/reaver
         run: nix develop --command cabal build plan-assembler
 
+      - name: Install blake3 (for integrity check only)
+        # Python + blake3 are used only to verify the vendored seed's
+        # BLAKE3 matches MANIFEST.json.  The actual builds below
+        # (tools/build-self-host.sh) use NO Python — just Reaver.
+        run: pip install blake3
+
       - name: Verify seed Compiler.plan integrity
         run: |
           set -e
@@ -194,9 +200,6 @@ jobs:
             echo "       manifest: $MANIFEST_BLAKE3"
             exit 1
           fi
-          # (We only use Python here to compute BLAKE3 — not to compile.
-          # Builds-from-source below use NO Python.)
-          pip install blake3 >/dev/null 2>&1 || true
 
       - name: Smoke build — trivial source
         run: |
