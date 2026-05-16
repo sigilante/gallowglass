@@ -2841,6 +2841,13 @@ let skip_to_decl_boundary : List Token → List Token
       }
 
 -- skip_record_field_type: skip tokens until ',' or '}' (type annotation of a record field)
+-- skip_record_field_type: advance the token stream past a field's type
+-- annotation in a record-field list (``{ x : T1, y : T2, ... }``).  Stops
+-- at the next ``,`` (next field), ``}`` (end of record), or EOF (malformed
+-- input).  Without this, parse_record_fields_go would not advance past
+-- the type tokens and would falsely parse them as additional field names
+-- — producing a constructor with the wrong arity (or the literal `0`
+-- fallback for record-typed bindings).
 let skip_record_field_type : List Token → List Token
   = λ toks →
       match (tok_is toks TkComma) {
@@ -2848,8 +2855,8 @@ let skip_record_field_type : List Token → List Token
             match (tok_is toks TkRBrace) {
               | 0 →
                   match (tok_is toks TkEof) {
-                    | 0 → toks
-                    | k → skip_record_field_type (tok_tail toks)
+                    | 0 → skip_record_field_type (tok_tail toks)
+                    | k → toks
                   }
               | k → toks
             }
