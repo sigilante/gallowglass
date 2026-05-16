@@ -7244,7 +7244,22 @@ let cg_compile_inst_members
                   let bare    = name_concat_under inst_prefix method_name in
                   let fq_name = name_concat_dot mod_name bare in
                   let fq_env  = cenv_set_self (cenv_set_arity env 0) (Some fq_name) in
-                  let val     = cg_compile_expr body fq_env ctab bare in
+                  -- Same bare-EVar inlining shortcut as
+                  -- ``cg_compile_let_one``: when an instance method's
+                  -- body is just ``eq = nat_eq_impl`` (a bare EVar
+                  -- referencing another top-level binding), look up
+                  -- the raw untagged val so emit inlines the law
+                  -- structure rather than referencing it by name.
+                  -- Matches Python's emit-side ``_bind_skip_id``
+                  -- behaviour for the binding currently being emitted.
+                  let val = match body {
+                              | EVar ref_name →
+                                  match (cenv_global_lookup env ref_name) {
+                                    | None → cg_compile_expr body fq_env ctab bare
+                                    | Some ref_val → ref_val
+                                  }
+                              | _ → cg_compile_expr body fq_env ctab bare
+                            } in
                   let new_env = cenv_bind_global env fq_name val in
                   cg_compile_inst_members rest inst_prefix mod_name new_env ctab
                     (Cons (MkPair fq_name val) compiled)
