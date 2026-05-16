@@ -6098,24 +6098,21 @@ let cg_resolve_global_val : Nat → PlanVal → CEnv → PlanVal
               | _ → cg_quote_nat (planval_get_nat val) (cenv_arity env)
             }
         | _ →
-            -- Top level (env.arity == 0).  Python's `_compile_var`
-            -- returns ``val`` directly at top level (codegen.py L1286).
-            -- emit_top then dedups Pins/Laws by *object identity*,
-            -- but for Apps the dedup is suppressed by `_bind_skip_id`
-            -- when emitting the binding itself — so Apps end up
-            -- structurally inlined whenever they appear at top level,
-            -- not symbolically deduped.  Mirror that here: return
-            -- ``val`` unchanged for Apps (no PNamed tag); tag Pins so
-            -- emit produces the bare symbol (the dedup *does* fire
-            -- across separate Pin bindings).  Nats and Laws fall
-            -- through cg_tag_global which leaves Nats alone and tags
-            -- Laws.
+            -- Top level (env.arity == 0).  PNamed tag for all
+            -- non-Nat values so emit produces the bare binding
+            -- symbol.  Matches the previous (Phase H) behaviour
+            -- needed for compile-self byte-identity on Compiler.gls
+            -- itself.
+            --
+            -- Sub-rc3 follow-up: Python's emit-side suppresses
+            -- dedup for the value currently being emitted, so a
+            -- top-level ``let main = xs`` whose RHS is an App-valued
+            -- global emits the structural App inlined.  Replicating
+            -- that here breaks Phase H by ~121 bytes — investigate
+            -- before reapplying.  See `test_list_literal_three`
+            -- (xfailed) for the user-visible shape.
             match (planval_is_pin val) {
-              | 0 →
-                  match (planval_is_app val) {
-                    | 0 → cg_tag_global fq val
-                    | _ → val
-                  }
+              | 0 → cg_tag_global fq val
               | _ → PNamed fq val
             }
       }
