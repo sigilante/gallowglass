@@ -1043,10 +1043,11 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
-    @unittest.expectedFailure
     def test_record_pattern(self):
         """``match p { | { x = a, y = b } → add a b }`` — record
-        pattern.  Same self-host gap as ``test_record_construct``."""
+        pattern.  Note: ``sum_xy { x = 3, y = 4 }`` parses as record
+        UPDATE on sum_xy, not function application — use a bound
+        intermediate to disambiguate."""
         src = (
             'external mod Reaver.BPLAN {\n'
             '  add : Nat → Nat → Nat\n'
@@ -1056,7 +1057,8 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
             '  = λ p → match p {\n'
             '      | { x = a, y = b } → Reaver.BPLAN.add a b\n'
             '    }\n'
-            'let main = sum_xy { x = 3, y = 4 }\n'
+            'let pt : Pt = { x = 3, y = 4 }\n'
+            'let main : Nat = sum_xy pt\n'
         )
         self._assert_byte_identical(src)
 
