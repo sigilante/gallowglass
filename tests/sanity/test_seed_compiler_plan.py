@@ -82,3 +82,19 @@ def test_compiler_gls_source_blake3_matches_manifest(manifest):
         f'verify byte-identity with tools/selfcompile.py, and update the '
         f'manifest accordingly.'
     )
+
+
+def test_compiler_gls_source_size_matches_manifest(manifest):
+    """Mirror of ``test_seed_compiler_plan_size_matches_manifest`` for
+    the source.  The BLAKE3 check above guarantees content match, but
+    a missing size field can hide a stale manifest from a casual
+    reader.  Cheap; catches the maintenance gap surfaced in the
+    Phase I angel review."""
+    src_path = os.path.join(REPO_ROOT, 'compiler/src/Compiler.gls')
+    actual = os.path.getsize(src_path)
+    expected = manifest['compiler_source']['size_bytes']
+    assert actual == expected, (
+        f'compiler/src/Compiler.gls size drifted from MANIFEST:\n'
+        f'  on-disk:  {actual} bytes\n'
+        f'  manifest: {expected} bytes'
+    )

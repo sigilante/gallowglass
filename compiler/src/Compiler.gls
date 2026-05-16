@@ -6118,7 +6118,7 @@ let cg_resolve_global_val : Nat → PlanVal → CEnv → PlanVal
         | _ →
             -- Top level (env.arity == 0).  Always PNamed-tag so emit
             -- produces the bare binding symbol — this is correct for
-            -- EVery cross-binding reference embedded inside a larger
+            -- every cross-binding reference embedded inside a larger
             -- expression.  The special case where Python instead
             -- *inlines* — namely a top-level ``let foo = bar`` whose
             -- RHS is a bare EVar — is handled one level up in

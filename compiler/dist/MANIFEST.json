@@ -7,18 +7,19 @@
   },
   "compiler_source": {
     "path": "compiler/src/Compiler.gls",
-    "size_bytes": 435501,
-    "blake3": "fe6735c0ec3a1e9ece8eff0fcb09342ce9f64c372899fdd3683ae4678572585c"
+    "size_bytes": 444337,
+    "blake3": "1f94d87ada2d8a86bafa59228bcab31d49798f8f66326b8493d43c2d93cac9b1"
   },
   "produced_by": {
     "tool": "bootstrap/codegen.py (Python)",
-    "version": "v1.0.0-rc2",
+    "version": "v1.0.0-rc3",
+    "date": "2026-05-16T21:09:06Z",
     "command": "python3 -c 'from bootstrap... emit_program(compile_program(resolve(parse(lex(src))...)))'"
   },
   "verification": {
     "method": "Phase H compile-self fixed-point gate",
     "test": "tests/reaver/test_selfhost.py::TestPhaseHFixedPoint::test_compile_self",
     "env_var": "GALLOWGLASS_RUN_COMPILE_SELF=1",
-    "expected_runtime_reaver_no_jets_seconds": 1253
+    "expected_runtime_reaver_no_jets_seconds": 2634
   }
 }

@@ -716,7 +716,17 @@ part of compiling user programs from a Python-less build path.
 Since rc3 ships with the bootstrap fallback intact, users can still
 use these features today.  1.1.0 promotes the self-host to handle
 them too, completing the "self-host can fully replace the Python
-bootstrap" arc.
+bootstrap for single-file restricted-dialect programs" arc.
+
+**Scope caveat:** multi-file compilation via ``use`` / ``import``
+remains a Python-bootstrap-only capability by design — the self-host
+is intentionally single-file (see `compiler/COMPILER.md §5
+"Architectural Decision: Single-File Compiler"`).  The prelude build
+(8 modules with cross-module references) will continue to use the
+Python bootstrap for the foreseeable future.  Closing the two 1.1.0
+gaps means the self-host handles every *single-file* restricted-
+dialect program byte-identically; it does not, and is not intended
+to, replace the Python bootstrap for multi-module builds.
 
 ---
 

@@ -48,9 +48,18 @@ Selfhost suite: 36 passed + 1 skipped (compile-self gate, env-gated) +
   needs the CPS transform mirroring `bootstrap/codegen.py::_compile_handle`.
   Estimated 3-5 days.
 
-## What rc3 needs (from the three deliverables in the post-Phase-H plan)
+---
 
-## What rc3 needs (from the three deliverables in the post-Phase-H plan)
+## Historical context — the original rc3 brief
+
+The remainder of this document is the pre-execution plan, kept for
+context.  The "Final rc3 status" table above is the authoritative
+current state; the sections below describe what was scoped at the
+start of the Phase I session and may use earlier test counts (e.g.
+the "30 passed" line refers to the post-rc3-2 baseline before any
+gap closures).
+
+### What rc3 needs (from the three deliverables in the post-Phase-H plan)
 
 1. **Drop Python from the build path.** The Reaver-hosted self-host must be
    able to produce a fresh `Compiler.plan` from `Compiler.gls` without

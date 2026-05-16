@@ -816,3 +816,47 @@ publishing a pre-built release binary for generic x86-64 would work.
 **Local workaround (not yet attempted):** Build with the runner's native GCC
 (`make all`) instead of `nix develop --command make all`. This avoids the Nix
 toolchain's potential `-march=native` default but loses reproducibility.
+
+---
+
+## Self-host bare-EVar inlining (Phase I, v1.0.0-rc3)
+
+### Why does the self-host special-case `let foo = bar` in `cg_compile_let_one`?
+
+Python's emitter (`bootstrap/emit_pla.py::emit_top`) uses object identity:
+when a binding `foo` references another binding `bar` directly (`let foo = bar`),
+`_compile_var("bar")` returns the same Python object that `bar` was bound to.
+At emit time, `_bind_skip_id` is set to `id(foo's val)` so the emit-side
+identity-based dedup (`_maybe_symbol`) returns `None` (the "currently-being-
+emitted binding" check), and the val is emitted structurally — inlined.  For
+*any other* reference to `bar` (embedded inside a larger expression), the dedup
+fires and emits the bare symbol `Compiler_bar` instead.
+
+The self-host has no object-identity primitive — Gallowglass values compare
+structurally only.  So the bare-EVar shortcut in `cg_compile_let_one`
+(and its mirror in `cg_compile_inst_members`) explicitly pattern-matches the
+RHS shape: when the body is `EVar ref`, look up the raw untagged val so emit
+walks the structure inlined.  All other EVar references go through
+`cg_resolve_global_val`, which PNamed-tags the val so emit produces the bare
+symbol.
+
+This is a **load-bearing structural difference** between the two paths.
+History: Phase I rc3-3 initially tried to replicate Python's behaviour by
+returning App values unchanged from `cg_resolve_global_val` at top level
+(commit `0174b2d`), which inlined cross-binding App refs everywhere.  That
+broke Phase H's compile-self gate by 121 bytes — Compiler.gls's own bindings
+have many embedded `PPin cps_null_dispatch` shapes where Python emits the
+symbol (cross-binding ref) but the new code inlined the Law structure.  The
+revert (commit `0b1805b`) restored Phase H, and the bare-EVar shortcut
+(commit `cb380ab`) achieved both goals: user-level `let main = xs` inlines,
+embedded cross-binding refs stay as symbols.
+
+**Implication for future maintainers:** any emit-side refactor that adds
+"dedup suppression for the current binding" (the Python-style approach) must
+NOT remove the bare-EVar shortcut in `cg_compile_let_one` / `cg_compile_inst_members`.
+The two mechanisms are not redundant: Python's relies on object identity
+across all references; the self-host's only fires for the syntactic bare-EVar
+case.  Removing it without a structural-identity replacement re-breaks Phase H.
+
+See `tests/reaver/test_selfhost.py::test_list_literal_three` for the
+user-visible shape and `plans/phase_i_rc3.md` for the full investigation.
