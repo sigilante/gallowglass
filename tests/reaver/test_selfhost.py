@@ -1086,22 +1086,30 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
 
     @unittest.expectedFailure
     def test_do_notation_simple(self):
-        """``x ← rhs in body`` — do-notation bind inside ``handle``.
-        Bootstrap M10 (CPS transform for effect handlers).
+        """``xx ← inc () in inc xx`` — do-notation bind inside
+        ``handle``.  Bootstrap M10 (CPS transform for effect handlers).
 
-        Gap: self-host's CPS codegen for effects doesn't match the
-        bootstrap byte-for-byte (or doesn't fire at all in some
-        paths).  Needs investigation."""
+        Self-host's ``cg_compile_do`` and ``cg_compile_handle`` exist
+        and produce *something* (not just the `0` fallback), but the
+        emitted laws diverge from Python's CPS output in several
+        places: extra captured-slot indirections in the dispatch
+        chain, ``(#pin inc)`` rather than the named-effect-op symbol
+        for cross-references, and apparent mis-numbering of
+        let-binding slots inside lifted continuations.  Closing
+        requires aligning the self-host's CPS transform with
+        ``bootstrap/codegen.py::_compile_handle`` /
+        ``_compile_do`` byte-for-byte — estimated 3-5 days of focused
+        work.  Deferred to rc4."""
         src = (
-            'eff State {\n'
-            '  get : Nat → Nat\n'
+            'eff Counter {\n'
+            '  inc : Nat → Nat\n'
             '}\n'
-            'let prog : Nat\n'
-            '  = handle (do n ← State.get 0 in pure n) {\n'
-            '      | return v → v\n'
-            '      | get _ k → k 42\n'
-            '    }\n'
-            'let main = prog\n'
+            'let comp : Nat = xx ← inc 1 in inc xx\n'
+            'let result : Nat = handle comp {\n'
+            '  | return rr → rr\n'
+            '  | inc _ kk → kk 7\n'
+            '}\n'
+            'let main = result\n'
         )
         self._assert_byte_identical(src)
 
