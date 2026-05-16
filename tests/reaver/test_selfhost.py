@@ -1064,23 +1064,40 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
 
     @unittest.expectedFailure
     def test_typeclass_simple(self):
-        """``class Eq_t a { eq_t : a → a → Bool }; instance Eq_t Nat {…}``
-        — single-method typeclass, single Nat instance.  Bootstrap M11.
+        """``class Eq a {...}; instance Eq Nat {...}; let same : ∀ a.
+        Eq a => a → a → Nat = λ x y → eq x y`` — single-method
+        typeclass with a constrained let.  Bootstrap M11.
 
-        Gap: self-host does not yet desugar ``class`` / ``instance``
-        declarations into dictionary-passing.  Bootstrap's
-        ``DeclClass`` / ``DeclInst`` handling needs to be ported."""
+        The constrained-let pattern is necessary for this fixture to
+        be meaningful: a bare top-level call like ``eq 7 7`` fails in
+        the Python bootstrap too (no dict to insert at the call
+        site), so it wouldn't isolate self-host behaviour.  The
+        constrained-let form bundles the dict-param and call-site
+        dispatch through Python's ``_compile_constrained_let`` and
+        ``_compile_constrained_app`` (codegen.py L1067 onward).
+
+        Self-host gap (the byte-identity divergence this fixture
+        pins): ``Compiler.gls`` does not yet have a
+        ``cg_compile_constrained_let`` mirror.  The constraint
+        ``Eq a =>`` is parsed but the arity adjustment + call-site
+        dict insertion + single-method dict shortcut emission are
+        missing.  See ``ROADMAP.md`` §1.1.0 for the closure plan
+        (estimated 3-5 days)."""
         src = (
             'external mod Reaver.BPLAN {\n'
             '  eq : Nat → Nat → Nat\n'
             '}\n'
-            'class Eq_t a {\n'
-            '  eq_t : a → a → Nat\n'
+            'class MyEq a {\n'
+            '  myeq : a → a → Nat\n'
             '}\n'
-            'instance Eq_t Nat {\n'
-            '  eq_t = λ a b → Reaver.BPLAN.eq a b\n'
+            'let nat_eq_impl : Nat → Nat → Nat\n'
+            '  = λ x y → Reaver.BPLAN.eq x y\n'
+            'instance MyEq Nat {\n'
+            '  myeq = nat_eq_impl\n'
             '}\n'
-            'let main : Nat = eq_t 7 7\n'
+            'let same : ∀ a. MyEq a => a → a → Nat\n'
+            '  = λ x y → myeq x y\n'
+            'let main : Nat = same 7 7\n'
         )
         self._assert_byte_identical(src)
 
