@@ -650,6 +650,76 @@ All of the above complete. Acceptance criteria:
 
 ---
 
+## 1.1.0 — Self-host coverage parity (Phase I follow-up)
+
+**Status:** scheduled.  Rolls forward the two self-host codegen gaps
+that Phase I (v1.0.0-rc3) mapped but didn't close — both are byte-
+identity gaps where the Python bootstrap already compiles the feature
+correctly, so 1.0 ships with them documented as known limitations
+and 1.1.0 lands the self-host parity.
+
+### 1.1.0-1 — Typeclass constrained-let codegen
+
+Close `test_typeclass_simple` in `tests/reaver/test_selfhost.py`.
+
+What's already there in `Compiler.gls`:
+* `class` and `instance` parsing
+* `cg_compile_inst_members` compiles each method (now inlines bare-
+  EVar bindings, per Phase I rc3-3)
+
+What's missing — three coupled pieces (reference:
+`bootstrap/codegen.py::_compile_constrained_let` and
+`_compile_constrained_app`, ~200 lines):
+
+* **Arity adjustment for constrained lets.** Source: `let same : ∀ a.
+  Eq a => a → a → Nat = λ x y → eq x y`.  Python adds 1 dict-param
+  per constraint, so `same`'s compiled law is arity 3 (dict + 2 user
+  params).
+* **Single-method dict shortcut.** When a class has exactly one
+  method, Python emits `Compiler_inst_Eq_Nat` pointing directly to
+  the method (bypassing the dict-record wrapper).
+* **Call-site dict insertion.** At `same 7 7`, Python's
+  `_compile_constrained_app` inserts the instance dict as the first
+  arg: `same inst_Eq_Nat 7 7`.
+
+Estimate: **3-5 days** of focused work.
+
+### 1.1.0-2 — Effect handler CPS alignment
+
+Close `test_do_notation_simple` in `tests/reaver/test_selfhost.py`.
+
+What's already there in `Compiler.gls`:
+* `cg_compile_handle` (L6636) and `cg_compile_do` (L6691) — wired up
+  and produce non-trivial CPS output (not the `0` fallback).
+
+What's wrong — three observable byte-level divergences from Python's
+`_compile_handle` / `_compile_do`:
+
+* **Extra captured-slot indirections** in the dispatch chain.  Self-
+  host's lifted continuation laws have one or two extra slots that
+  Python doesn't.
+* **Cross-references emit as `(#pin inc)` rather than
+  `Compiler_Counter_inc`.**  The effect-op name resolution is using
+  the bare op-name instead of the FQ scope-qualified one.
+* **Mis-numbering of let-binding slots inside lifted continuations.**
+  The `_5((_2 _3))` shapes in the output show let-bindings allocating
+  slots that don't quite line up with Python's numbering.
+
+Estimate: **3-5 days** of careful byte-level alignment.
+
+### Why these are 1.1.0 and not 1.0
+
+Neither gap is a *blocker* for 1.0.  The Python bootstrap can still
+compile any user code using typeclasses or effects; the byte-identity
+gap only matters when the self-host needs to produce that output as
+part of compiling user programs from a Python-less build path.
+Since rc3 ships with the bootstrap fallback intact, users can still
+use these features today.  1.1.0 promotes the self-host to handle
+them too, completing the "self-host can fully replace the Python
+bootstrap" arc.
+
+---
+
 ## Post-1.0
 
 These are not on the critical path to 1.0 and are deferred explicitly.
