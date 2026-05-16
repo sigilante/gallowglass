@@ -924,15 +924,17 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
-    @unittest.expectedFailure
     def test_or_pattern_constructor(self):
         """``match c { | Red | Green → 1 | _ → 0 }`` — or-pattern
         across two nullary constructors of the same type.
 
-        Bootstrap M15.4 added or-patterns at the parser level and
-        Python codegen handles them.  Self-host's ``cg_compile_match``
-        does not yet split or-pattern arms into separate dispatch
-        entries, so only the first alternative fires.  Gap.
+        Pins the ctab ``has_field_sib`` flag (Phase I rc3-3):
+        ``cg_compile_con_match``'s no-field-arms + wild branch routes
+        through ``cg_build_nat_dispatch`` (App branch = id_pin) for
+        pure-nullary types, matching Python's ``_build_nat_dispatch``
+        path.  Previously self-host unconditionally lifted a
+        ``wild_app_handler``, diverging from the bootstrap whenever a
+        pure-nullary type was matched with a wild.
         """
         src = (
             'type Color = | Red | Green | Blue\n'
@@ -1145,6 +1147,10 @@ class TestPhaseHFixedPoint(unittest.TestCase):
         self-host; assert byte-identity to the Python bootstrap output
         of the same source.
         """
+        # Match the recursion limit used by `_compile_compiler_to_plan`
+        # — Compiler.gls's nested ADT dispatch trees exceed Python's
+        # default 1000-frame limit during emit.
+        sys.setrecursionlimit(max(sys.getrecursionlimit(), 50000))
         with open(COMPILER_GLS) as f:
             src = f.read()
 

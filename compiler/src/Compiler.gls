@@ -3452,23 +3452,40 @@ let cenv_new_param : CEnv → Nat → CEnv
 -- Layer 1b: ConTable (fq_name_nat → (tag, arity))
 -- -------------------------------------------------------------------
 
-let contab_empty : List (Pair Nat (Pair Nat Nat))
+let contab_empty : List (Pair Nat (Pair Nat (Pair Nat Nat)))
   = Nil
 
-let contab_lookup : List (Pair Nat (Pair Nat Nat)) → Nat → Option (Pair Nat Nat)
+-- Per-constructor entry shape: `MkPair tag (MkPair arity has_field_sib)`
+-- where `has_field_sib` is 1 iff at least one constructor of the same
+-- type has arity > 0.  Used by `cg_compile_con_match`'s no-field-arms
+-- + wild branch to decide between `cg_build_nat_dispatch` (pure-nullary
+-- type, no wild_app_handler needed — App-shaped scrutinees can never
+-- arise) vs `cg_build_wild_app_handler` (mixed type — App scrutinee
+-- must fire the wild body).  Mirrors Python's `type_has_field_sibling`
+-- check at `bootstrap/codegen.py::_compile_con_match` L2380.
+let contab_lookup : List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → Option (Pair Nat (Pair Nat Nat))
   = λ tab name → assoc_lookup name tab
 
-let contab_insert : List (Pair Nat (Pair Nat Nat)) → Nat → Pair Nat Nat
-                  → List (Pair Nat (Pair Nat Nat))
+let contab_insert : List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → Pair Nat (Pair Nat Nat)
+                  → List (Pair Nat (Pair Nat (Pair Nat Nat)))
   = λ tab name info → assoc_insert name info tab
 
--- contab_tag: extract tag from contab entry
-let contab_tag : Pair Nat Nat → Nat
+-- contab_tag: extract tag from contab entry (still the outer-Pair fst).
+let contab_tag : Pair Nat (Pair Nat Nat) → Nat
   = λ p → match p { | MkPair t _ → t }
 
--- contab_arity: extract arity from contab entry
-let contab_arity_of : Pair Nat Nat → Nat
-  = λ p → match p { | MkPair _ a → a }
+-- contab_arity_of: extract arity from contab entry (now inner-Pair fst).
+let contab_arity_of : Pair Nat (Pair Nat Nat) → Nat
+  = λ p → match p {
+            | MkPair _ inner → match inner { | MkPair a _ → a }
+          }
+
+-- contab_has_field_sib: 1 if any sibling constructor of the same type
+-- has arity > 0, else 0.  See the comment on `contab_lookup` above.
+let contab_has_field_sib : Pair Nat (Pair Nat Nat) → Nat
+  = λ p → match p {
+            | MkPair _ inner → match inner { | MkPair _ f → f }
+          }
 
 -- -------------------------------------------------------------------
 -- Layer 1c: PlanVal constants and helpers
@@ -4557,8 +4574,8 @@ let cg_concat_under : Nat → Nat → Nat
 -- matching bootstrap/codegen.py::_make_pred_succ_law line 3138.  When hint=0
 -- (no enclosing name) the result is just "_succ" (a leading underscore).
 let cg_make_pred_succ_law : Expr → Nat → CEnv
-                           → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                           → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                           → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                           → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ wild_body wild_var env ce ctab hint →
       let free_vars = cg_free_vars wild_body (Cons wild_var Nil) env in
       let uses_self = cg_body_uses_self wild_body env in
@@ -4615,8 +4632,8 @@ let cg_make_pred_succ_law : Expr → Nat → CEnv
 -- unreferenced predecessor slot — the body never reads it.  At arity = 0
 -- (top level) there are no captures to thread, so const2-wrap the body.
 let cg_make_wild_succ : Option (Pair (Option Nat) Expr) → CEnv
-                       → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                       → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                       → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                       → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ wild env ce ctab hint →
       let const2_pin = PPin const2_law in
       let nn_pat_wild = 29516398122387466075270831967 in  -- "__pat_wild__" LE
@@ -4660,8 +4677,8 @@ let cg_make_wild_succ : Option (Pair (Option Nat) Expr) → CEnv
 -- increments idx so successive succ laws get successive numbers.
 let cg_build_nat_dispatch : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr)
                            → PlanVal → CEnv
-                           → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                           → List (Pair Nat (Pair Nat Nat)) → Nat → Nat → PlanVal
+                           → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                           → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → Nat → PlanVal
   = λ arms wild scr env ce ctab hint idx →
       match arms {
         | Nil →
@@ -4873,7 +4890,7 @@ let cg_normalize_pv_tags : List (Pair Nat PlanVal) → Nat → List (Pair Nat Pl
 -- short tail (after the last '.') matches `short_name`.  Used as a safety
 -- net for bare constructor names in match arms that sr_dispatch failed to
 -- qualify — mirrors `cg_global_lookup_by_short` for the constructor table.
-let cg_contab_lookup_by_short : Nat → List (Pair Nat (Pair Nat Nat))
+let cg_contab_lookup_by_short : Nat → List (Pair Nat (Pair Nat (Pair Nat Nat)))
                               → Option (Pair Nat Nat)
   = λ short_name tab →
       match tab {
@@ -4892,7 +4909,7 @@ let cg_contab_lookup_by_short : Nat → List (Pair Nat (Pair Nat Nat))
 -- cg_contab_lookup_safe: contab_lookup with a short-tail fallback.  When
 -- direct lookup fails (sr_dispatch didn't qualify the constructor name),
 -- search the ctab for an FQ ending in `.<bare>`.
-let cg_contab_lookup_safe : List (Pair Nat (Pair Nat Nat)) → Nat
+let cg_contab_lookup_safe : List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat
                            → Option (Pair Nat Nat)
   = λ tab name →
       match (assoc_lookup name tab) {
@@ -4935,8 +4952,8 @@ let cg_pcd_z_for_op2 : Nat → PlanVal → Nat → PlanVal
 -- Python's `_build_tag_chain` (`make_ext_env` + `partially_apply`).
 let cg_build_precompiled_nat_dispatch : List (Pair Nat PlanVal) → Option (Pair (Option Nat) Expr)
                                        → PlanVal → CEnv
-                                       → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                                       → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                                       → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                                       → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ tag_val_pairs wild scr env ce ctab hint →
       match tag_val_pairs {
         | Nil →
@@ -5050,8 +5067,8 @@ let cg_build_precompiled_nat_dispatch : List (Pair Nat PlanVal) → Option (Pair
 
 -- cg_compile_nat_match: compile a nat/bool match
 let cg_compile_nat_match : PlanVal → List MatchArm → CEnv
-                          → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                          → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                          → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                          → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ scr arms env ce ctab hint →
       let nat_arms = cg_extract_nat_arms arms in
       let wild = cg_extract_wild_arm arms in
@@ -5093,7 +5110,7 @@ let cg_filter_field_arms : List MatchArm → List MatchArm
                 }) arms
 
 -- cg_arms_to_tag_expr: convert con arms to (tag, body) pairs using ctab
-let cg_arms_to_tag_expr : List MatchArm → List (Pair Nat (Pair Nat Nat)) → List (Pair Nat Expr)
+let cg_arms_to_tag_expr : List MatchArm → List (Pair Nat (Pair Nat (Pair Nat Nat))) → List (Pair Nat Expr)
   = λ arms ctab →
       map (λ arm →
              let con_name = arm_get_con_name arm in
@@ -5110,8 +5127,8 @@ let cg_all_field_names : List MatchArm → List Nat
 
 -- cg_build_z_body: value for z (scrutinee = Nat 0) in reflect dispatch
 let cg_build_z_body : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr) → CEnv
-                     → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                     → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                     → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                     → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ nullary_nat_arms wild env ce ctab hint →
       let nn_tag0 = 812081524 in   -- "tag0" LE
       let nn_wild = 1684826487 in  -- "wild" LE
@@ -5149,8 +5166,8 @@ let cg_build_nullary_remaining : List (Pair Nat Expr) → List (Pair Nat Expr)
 
 -- cg_build_m_body: m (succ fn) for remaining nullary constructors with tag > 0
 let cg_build_m_body : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr) → CEnv
-                     → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                     → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                     → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                     → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ remaining wild env ce ctab hint →
       let const2_pin = PPin const2_law in
       let nn_wild = 1684826487 in           -- "wild" LE
@@ -5235,7 +5252,7 @@ let cg_build_m_body : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr) �
       }
 
 -- cg_arm_find_by_tag: find a con arm whose ctab tag equals the given tag
-let cg_arm_find_by_tag : List MatchArm → Nat → List (Pair Nat (Pair Nat Nat)) → MatchArm
+let cg_arm_find_by_tag : List MatchArm → Nat → List (Pair Nat (Pair Nat (Pair Nat Nat))) → MatchArm
   = λ arms tag ctab →
       match arms {
         | Nil →
@@ -5257,8 +5274,8 @@ let cg_arm_find_by_tag : List MatchArm → Nat → List (Pair Nat (Pair Nat Nat)
 -- fun_idx = arg_idx - 1, arg_idx = arg_idx
 let cg_build_unary_handler_body : List MatchArm → Option (Pair (Option Nat) Expr)
                                   → CEnv → Nat → Nat
-                                  → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                                  → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                                  → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                                  → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ field_arms wild henv fun_idx arg_idx ce ctab hint →
       match field_arms {
         | Nil → cg_quote_nat 0 (cenv_arity henv)
@@ -5362,8 +5379,8 @@ let cg_build_unary_handler_body : List MatchArm → Option (Pair (Option Nat) Ex
 -- The arm's field is bound to arg_idx (= outer_arg) in henv.
 -- Falls back to constant 0 if no such arm exists.
 let cg_build_unary_z_body : List MatchArm → CEnv → Nat
-                             → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                             → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                             → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                             → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ field_arms henv arg_idx ce ctab hint →
       let tag0_arms = filter (λ arm →
                                 match (nat_eq (cg_arm_con_arity arm) 1) {
@@ -5393,8 +5410,8 @@ let cg_build_unary_z_body : List MatchArm → CEnv → Nat
 -- Builds a succ law that dispatches on pred using cg_build_precompiled_nat_dispatch.
 -- Each arm's field is bound to arg_idx (= outer_arg) in the extended env.
 let cg_build_unary_m_body : List MatchArm → Option (Pair (Option Nat) Expr) → CEnv → Nat
-                             → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                             → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                             → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                             → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ field_arms wild henv arg_idx ce ctab hint →
       let const2_pin = PPin const2_law in
       let unary_gt0 = filter (λ arm →
@@ -5464,8 +5481,8 @@ let cg_build_unary_m_body : List MatchArm → Option (Pair (Option Nat) Expr) �
 -- would return PNat 0 = the app-handler law's own self).
 let cg_build_binary_handler_body : List MatchArm → Option (Pair (Option Nat) Expr)
                                    → CEnv → Nat → Nat → Nat → List Nat → Option Nat
-                                   → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                                   → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                                   → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                                   → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ field_arms wild henv fun_idx arg_idx uses_self free_locals outer_self ce ctab hint →
       let g = cenv_globals henv in
       let inner_env0 = cenv_make g Nil 0 None in
@@ -5642,8 +5659,8 @@ let cg_bodies_use_self : List Expr → CEnv → Nat
 -- here (codegen.py L2567) which has no `__shared__` implicit-capture
 -- rule.
 let cg_build_wild_app_handler
-  : Expr → CEnv → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-  → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+  : Expr → CEnv → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+  → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ wild_body env ce ctab hint →
       let const2_pin = PPin const2_law in
       let nn_wild = 1684826487 in           -- "wild" LE
@@ -5696,8 +5713,8 @@ let cg_build_wild_app_handler
 
 -- cg_build_app_handler: build the App-handler law for Case_ dispatch
 let cg_build_app_handler : List MatchArm → Option (Pair (Option Nat) Expr) → CEnv
-                          → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                          → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                          → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                          → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ field_arms wild env ce ctab hint →
       let field_bodies = map arm_get_con_body field_arms in
       -- Include wild_body in free-var analysis so its outer-captures
@@ -5770,8 +5787,8 @@ let cg_build_app_handler : List MatchArm → Option (Pair (Option Nat) Expr) →
 
 -- cg_compile_con_match: compile a constructor match expression
 let cg_compile_con_match : PlanVal → List MatchArm → CEnv
-                          → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                          → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                          → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                          → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ scr arms env ce ctab hint →
       let con_arms = filter arm_is_con arms in
       let field_arms = cg_filter_field_arms con_arms in
@@ -5779,14 +5796,31 @@ let cg_compile_con_match : PlanVal → List MatchArm → CEnv
       let wild = cg_extract_wild_arm arms in
       match (length field_arms) {
         | 0 →
-            -- No field arms.  If there's a wildcard, the matched type
-            -- may still have field-bearing siblings (e.g. ``match t {
-            -- TkEof → A | _ → B }`` on Token), and App-shaped scrutinees
-            -- must fire the wild body — that requires Elim's App branch
-            -- to be a wild_app_handler, not id_pin.  Mirrors Python's
-            -- _compile_con_match path that routes through
-            -- _compile_adt_dispatch when type_has_field_sibling
+            -- No field arms.  If there's a wildcard AND the matched
+            -- type has at least one field-bearing sibling (e.g.
+            -- ``match t { TkEof → A | _ → B }`` on Token, which also
+            -- has TkIdent x), App-shaped scrutinees must fire the wild
+            -- body — that requires Elim's App branch to be a
+            -- wild_app_handler, not id_pin.  Mirrors Python's
+            -- ``_compile_con_match`` path that routes through
+            -- ``_compile_adt_dispatch`` when ``type_has_field_sibling``
             -- (codegen.py L2380).
+            --
+            -- For pure-nullary types (e.g. ``Color = Red | Green | Blue``
+            -- matched with ``| Red → A | _ → B``), Python uses the
+            -- plain nat-dispatch path with id_pin in the App branch —
+            -- App scrutinees can't arise at runtime because all
+            -- constructor values are bare Nat tags.  We mirror that:
+            -- the ``has_field_sib`` flag stashed in the ctab tells us
+            -- which path to take.
+            let has_field_sib = match nullary_arms {
+                                  | Nil → 0
+                                  | Cons arm0 _ →
+                                      match (cg_contab_lookup_safe ctab (arm_get_con_name arm0)) {
+                                        | None → 0
+                                        | Some p → contab_has_field_sib p
+                                      }
+                                } in
             match wild {
               | None →
                   -- No wild: pure nat dispatch (Python's _build_nat_dispatch
@@ -5794,14 +5828,26 @@ let cg_compile_con_match : PlanVal → List MatchArm → CEnv
                   let nat_arms = cg_sort_nat_pairs (cg_arms_to_tag_expr nullary_arms ctab) in
                   cg_build_nat_dispatch nat_arms wild scr env ce ctab hint 0
               | Some wpair →
-                  match wpair {
-                    | MkPair _ wb →
-                        let nullary_nat_arms = cg_sort_nat_pairs (cg_arms_to_tag_expr nullary_arms ctab) in
-                        let z_body = cg_build_z_body nullary_nat_arms wild env ce ctab hint in
-                        let remaining = cg_build_nullary_remaining nullary_nat_arms in
-                        let m_body = cg_build_m_body remaining wild env ce ctab hint in
-                        let app_handler = cg_build_wild_app_handler wb env ce ctab hint in
-                        cg_build_reflect_dispatch app_handler z_body m_body scr (cenv_arity env)
+                  match has_field_sib {
+                    | 0 →
+                        -- Pure-nullary type with wild: plain nat
+                        -- dispatch (App branch = id_pin via op2).
+                        -- Mirrors Python's `_build_nat_dispatch` path.
+                        let nat_arms = cg_sort_nat_pairs (cg_arms_to_tag_expr nullary_arms ctab) in
+                        cg_build_nat_dispatch nat_arms wild scr env ce ctab hint 0
+                    | _ →
+                        -- Type has field-bearing siblings: full
+                        -- reflect_dispatch with wild_app_handler so an
+                        -- App-shaped scrutinee fires the wild body.
+                        match wpair {
+                          | MkPair _ wb →
+                              let nullary_nat_arms = cg_sort_nat_pairs (cg_arms_to_tag_expr nullary_arms ctab) in
+                              let z_body = cg_build_z_body nullary_nat_arms wild env ce ctab hint in
+                              let remaining = cg_build_nullary_remaining nullary_nat_arms in
+                              let m_body = cg_build_m_body remaining wild env ce ctab hint in
+                              let app_handler = cg_build_wild_app_handler wb env ce ctab hint in
+                              cg_build_reflect_dispatch app_handler z_body m_body scr (cenv_arity env)
+                        }
                   }
             }
         | _ →
@@ -5815,8 +5861,8 @@ let cg_compile_con_match : PlanVal → List MatchArm → CEnv
 
 -- cg_compile_fallback_match: wildcard/variable match (bind scrutinee if PatVar)
 let cg_compile_fallback_match : PlanVal → List MatchArm → CEnv
-                                → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                                → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                                → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                                → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ scr arms env ce ctab hint →
       match arms {
         | Nil → cg_quote_nat 0 (cenv_arity env)
@@ -5860,8 +5906,8 @@ let cg_make_lifted_env : List Nat → List Nat → List (Pair Nat PlanVal) → O
 -- their lifted laws `<hint>_*_succ` rather than `_*_succ`.  Mirrors
 -- bootstrap/codegen.py::_compile_lam_as_law line 1581 (passes name_hint).
 let cg_compile_lam_as_law : List Nat → Expr → CEnv
-                            → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                            → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                            → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                            → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ params body_expr env ce ctab hint →
       let g = cenv_globals env in
       let self = cenv_self env in
@@ -5873,8 +5919,8 @@ let cg_compile_lam_as_law : List Nat → Expr → CEnv
 -- cg_compile_lam_lifted: lambda-lift a nested lambda (arity > 0 context).
 -- Same hint-threading as cg_compile_lam_as_law.
 let cg_compile_lam_lifted : List Nat → Expr → CEnv
-                            → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                            → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+                            → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                            → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ params body_expr env ce ctab hint →
       let free_vars = cg_free_vars body_expr params env in
       let g = cenv_globals env in
@@ -6056,7 +6102,7 @@ let cg_var_from_env : Nat → CEnv → PlanVal
       }
 
 -- cg_compile_var: compile EVar
-let cg_compile_var : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+let cg_compile_var : Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ expr env ctab hint →
       match expr {
         | EVar n →
@@ -6093,8 +6139,8 @@ let cg_compile_var : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat �
 -- `bit_or_wild_pred_wild_pred_then_succ` for an if-expression buried
 -- inside an App, where Python's reference is just `_then_succ`.  Pass
 -- 0 (empty hint) to children for byte-identity.
-let cg_compile_app : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
-                   → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+let cg_compile_app : Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
+                   → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal) → PlanVal
   = λ expr env ctab hint ce →
       match expr {
         | EApp f a →
@@ -6119,8 +6165,8 @@ let cg_compile_enat : Expr → CEnv → Nat → PlanVal
 --     `(1 rhs body)` let form; preserve top_of_law for body recursion.
 --   * Otherwise (nested) → lambda-lift the body into a sub-law that
 --     captures outer locals + self + the let-bound name as parameters.
-let cg_compile_elet : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
-                    → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+let cg_compile_elet : Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
+                    → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal) → PlanVal
   = λ expr env ctab hint ce →
       match expr {
         | ELet name pair →
@@ -6193,8 +6239,8 @@ let cg_compile_elet : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat �
 -- bootstrap/codegen.py::_compile_if).
 --
 -- Mirrors bootstrap/codegen.py::_compile_if line-for-line.
-let cg_compile_if : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
-                  → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+let cg_compile_if : Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
+                  → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal) → PlanVal
   = λ expr env ctab hint ce →
       match expr {
         | EIf cond pair →
@@ -6227,8 +6273,8 @@ let cg_compile_if : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat →
 -- cg_compile_fix: compile EFix (fix λ self params → body)
 -- Creates a law with arity = length(params). N(0) = self, N(1..n) = params.
 -- self_name is bound via cenv_self so cg_compile_var returns PNat 0 for it.
-let cg_compile_fix : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
-                   → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+let cg_compile_fix : Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
+                   → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal) → PlanVal
   = λ expr env ctab hint ce →
       match expr {
         | EFix self_name p →
@@ -6250,8 +6296,8 @@ let cg_compile_fix : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat �
       }
 
 -- cg_compile_match: compile EMatch
-let cg_compile_match : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
-                     → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+let cg_compile_match : Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
+                     → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal) → PlanVal
   = λ expr env ctab hint ce →
       match expr {
         | EMatch scr arms →
@@ -6271,8 +6317,8 @@ let cg_compile_match : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat 
       }
 
 -- cg_compile_lam: compile ELam (lambda expression)
-let cg_compile_lam : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
-                   → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+let cg_compile_lam : Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
+                   → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal) → PlanVal
   = λ expr env ctab hint ce →
       match (cg_flatten_lam expr) {
         | MkPair params body_expr →
@@ -6287,8 +6333,8 @@ let cg_compile_lam : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat �
       }
 
 -- cg_compile_pin: compile EPin (@name = rhs; body)
-let cg_compile_pin : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
-                   → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+let cg_compile_pin : Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
+                   → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal) → PlanVal
   = λ expr env ctab hint ce →
       match expr {
         | EPin name pair →
@@ -6381,8 +6427,8 @@ let cg_apply_range : PlanVal → Nat → Nat → PlanVal
 -- resume_expr: pre-built resume (k_open applied to dispatch_current for deep).
 let cg_build_handle_dispatch
       : List (Pair Nat (Pair Nat Expr)) → CEnv → Nat → Nat → Nat → PlanVal → PlanVal
-      → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-      → List (Pair Nat (Pair Nat Nat)) → Nat → Nat → PlanVal
+      → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+      → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → Nat → PlanVal
   = λ arms dispatch_env k_idx op_arg_idx op_tag_idx forward_body resume_expr ce ctab hint tag →
       match arms {
         | Nil → forward_body
@@ -6415,8 +6461,8 @@ let cg_build_handle_dispatch
 -- Unhandled tags forward to dispatch_parent with k_open wrapped by forward_k.
 let cg_compile_dispatch_fn
       : List (Pair Nat (Pair Nat Expr)) → CEnv
-      → List (Pair Nat (Pair Nat Nat)) → Nat
-      → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+      → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat
+      → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal) → PlanVal
   = λ op_arms env ctab hint ce →
       match op_arms {
         | Nil →
@@ -6464,8 +6510,8 @@ let cg_compile_dispatch_fn
 -- cg_compile_return_fn: build return handler law
 -- L(n_cap+1, name, body) where last param is the pure return value.
 let cg_compile_return_fn
-      : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat
-      → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+      : Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat
+      → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal) → PlanVal
   = λ ret_fn env ctab hint ce →
       match ret_fn {
         | ELam ret_var ret_body →
@@ -6491,8 +6537,8 @@ let cg_compile_return_fn
 -- Open-continuation protocol:
 -- Produces: λ(dp, ko_open) → comp(dispatch(dp), compose_open(ko_open, ret_fn))
 let cg_compile_handle
-      : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
-      → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+      : Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
+      → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal) → PlanVal
   = λ expr env ctab hint ce →
       match expr {
         | EHandle comp pair →
@@ -6546,8 +6592,8 @@ let cg_compile_handle
 --   with (caps, k_open_outer) gives a 2-arg open continuation.
 -- Outer body: rhs dispatch inner_cont_open
 let cg_compile_do
-      : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
-      → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+      : Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
+      → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal) → PlanVal
   = λ expr env ctab hint ce →
       match expr {
         | EDo bind_name pair →
@@ -6604,8 +6650,8 @@ let cg_compile_do
 
 -- cg_compile_complex: route non-EVar, non-ENat, non-EApp expressions
 -- Uses nat_eq chain on expr_tag (pred_env safe: all bodies take ce as param)
-let cg_compile_complex : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
-                       → (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal) → PlanVal
+let cg_compile_complex : Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
+                       → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal) → PlanVal
   = λ expr env ctab hint ce →
       match (nat_eq (expr_tag expr) 2) {
         | 0 →
@@ -6663,8 +6709,8 @@ let cg_compile_complex : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Na
 -- mis-classify subsequent nested lets as top-of-law and emit native
 -- `(1 …)` form where Python lifts to sub-laws — the divergence
 -- compile-self hit at byte ~37725 in lex_skip_ws.
-let cg_dispatch : (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal)
-                → Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+let cg_dispatch : (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+                → Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ ce expr env ctab hint →
       let tag = expr_tag expr in
       let env2 = match (cenv_top_of_law env) {
@@ -6701,7 +6747,7 @@ let cg_dispatch : (Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → 
       }
 
 -- cg_compile_expr: main compiler entry point (self-recursive via cg_dispatch)
-let cg_compile_expr : Expr → CEnv → List (Pair Nat (Pair Nat Nat)) → Nat → PlanVal
+let cg_compile_expr : Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ expr env ctab hint →
       cg_dispatch cg_compile_expr expr env ctab hint
 
@@ -6797,7 +6843,7 @@ let nn_output : Nat = 128047746676079
 -- Compiler.gls itself).  See vendor/reaver/src/plan/boot.plan for
 -- the (#bplan ...) macro shape and `bootstrap/bplan_deps.py` for
 -- the bootstrap-side mirror table.
-let cg_core_plan_bplan_prims : List (Pair Nat (Pair Nat Nat))
+let cg_core_plan_bplan_prims : List (Pair Nat (Pair Nat (Pair Nat Nat)))
   = Cons (MkPair (name_concat_dot nn_Core_PLAN nn_pin)     (MkPair nn_bplan_Pin   1))
     (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_mk_law) (MkPair nn_bplan_Law   3))
     (Cons (MkPair (name_concat_dot nn_Core_PLAN nn_inc)    (MkPair nn_bplan_Inc   1))
@@ -6822,7 +6868,7 @@ let cg_core_plan_bplan_prims : List (Pair Nat (Pair Nat Nat))
 -- references `Reaver.RPLAN.input` / `.output` from `main_reaver`; the
 -- compile-self gate's divergence at byte 4640 was an `(#pin 66)`
 -- instead of `(#pin 82)` for these items.
-let cg_reaver_rplan_prims : List (Pair Nat (Pair Nat Nat))
+let cg_reaver_rplan_prims : List (Pair Nat (Pair Nat (Pair Nat Nat)))
   = Cons (MkPair (name_concat_dot nn_Reaver_RPLAN nn_input)  (MkPair nn_rplan_Input  1))
     (Cons (MkPair (name_concat_dot nn_Reaver_RPLAN nn_output) (MkPair nn_rplan_Output 1))
     Nil)
@@ -6844,19 +6890,41 @@ let cg_register_builtins : CEnv → CEnv
           kw_pure cps_pure_law)
         kw_run cps_run_law
 
--- cg_register_builtin_contab: add False, True, Unit to contab
-let cg_register_builtin_contab : List (Pair Nat (Pair Nat Nat)) → List (Pair Nat (Pair Nat Nat))
+-- cg_register_builtin_contab: add False, True, Unit to contab.
+-- All three are pure-nullary (no field-bearing sibling), so the third
+-- entry of the value tuple — has_field_sib — is 0.
+let cg_register_builtin_contab : List (Pair Nat (Pair Nat (Pair Nat Nat))) → List (Pair Nat (Pair Nat (Pair Nat Nat)))
   = λ ctab →
       contab_insert
         (contab_insert
-          (contab_insert ctab nn_False (MkPair 0 0))
-          nn_True (MkPair 1 0))
-        nn_Unit (MkPair 0 0)
+          (contab_insert ctab nn_False (MkPair 0 (MkPair 0 0)))
+          nn_True (MkPair 1 (MkPair 0 0)))
+        nn_Unit (MkPair 0 (MkPair 0 0))
 
--- cg_register_type_one: register one ConDef with given tag and module name
-let cg_register_type_one : ConDef → Nat → Nat → CEnv → List (Pair Nat (Pair Nat Nat))
-                           → List (Pair Nat PlanVal) → Pair CEnv (Pair (List (Pair Nat (Pair Nat Nat))) (List (Pair Nat PlanVal)))
-  = λ cdef tag mod_name env ctab compiled →
+-- cg_any_con_has_fields: 1 if any ConDef in the list has n_fields > 0.
+-- Used to compute the type-level `has_field_sib` flag before each
+-- constructor is registered, so every constructor of a type that has
+-- at least one field-bearing sibling gets the same flag value of 1.
+let cg_any_con_has_fields : List ConDef → Nat
+  = λ cdefs →
+      foldl (λ acc cdef →
+               match (nat_eq acc 1) {
+                 | 0 →
+                     match cdef {
+                       | MkConDef _ n_fields →
+                           match (nat_eq n_fields 0) {
+                             | 0 → 1
+                             | _ → 0
+                           }
+                     }
+                 | _ → 1
+               }) 0 cdefs
+
+-- cg_register_type_one: register one ConDef with given tag, module name,
+-- and the type-level `has_field_sib` flag (1 if any sibling has fields).
+let cg_register_type_one : ConDef → Nat → Nat → Nat → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat)))
+                           → List (Pair Nat PlanVal) → Pair CEnv (Pair (List (Pair Nat (Pair Nat (Pair Nat Nat)))) (List (Pair Nat PlanVal)))
+  = λ cdef tag has_field_sib mod_name env ctab compiled →
       match cdef {
         | MkConDef con_name n_fields →
             let fq_name = name_concat_dot mod_name con_name in
@@ -6869,38 +6937,41 @@ let cg_register_type_one : ConDef → Nat → Nat → CEnv → List (Pair Nat (P
                             PNat tag
                       } in
             let new_env = cenv_bind_global env fq_name val in
-            let new_ctab = contab_insert ctab fq_name (MkPair tag n_fields) in
+            let new_ctab = contab_insert ctab fq_name (MkPair tag (MkPair n_fields has_field_sib)) in
             let new_compiled = Cons (MkPair fq_name val) compiled in
             MkPair new_env (MkPair new_ctab new_compiled)
       }
 
 -- cg_register_type_go must be defined before cg_register_type (forward ref fix)
-let cg_register_type_go : List ConDef → Nat → Nat → CEnv → List (Pair Nat (Pair Nat Nat))
+let cg_register_type_go : List ConDef → Nat → Nat → Nat → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat)))
                           → List (Pair Nat PlanVal)
-                          → Pair CEnv (Pair (List (Pair Nat (Pair Nat Nat))) (List (Pair Nat PlanVal)))
-  = λ cdefs tag mod_name env ctab compiled →
+                          → Pair CEnv (Pair (List (Pair Nat (Pair Nat (Pair Nat Nat)))) (List (Pair Nat PlanVal)))
+  = λ cdefs tag has_field_sib mod_name env ctab compiled →
       match cdefs {
         | Nil → MkPair env (MkPair ctab compiled)
         | Cons cdef rest →
-            match (cg_register_type_one cdef tag mod_name env ctab compiled) {
+            match (cg_register_type_one cdef tag has_field_sib mod_name env ctab compiled) {
               | MkPair new_env rest_pair →
                   match rest_pair {
                     | MkPair new_ctab new_compiled →
-                        cg_register_type_go rest (add tag 1) mod_name new_env new_ctab new_compiled
+                        cg_register_type_go rest (add tag 1) has_field_sib mod_name new_env new_ctab new_compiled
                   }
             }
       }
 
--- cg_register_type: register all constructors of a DType decl
-let cg_register_type : List ConDef → Nat → Nat → CEnv → List (Pair Nat (Pair Nat Nat))
+-- cg_register_type: register all constructors of a DType decl.
+-- Pre-scans the constructors to compute the type-level `has_field_sib`
+-- flag, then threads it into each constructor's contab entry.
+let cg_register_type : List ConDef → Nat → Nat → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat)))
                       → List (Pair Nat PlanVal)
-                      → Pair CEnv (Pair (List (Pair Nat (Pair Nat Nat))) (List (Pair Nat PlanVal)))
+                      → Pair CEnv (Pair (List (Pair Nat (Pair Nat (Pair Nat Nat)))) (List (Pair Nat PlanVal)))
   = λ cdefs mod_name type_name env ctab compiled →
-      cg_register_type_go cdefs 0 mod_name env ctab compiled
+      let has_field_sib = cg_any_con_has_fields cdefs in
+      cg_register_type_go cdefs 0 has_field_sib mod_name env ctab compiled
 
 -- cg_pass1: process DType declarations
-let cg_pass1 : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat Nat)) → List (Pair Nat PlanVal)
-             → Pair CEnv (Pair (List (Pair Nat (Pair Nat Nat))) (List (Pair Nat PlanVal)))
+let cg_pass1 : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → List (Pair Nat PlanVal)
+             → Pair CEnv (Pair (List (Pair Nat (Pair Nat (Pair Nat Nat)))) (List (Pair Nat PlanVal)))
   = λ decls mod_name env ctab compiled →
       match decls {
         | Nil → MkPair env (MkPair ctab compiled)
@@ -7024,7 +7095,7 @@ let cg_pass2 : List Decl → Nat → CEnv → List (Pair Nat PlanVal) → Pair C
 -- parse_type_decl_body L2797).  Python's bootstrap simply ignores
 -- DeclTypeAlias at codegen time; the self-host matches by skipping the
 -- sentinel here instead of emitting a stray `(#bind Compiler_ 0)`.
-let cg_compile_let_one : Nat → Expr → Nat → CEnv → List (Pair Nat (Pair Nat Nat)) → List (Pair Nat PlanVal)
+let cg_compile_let_one : Nat → Expr → Nat → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → List (Pair Nat PlanVal)
                         → Pair CEnv (List (Pair Nat PlanVal))
   = λ name body mod_name env ctab compiled →
       match (Reaver.BPLAN.eq name 0) {
@@ -7043,7 +7114,7 @@ let cg_compile_let_one : Nat → Expr → Nat → CEnv → List (Pair Nat (Pair 
 
 -- cg_compile_inst_members: compile each method body in a DInst
 let cg_compile_inst_members
-      : List (Pair Nat Expr) → Nat → Nat → CEnv → List (Pair Nat (Pair Nat Nat)) → List (Pair Nat PlanVal)
+      : List (Pair Nat Expr) → Nat → Nat → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → List (Pair Nat PlanVal)
       → Pair CEnv (List (Pair Nat PlanVal))
   = λ members inst_prefix mod_name env ctab compiled →
       match members {
@@ -7614,7 +7685,7 @@ let cg_register_mutual_refs : List (Pair Nat Nat) → CEnv → CEnv
 -- hint (Python doesn't thread name_hint through) while the outer law
 -- still carries the original short name.
 let cg_compile_mutual_law
-  : Nat → Expr → List (Pair Nat Nat) → CEnv → List (Pair Nat (Pair Nat Nat)) → PlanVal
+  : Nat → Expr → List (Pair Nat Nat) → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → PlanVal
   = λ name_nat body scc_idx_pairs env ctab →
       match (cg_flatten_lam body) {
         | MkPair user_params inner_body →
@@ -7656,7 +7727,7 @@ let cg_zip_indices_go : List (Pair Nat Expr) → Nat → List (Pair Nat Nat)
 -- cg_compile_mutual_law, accumulating laws in canonical order.
 let cg_compile_member_laws_go
   : List (Pair Nat Expr) → List (Pair Nat Nat) → CEnv
-  → List (Pair Nat (Pair Nat Nat)) → List PlanVal → List PlanVal
+  → List (Pair Nat (Pair Nat (Pair Nat Nat))) → List PlanVal → List PlanVal
   = λ members scc_idx_pairs env ctab acc →
       match members {
         | Nil → reverse acc
@@ -7703,7 +7774,7 @@ let cg_emit_wrappers_go
 -- cg_compile_mutual_scc: end-to-end compilation of one multi-member SCC.
 -- `members` is the (FQ, body) list in canonical (lex-sorted) order.
 let cg_compile_mutual_scc
-  : List (Pair Nat Expr) → CEnv → List (Pair Nat (Pair Nat Nat))
+  : List (Pair Nat Expr) → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat)))
   → List (Pair Nat PlanVal)
   → Pair CEnv (List (Pair Nat PlanVal))
   = λ members env ctab compiled →
@@ -7781,7 +7852,7 @@ let cg_scc_rep : List Nat → Nat
 -- multi-member → cg_compile_mutual_scc).  DInsts are compiled in-line
 -- as before.  `emitted` tracks SCC representative FQs already produced.
 let cg_pass3_go
-  : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat Nat))
+  : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat)))
   → List (Pair Nat PlanVal)
   → List (Pair Nat Expr) → List (Pair Nat (List Nat)) → List Nat
   → List (Pair Nat PlanVal)
@@ -7886,7 +7957,7 @@ let cg_pass3_go
 -- each SCC the first time one of its members is encountered.  This
 -- mirrors bootstrap/codegen.py::compile_program L350-405 — multi-
 -- member SCCs use the shared-pin encoding (spec/02-mutual-recursion.md).
-let cg_pass3 : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat Nat))
+let cg_pass3 : List Decl → Nat → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat)))
              → List (Pair Nat PlanVal)
              → List (Pair Nat PlanVal)
   = λ decls mod_name env ctab compiled →
