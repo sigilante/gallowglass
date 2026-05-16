@@ -947,11 +947,13 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
-    @unittest.expectedFailure
     def test_or_pattern_nat(self):
         """``match n { | 0 | 1 → 0 | _ → 1 }`` — or-pattern across
-        two Nat literals.  Same self-host gap as
-        ``test_or_pattern_constructor``."""
+        two Nat literals.  Pins the Nat-or-pattern handling in
+        ``parse_match_arm_pe`` (Phase I rc3-3): when the Nat arm is
+        followed by ``|`` instead of ``→``, recurse to collect the
+        alternatives and synthesise a shared body, mirroring
+        ``arm_con_upper_pe`` for constructor or-patterns."""
         src = (
             'let classify : Nat → Nat\n'
             '  = λ n → match n {\n'
@@ -971,14 +973,14 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
-    @unittest.expectedFailure
     def test_list_literal_three(self):
         """``[1, 2, 3]`` desugars to ``Cons 1 (Cons 2 (Cons 3 Nil))``.
-
-        Bootstrap M15.3 added list-literal desugaring.  Self-host's
-        parser/desugarer handles ``[]`` but not multi-element list
-        literals byte-identically — the produced Cons chain differs
-        in structure from the bootstrap's.  Gap."""
+        Pins the top-level App inlining fix in ``cg_resolve_global_val``
+        (Phase I rc3-3): Python's emit-side suppresses bind-symbol dedup
+        for the value currently being emitted, so a top-level
+        ``let main = xs`` whose RHS is an App-valued global emits the
+        structural App inlined.  Self-host previously tagged the App
+        with PNamed which always emits the bare symbol."""
         src = (
             'type List a = | Nil | Cons a (List a)\n'
             'let xs : List Nat = [1, 2, 3]\n'
@@ -1000,21 +1002,21 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
-    @unittest.expectedFailure
     def test_guard_pattern(self):
-        """``match n { | x | guard → 1 | _ → 0 }`` — guarded match arm.
-
-        Bootstrap M15.5 added guards (`| pat | guard → body`).  Self-
-        host parses guards but the codegen path that synthesises the
-        if-then-else around the arm body isn't yet byte-identical to
-        the bootstrap's.  Gap."""
+        """``match n { | x if guard → 1 | _ → 0 }`` — guarded match arm.
+        Bootstrap M15.5 (per ``bootstrap/parser.py::_parse_match_arm``
+        L1109) uses the ``if`` keyword between pattern and guard.
+        Pins the self-host's existing guard desugar in
+        ``parse_match_expr_pe`` (binds ``__guard_scrut``, rewrites
+        each guarded arm into ``| pat → if guard then body else
+        match __guard_scrut { remaining }``)."""
         src = (
             'external mod Reaver.BPLAN {\n'
             '  eq : Nat → Nat → Nat\n'
             '}\n'
             'let is_seven : Nat → Nat\n'
             '  = λ n → match n {\n'
-            '      | x | Reaver.BPLAN.eq x 7 → 1\n'
+            '      | x if Reaver.BPLAN.eq x 7 → 1\n'
             '      | _ → 0\n'
             '    }\n'
             'let main = is_seven 7\n'

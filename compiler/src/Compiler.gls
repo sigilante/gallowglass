@@ -1944,15 +1944,32 @@ let arm_con_upper_pe : (List Token → Pair Expr (List Token)) → Nat → List 
 
 -- arm_con_lower_pe: build ArmVar or cons pattern after lowercase name
 -- toks is positioned AFTER the variable name
--- If next token is TkColonColon, parse h :: t → ArmCon(Cons, [h, t], body)
--- Otherwise, build ArmVar(name, body) as before
--- Returns Pair (List MatchArm) (List Token) for consistency with arm_con_upper_pe
+-- Token-shape dispatch:
+--   * TkColonColon → h :: t pattern → ArmCon(Cons, [h, t], body)
+--   * TkIf         → guard: | x if guard → body
+--                    Desugars to ArmVar(x, EIf guard body (EVar 0))
+--                    matching the constructor-arm guard handling in
+--                    arm_con_upper_pe.  The EVar 0 sentinel is replaced
+--                    in parse_match_expr_pe with the fallthrough match.
+--   * else (→)     → ArmVar(name, body) — plain bound-var arm.
 let arm_con_lower_pe : (List Token → Pair Expr (List Token)) → Nat → List Token → Pair (List MatchArm) (List Token)
   = λ pe var_nat toks →
       match (tok_is toks TkColonColon) {
         | 0 →
-            match (pe (tok_tail toks)) {
-              | MkPair body rest → MkPair (Cons (ArmVar var_nat body) Nil) rest
+            match (tok_is toks TkIf) {
+              | 0 →
+                  match (pe (tok_tail toks)) {
+                    | MkPair body rest → MkPair (Cons (ArmVar var_nat body) Nil) rest
+                  }
+              | k →
+                  -- Guard: skip `if`, parse guard, skip `→`, parse body.
+                  match (pe (tok_tail toks)) {
+                    | MkPair guard_expr toks2 →
+                        match (pe (tok_tail toks2)) {
+                          | MkPair body rest →
+                              MkPair (Cons (ArmVar var_nat (EIf guard_expr (MkPair body (EVar 0)))) Nil) rest
+                        }
+                  }
             }
         | k →
             -- h :: t pattern → ArmCon(Cons, [h, t], body)
@@ -1976,9 +1993,45 @@ let parse_match_arm_pe : List (Pair Nat (List Nat)) → (List Token → Pair Exp
         | MkPair n_opt rest →
             match n_opt {
               | Some n →
-                  -- | n → expr: rest is after the nat literal, tok_tail skips →
-                  match (pe (tok_tail rest)) {
-                    | MkPair body rest2 → MkPair (Cons (ArmNat n body) Nil) rest2
+                  -- | n → expr  OR  | n | m → expr  (or-pattern across Nat
+                  -- literals).  When rest's head is | we recurse via
+                  -- parse_match_arm_pe with rest as the new arms head,
+                  -- collect the alternatives, then prepend an ArmNat that
+                  -- shares the resulting body.  Mirrors the constructor
+                  -- or-pattern handling in arm_con_upper_pe.
+                  match (tok_is rest TkArrow) {
+                    | 0 →
+                        -- Not →; check for or-pattern continuation (| at head).
+                        match (tok_is rest TkBar) {
+                          | 0 →
+                              -- Neither → nor |.  Fall through to the normal
+                              -- case (skips a single arrow token) so the
+                              -- existing error path fires deterministically
+                              -- on malformed input.
+                              match (pe (tok_tail rest)) {
+                                | MkPair body rest2 → MkPair (Cons (ArmNat n body) Nil) rest2
+                              }
+                          | k →
+                              -- | n | …rest_of_or_pattern → body
+                              match (parse_match_arm_pe rt pe rest) {
+                                | MkPair or_arms rest3 →
+                                    match or_arms {
+                                      | Nil → MkPair Nil rest3
+                                      | Cons first_arm _ →
+                                          let body = match first_arm {
+                                                       | ArmNat _ b → b
+                                                       | ArmVar _ b → b
+                                                       | ArmCon _ payload → match payload { | MkPair _ b → b }
+                                                     } in
+                                          MkPair (Cons (ArmNat n body) or_arms) rest3
+                                    }
+                              }
+                        }
+                    | k →
+                        -- | n → body : the standard single-arm case.
+                        match (pe (tok_tail rest)) {
+                          | MkPair body rest2 → MkPair (Cons (ArmNat n body) Nil) rest2
+                        }
                   }
               | None →
                   -- Only TkIdent is an App arm here (1 App arm only)
@@ -2161,8 +2214,13 @@ let has_guard_sentinel : List MatchArm → Nat
             }
       }
 
--- replace_guard_sentinels: replace EVar 0 sentinels in guarded arms
--- For arm at position i, the fallthrough is: match __gs { remaining_arms[i+1..] }
+-- replace_guard_sentinels: replace EVar 0 sentinels in guarded arms.
+-- For an arm at position i with body `EIf guard real (EVar 0)`, the
+-- sentinel `EVar 0` is the fallthrough placeholder — rewrite it to
+-- `match __guard_scrut { remaining_arms[i+1..] }` so a failing guard
+-- re-dispatches over the rest of the match.  Handles ArmCon and ArmVar;
+-- ArmNat arms get the same treatment (Nat-or-pattern + guard would
+-- also use this shape — currently rare).
 let replace_guard_sentinels : List MatchArm → List MatchArm
   = λ arms →
       match arms {
@@ -2182,7 +2240,6 @@ let replace_guard_sentinels : List MatchArm → List MatchArm
                                           match (nat_eq n 0) {
                                             | 0 → Cons (ArmCon con_nat (MkPair fields body)) fixed_rest
                                             | k →
-                                                -- Replace sentinel with match __gs { remaining_arms }
                                                 let fallthrough = EMatch (EVar nn___guard_scrut) fixed_rest in
                                                 Cons (ArmCon con_nat (MkPair fields (EIf cond (MkPair then_body fallthrough)))) fixed_rest
                                           }
@@ -2191,6 +2248,24 @@ let replace_guard_sentinels : List MatchArm → List MatchArm
                               }
                           | _ → Cons (ArmCon con_nat (MkPair fields body)) fixed_rest
                         }
+                  }
+              | ArmVar var_nat body →
+                  match body {
+                    | EIf cond payload2 →
+                        match payload2 {
+                          | MkPair then_body else_body →
+                              match else_body {
+                                | EVar n →
+                                    match (nat_eq n 0) {
+                                      | 0 → Cons (ArmVar var_nat body) fixed_rest
+                                      | k →
+                                          let fallthrough = EMatch (EVar nn___guard_scrut) fixed_rest in
+                                          Cons (ArmVar var_nat (EIf cond (MkPair then_body fallthrough))) fixed_rest
+                                    }
+                                | _ → Cons (ArmVar var_nat body) fixed_rest
+                              }
+                        }
+                    | _ → Cons (ArmVar var_nat body) fixed_rest
                   }
               | _ → Cons arm fixed_rest
             }
@@ -6023,13 +6098,23 @@ let cg_resolve_global_val : Nat → PlanVal → CEnv → PlanVal
               | _ → cg_quote_nat (planval_get_nat val) (cenv_arity env)
             }
         | _ →
-            -- Top level: same double-pin avoidance.  Apps and Pins
-            -- preserve identity via the binding symbol; Laws wrap.
+            -- Top level (env.arity == 0).  Python's `_compile_var`
+            -- returns ``val`` directly at top level (codegen.py L1286).
+            -- emit_top then dedups Pins/Laws by *object identity*,
+            -- but for Apps the dedup is suppressed by `_bind_skip_id`
+            -- when emitting the binding itself — so Apps end up
+            -- structurally inlined whenever they appear at top level,
+            -- not symbolically deduped.  Mirror that here: return
+            -- ``val`` unchanged for Apps (no PNamed tag); tag Pins so
+            -- emit produces the bare symbol (the dedup *does* fire
+            -- across separate Pin bindings).  Nats and Laws fall
+            -- through cg_tag_global which leaves Nats alone and tags
+            -- Laws.
             match (planval_is_pin val) {
               | 0 →
                   match (planval_is_app val) {
                     | 0 → cg_tag_global fq val
-                    | _ → PNamed fq val
+                    | _ → val
                   }
               | _ → PNamed fq val
             }
