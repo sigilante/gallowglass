@@ -2869,9 +2869,16 @@ let parse_record_fields_go : List Token → Nat → List Nat → Pair (Pair Nat 
   = λ toks count names →
       match (tok_is toks TkRBrace) {
         | 0 →
+            -- Not at ``}`` — check for EOF (terminate with current
+            -- state) or parse the next field.  Previously the two
+            -- arms were INVERTED: ``| 0 →`` (not-EOF, which is the
+            -- normal "parse next field" case) returned immediately,
+            -- so every record-type declaration silently produced a
+            -- nullary constructor with arity 0.  Fixed in Phase I
+            -- rc3-3.
             match (tok_is toks TkEof) {
-              | 0 → MkPair (MkPair count (reverse names)) toks
-              | k →
+              | 0 →
+                  -- Not EOF: parse the next field.
                   match (tok_eat_ident toks) {
                     | MkPair fname rest →
                         match fname {
@@ -2889,6 +2896,10 @@ let parse_record_fields_go : List Token → Nat → List Nat → Pair (Pair Nat 
                             parse_record_fields_go rest3 (Core.PLAN.inc count) (Cons fname names)
                         }
                   }
+              | k →
+                  -- EOF (malformed input — missing ``}``): terminate
+                  -- with the fields collected so far.
+                  MkPair (MkPair count (reverse names)) toks
             }
         | k → MkPair (MkPair count (reverse names)) (tok_tail toks)
       }

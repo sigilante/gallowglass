@@ -1022,16 +1022,20 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
-    @unittest.expectedFailure
     def test_record_construct(self):
         """``type Pt = { x : Nat, y : Nat }; let p = { x = 1, y = 2 }`` —
         record type and construction.  Bootstrap M15.1.
 
-        Gap: self-host emits ``0`` for both the type declaration and
-        any record-construction expression.  The parser likely
-        recognises the syntax but codegen has no handler — needs the
-        record-as-tagged-record codegen (mirror of
-        ``bootstrap/codegen.py``'s record desugar)."""
+        Pins two coupled fixes in Phase I rc3-3:
+        * ``parse_record_fields_go`` had its EOF check arms inverted,
+          so it returned (count=0, names=[]) immediately for any
+          non-EOF, non-``}`` token — every record-type declaration
+          silently produced a nullary constructor with arity 0.
+        * ``skip_record_field_type`` didn't actually advance past
+          the field's type tokens (it returned the token stream
+          unchanged for any non-comma, non-RBrace, non-EOF token).
+        Both are now fixed; records construct, project, and pattern
+        all work byte-identically with the bootstrap."""
         src = (
             'type Pt = { x : Nat, y : Nat }\n'
             'let origin : Pt = { x = 0, y = 0 }\n'
