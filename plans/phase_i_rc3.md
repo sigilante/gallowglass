@@ -1,7 +1,54 @@
 # Phase I — Toward 1.0.0-rc3
 
-**Status:** in progress. Successor to Phase H.
+**Status:** Ready to ship.  6/8 coverage gaps closed; remaining 2
+(typeclass, do-notation) deferred to rc4 with clear scope.
 **Roadmap reference:** `ROADMAP.md § "1.0"` (acceptance criteria).
+
+## Final rc3 status
+
+| rc3 item | Status | Notes |
+|---|---|---|
+| rc3-1 Python-less build | ✅ | `compiler/dist/Compiler.plan` + MANIFEST + sanity tests + `tools/build-self-host.sh` + CI `self_host_build` job |
+| rc3-2 Coverage fixtures | ✅ | 11 fixtures across all bootstrap-supported features; xfails track remaining gaps |
+| rc3-3 Full surface | 6/8 closed | See gap table below |
+
+### Gap closure summary
+
+| Fixture | Pre-rc3 | rc3 | How closed |
+|---|---|---|---|
+| `test_fix_lambda_anonymous_recursion` | ✅ | ✅ | already worked |
+| `test_or_pattern_constructor` | ❌ xfail | ✅ | ctab `has_field_sib` flag in `cg_compile_con_match` |
+| `test_or_pattern_nat` | ❌ xfail | ✅ | extended `parse_match_arm_pe` to handle `\| n \| m → body` |
+| `test_list_literal_empty` | ✅ | ✅ | already worked |
+| `test_list_literal_three` | ❌ xfail | ✅ | bare-EVar binding shortcut in `cg_compile_let_one` |
+| `test_list_cons_pattern` | ✅ | ✅ | already worked |
+| `test_guard_pattern` | ❌ xfail | ✅ | extended `arm_con_lower_pe` + `replace_guard_sentinels` for ArmVar |
+| `test_record_construct` | ❌ xfail | ✅ | fixed inverted EOF arms in `parse_record_fields_go` + `skip_record_field_type` advance |
+| `test_record_pattern` | ❌ xfail | ✅ | (fixture was using record-update syntax; corrected) + record construct fixes |
+| `test_typeclass_simple` | ❌ xfail | ❌ xfail | instance method emission works, but constrained-let codegen + single-method dict shortcut deferred to rc4 |
+| `test_do_notation_simple` | ❌ xfail | ❌ xfail | effect-handler CPS port deferred to rc4 |
+
+Plus pre-existing xfail: `test_same_constructor_literal_field_collapses`
+(AUDIT.md D9).
+
+Selfhost suite: 36 passed + 1 skipped (compile-self gate, env-gated) +
+3 xfailed.
+
+### Deferred to rc4 (1.0 follow-ups)
+
+* **Typeclass constrained-let codegen.**  ``let same : ∀ a. Eq a => a
+  → a → Nat = λ x y → eq x y`` needs:
+  - Arity adjustment: each constraint adds 1 dict param.
+  - Single-method dict shortcut emission (``Compiler_inst_Eq_Nat``
+    pointing directly to the method).
+  - Call-site dict insertion (Python's ``_constrained_lets`` registry +
+    ``_compile_constrained_app``).
+  Estimated 3-5 days.
+* **Effect handler CPS port.**  ``handle (do x ← op in body) { ... }``
+  needs the CPS transform mirroring `bootstrap/codegen.py::_compile_handle`.
+  Estimated 3-5 days.
+
+## What rc3 needs (from the three deliverables in the post-Phase-H plan)
 
 ## What rc3 needs (from the three deliverables in the post-Phase-H plan)
 
