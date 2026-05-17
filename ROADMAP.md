@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
 **Last updated:** 2026-05-16
-**Current status:** v1.0.0-rc3 released. Phase H compile-self fixed point landed; Phase I shipped Python-less build path + 6/8 surface-coverage gaps closed. The two remaining gaps (typeclass constrained-let codegen, effect handler CPS alignment) have been promoted from 1.1.0 to 1.0 blockers and are the rc4 scope.
+**Current status:** v1.0.0-rc3 released. Phase H compile-self fixed point landed; Phase I shipped Python-less build path + 6/8 surface-coverage gaps closed. The two remaining gaps (typeclass constrained-let codegen, effect handler CPS alignment) have been promoted from 1.1.0 to 1.0 blockers and are the rc4 scope. rc4-1 (typeclass constrained-let) closed on `phase-i-1.0.0-rc4`; rc4-2 (effect handler CPS) deferred to a follow-up continuation.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -668,9 +668,13 @@ two as xfails.  rc3 originally deferred these to 1.1.0; for rc4 they have
 been promoted to 1.0 blockers so the "and self-hosted" qualifier on the
 typeclass/effect criterion can be honestly claimed.
 
-#### rc4-1 — Typeclass constrained-let codegen
+#### rc4-1 — Typeclass constrained-let codegen  ✅
 
-Close `test_typeclass_simple` in `tests/reaver/test_selfhost.py`.
+Closed on `phase-i-1.0.0-rc4`. `test_typeclass_simple` flipped from
+xfail to pass; output is byte-identical to the Python bootstrap.
+See `plans/phase_i_rc4.md §rc4-1` for what landed and the
+documented limitations (single-method classes + single constraints
++ Nat-typed call sites only).
 
 What's already there in `Compiler.gls`:
 * `class` and `instance` parsing
