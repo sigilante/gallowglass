@@ -3712,6 +3712,35 @@ let planval_is_law : PlanVal → Nat
 let planval_get_pin_inner : PlanVal → PlanVal
   = λ v → match v { | PPin inner → inner | _ → v }
 
+-- planval_get_law_name: name nat of a PLaw, 0 otherwise.
+let planval_get_law_name : PlanVal → Nat
+  = λ v → match v {
+      | PLaw n _ → n
+      | _ → 0
+    }
+
+-- planval_get_law_arity: arity of a PLaw, 0 otherwise.
+let planval_get_law_arity : PlanVal → Nat
+  = λ v → match v {
+      | PLaw _ p → match p { | MkPair a _ → a }
+      | _ → 0
+    }
+
+-- planval_get_pin_law_name: name nat of a PPin(PLaw _ _), 0 otherwise.
+-- Pinned laws (e.g. instance methods stored as PPin(PLaw _)) are the
+-- common shape for ``bind`` values in self-host output.
+let planval_get_pin_law_name : PlanVal → Nat
+  = λ v → match v {
+      | PPin inner → planval_get_law_name inner
+      | _ → planval_get_law_name v
+    }
+
+let planval_get_pin_law_arity : PlanVal → Nat
+  = λ v → match v {
+      | PPin inner → planval_get_law_arity inner
+      | _ → planval_get_law_arity v
+    }
+
 -- PConstrained predicates (see PlanVal definition for the sentinel's
 -- role).  Single-arm + wildcard: protected by the post-Phase-H tag-
 -- check fix in _build_field_arm_law / _compile_single_arm_field_bind.
@@ -6455,31 +6484,68 @@ let cg_infer_type_key : Expr → Nat
         | _ → 0
       }
 
--- cg_find_first_fq_for_val_go: scan env.globals (which is stored
--- most-recent-first via prepending) and return the LAST match —
--- equivalently, the FIRST source-order binding that has this value.
--- ``Reaver.BPLAN.eq`` is structural equality, so an instance bound
--- via the bare-EVar inlining shortcut (which stores the SAME
--- PlanVal object as the impl it points at) matches the impl's
--- binding.  Mirrors Python emit's ``bind_table`` which keeps the
--- first id() to register.
-let cg_find_first_fq_for_val_go
-      : PlanVal → List (Pair Nat PlanVal) → Nat → Nat
-  = λ val kvs best →
+-- cg_find_first_fq_for_law_go: scan env.globals (most-recent-first
+-- via prepending) and return the LAST match — i.e. the FIRST
+-- source-order binding whose PLaw has the SAME name nat and arity
+-- as the search target.
+--
+-- Why name+arity instead of full structural eq: ``Reaver.BPLAN.eq``
+-- is a nat-value comparison (see Plan.hs L457; ``nat`` returns 0
+-- for non-Nat values, so any two non-Nat values compare equal —
+-- useless for our purpose).  ``op 66 ["Equal"]`` would be true
+-- structural eq via deepseq+(==) but isn't currently in
+-- bplan_deps.py / Reaver.BPLAN's external mod.
+--
+-- name+arity matches the only case we need to handle: the bare-EVar
+-- inlining shortcut in cg_compile_inst_members_go and
+-- cg_compile_let_one stores the SAME PLaw object as a referenced
+-- binding, and the single-method dict shortcut in
+-- cg_compile_inst_members propagates that further.  Same object →
+-- same name nat (= encode_name of the original binding) and same
+-- arity.  This mirrors Python emit's ``bind_table`` which keys on
+-- id() and keeps the first to register.
+--
+-- Limitation: if two distinct top-level lets happen to compile to
+-- laws with identical name nats AND arities (extremely unlikely
+-- since name nat = encode_name of the binding name and source
+-- shadowing isn't permitted), they'd alias.  Worth a follow-up to
+-- thread BPLAN.Equal.
+let cg_find_first_fq_for_law_go
+      : Nat → Nat → List (Pair Nat PlanVal) → Nat → Nat
+  = λ target_name target_arity kvs best →
       match kvs {
         | Nil → best
         | Cons kv rest →
             match kv {
               | MkPair fq v →
-                  match (Reaver.BPLAN.eq v val) {
-                    | 0 → cg_find_first_fq_for_val_go val rest best
-                    | _ → cg_find_first_fq_for_val_go val rest fq
+                  let v_name = planval_get_pin_law_name v in
+                  let v_arity = planval_get_pin_law_arity v in
+                  match (Reaver.BPLAN.eq v_name 0) {
+                    | 0 →
+                        match (Reaver.BPLAN.eq v_name target_name) {
+                          | 0 → cg_find_first_fq_for_law_go target_name target_arity rest best
+                          | _ →
+                              match (Reaver.BPLAN.eq v_arity target_arity) {
+                                | 0 → cg_find_first_fq_for_law_go target_name target_arity rest best
+                                | _ → cg_find_first_fq_for_law_go target_name target_arity rest fq
+                              }
+                        }
+                    | _ → cg_find_first_fq_for_law_go target_name target_arity rest best
                   }
             }
       }
 
+-- cg_find_first_fq_for_val: returns the canonical (first source-order)
+-- FQ name for a PlanVal, or 0 if no match.  Only handles PLaw values
+-- (incl. PPin-wrapped); other shapes return 0 (caller should fall
+-- back to the binding's own fq).
 let cg_find_first_fq_for_val : PlanVal → List (Pair Nat PlanVal) → Nat
-  = λ val kvs → cg_find_first_fq_for_val_go val kvs 0
+  = λ val kvs →
+      let target_name = planval_get_pin_law_name val in
+      match (Reaver.BPLAN.eq target_name 0) {
+        | 0 → cg_find_first_fq_for_law_go target_name (planval_get_pin_law_arity val) kvs 0
+        | _ → 0
+      }
 
 -- cg_resolve_instance_dict: look up the instance dict for a given
 -- constraint class + first-arg type.  Tries the single-method

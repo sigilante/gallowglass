@@ -1062,27 +1062,22 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
-    @unittest.expectedFailure
     def test_typeclass_simple(self):
-        """``class Eq a {...}; instance Eq Nat {...}; let same : ∀ a.
-        Eq a => a → a → Nat = λ x y → eq x y`` — single-method
+        """``class MyEq a {...}; instance MyEq Nat {...}; let same : ∀ a.
+        MyEq a => a → a → Nat = λ x y → myeq x y`` — single-method
         typeclass with a constrained let.  Bootstrap M11.
 
-        The constrained-let pattern is necessary for this fixture to
-        be meaningful: a bare top-level call like ``eq 7 7`` fails in
-        the Python bootstrap too (no dict to insert at the call
-        site), so it wouldn't isolate self-host behaviour.  The
-        constrained-let form bundles the dict-param and call-site
-        dispatch through Python's ``_compile_constrained_let`` and
-        ``_compile_constrained_app`` (codegen.py L1067 onward).
+        Closed for rc4 (was xfail in rc3).  The self-host now mirrors
+        Python's three-piece constrained-let codegen: arity adjustment
+        for the constraint dict params (cg_compile_constrained_let),
+        single-method dict shortcut emission (cg_compile_inst_members),
+        and call-site dict insertion with canonical-name resolution
+        for the emit-time bind_table semantics (cg_compile_app /
+        cg_compile_constrained_app + cg_find_first_fq_for_law).
 
-        Self-host gap (the byte-identity divergence this fixture
-        pins): ``Compiler.gls`` does not yet have a
-        ``cg_compile_constrained_let`` mirror.  The constraint
-        ``Eq a =>`` is parsed but the arity adjustment + call-site
-        dict insertion + single-method dict shortcut emission are
-        missing.  See ``ROADMAP.md`` §1.1.0 for the closure plan
-        (estimated 3-5 days)."""
+        Multi-method classes and multi-constraint lets are not yet
+        exercised; they remain future work.  See ``plans/phase_i_rc4.md``
+        and ``ROADMAP.md §1.0 rc4 blockers`` for the broader scope."""
         src = (
             'external mod Reaver.BPLAN {\n'
             '  eq : Nat → Nat → Nat\n'
