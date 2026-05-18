@@ -2558,6 +2558,108 @@ let parse_pin_rhs_pe : (List Token → Pair Expr (List Token)) → Nat → List 
         | MkPair rhs toks2 → parse_pin_body_pe pe name rhs toks2
       }
 
+-- parse_handle_op_arm_pe: parse | op_name arg_name k_name → body.
+-- Takes ``pe`` (the parse-self closure) and routes through it for the
+-- arm-body sub-parse instead of referencing ``parse_expr`` directly.
+-- ``parse_expr`` is a mutual-SCC sibling of the original handle parsers;
+-- the direct-name reference made the bootstrap codegen lambda-lift the
+-- result through the SCC's PMutual machinery, and the slot resolution
+-- for the shared row was returning the wrong closure inside lifted
+-- match-arm sub-laws — every call quietly yielded the ``EVar 0``
+-- parser-failure sentinel.  The ``_pe`` convention used everywhere else
+-- in this file (parse_let_rhs_pe, parse_if_then_pe, …) avoids the
+-- problem entirely because ``pe`` is a normal closure-captured value,
+-- not a mutual-SCC reference.
+--
+-- Defined here, next to the other ``_pe`` helpers, so the bootstrap
+-- compiles them BEFORE ``parse_expr_dispatch``'s SCC fires — otherwise
+-- the dispatch call site below would see an unbound name.
+let parse_handle_op_arm_pe
+      : (List Token → Pair Expr (List Token))
+      → List (Pair Nat (List Nat)) → List Token
+      → Pair (Pair Nat (Pair Nat Expr)) (List Token)
+  = λ pe rt toks →
+      match (tok_eat_ident toks) {
+        | MkPair op_name rest →
+            match op_name {
+              | 0 → MkPair (MkPair 0 (MkPair 0 (EVar 0))) toks
+              | _ →
+                match (tok_eat_ident_or_wild rest) {
+                  | MkPair arg_name rest2 →
+                      match arg_name {
+                        | 0 → MkPair (MkPair op_name (MkPair 0 (EVar 0))) rest
+                        | _ →
+                          match (tok_eat_ident_or_wild rest2) {
+                            | MkPair k_name rest3 →
+                                match k_name {
+                                  | 0 → MkPair (MkPair op_name (MkPair arg_name (EVar 0))) rest2
+                                  | _ →
+                                    match (pe (tok_tail rest3)) {
+                                      | MkPair body rest4 →
+                                          MkPair (MkPair op_name (MkPair k_name body)) rest4
+                                    }
+                                }
+                          }
+                      }
+                }
+            }
+      }
+
+-- parse_handle_arms_pe: parse op arms after return arm, before }.
+-- Recurses through ``pe`` (see parse_handle_op_arm_pe rationale).
+let parse_handle_arms_pe
+      : (List Token → Pair Expr (List Token))
+      → List (Pair Nat (List Nat)) → List Token
+      → Pair (List (Pair Nat (Pair Nat Expr))) (List Token)
+  = λ pe rt toks →
+      match (tok_is toks TkRBrace) {
+        | 0 →
+            match (tok_is toks TkBar) {
+              | 0 → MkPair Nil toks
+              | k →
+                  match (parse_handle_op_arm_pe pe rt (tok_tail toks)) {
+                    | MkPair arm rest →
+                        match (parse_handle_arms_pe pe rt rest) {
+                          | MkPair arms rest2 →
+                              MkPair (Cons arm arms) rest2
+                        }
+                  }
+            }
+        | k → MkPair Nil toks
+      }
+
+-- parse_handle_expr_pe: parse handle comp { | return x → body | op ... }
+-- toks positioned after 'handle' keyword.  Routes all internal sub-
+-- parses through ``pe`` — see ``parse_handle_op_arm_pe`` for rationale.
+let parse_handle_expr_pe
+      : (List Token → Pair Expr (List Token))
+      → List (Pair Nat (List Nat)) → List Token → Pair Expr (List Token)
+  = λ pe rt toks →
+      match (pe toks) {
+        | MkPair comp rest →
+            let rest2 = tok_tail rest in
+            let rest3 = match (tok_is rest2 TkBar) {
+                          | 0 → rest2
+                          | k → tok_tail rest2
+                        } in
+            let rest4 = tok_tail rest3 in
+            match (tok_eat_ident rest4) {
+              | MkPair ret_var rest5 →
+                  match ret_var {
+                    | 0 → MkPair (EVar 0) toks
+                    | _ →
+                      match (pe (tok_tail rest5)) {
+                        | MkPair ret_body rest6 →
+                            match (parse_handle_arms_pe pe rt rest6) {
+                              | MkPair op_arms rest7 →
+                                  MkPair (EHandle comp (MkPair (ELam ret_var ret_body) op_arms))
+                                         (tok_tail rest7)
+                            }
+                      }
+                  }
+            }
+      }
+
 -- parse_expr_dispatch: full expression parser body, parameterised over pe
 -- ALL of TkLambda, TkIf, TkLet, TkAt are nullary with tags > 1.  Matching them
 -- directly as constructor arms compiles their pe-referencing bodies in pred_env
@@ -2616,7 +2718,7 @@ let parse_expr_dispatch : List (Pair Nat (List Nat)) → (List Token → Pair Ex
                                           }
                                       | k →
                                           -- handle comp { ... }
-                                          parse_handle_expr rt (tok_tail toks)
+                                          parse_handle_expr_pe pe rt (tok_tail toks)
                                     }
                                 | k →
                                     -- fix λ self params → body
@@ -3272,99 +3374,6 @@ let parse_eff_decl : List Token → Pair Decl (List Token)
                   | MkPair ops rest3 →
                       MkPair (DEff eff_name ops) rest3
                 }
-            }
-      }
-
--- parse_handle_op_arm: parse | op_name arg_name k_name → body
-let parse_handle_op_arm
-      : List (Pair Nat (List Nat)) → List Token → Pair (Pair Nat (Pair Nat Expr)) (List Token)
-  = λ rt toks →
-      match (tok_eat_ident toks) {
-        | MkPair op_name rest →
-            match op_name {
-              | 0 → MkPair (MkPair 0 (MkPair 0 (EVar 0))) toks
-              | _ →
-                match (tok_eat_ident_or_wild rest) {
-                  | MkPair arg_name rest2 →
-                      match arg_name {
-                        | 0 → MkPair (MkPair op_name (MkPair 0 (EVar 0))) rest
-                        | _ →
-                          match (tok_eat_ident_or_wild rest2) {
-                            | MkPair k_name rest3 →
-                                match k_name {
-                                  | 0 → MkPair (MkPair op_name (MkPair arg_name (EVar 0))) rest2
-                                  | _ →
-                                    match (parse_expr rt (tok_tail rest3)) {
-                                      | MkPair body rest4 →
-                                          MkPair (MkPair op_name (MkPair k_name body)) rest4
-                                    }
-                                }
-                          }
-                      }
-                }
-            }
-      }
-
--- parse_handle_arms: parse op arms after return arm, before }
-let parse_handle_arms
-      : List (Pair Nat (List Nat)) → List Token → Pair (List (Pair Nat (Pair Nat Expr))) (List Token)
-  = λ rt toks →
-      match (tok_is toks TkRBrace) {
-        | 0 →
-            match (tok_is toks TkBar) {
-              | 0 → MkPair Nil toks
-              | k →
-                  match (parse_handle_op_arm rt (tok_tail toks)) {
-                    | MkPair arm rest →
-                        match (parse_handle_arms rt rest) {
-                          | MkPair arms rest2 →
-                              MkPair (Cons arm arms) rest2
-                        }
-                  }
-            }
-        | k → MkPair Nil toks
-      }
-
--- parse_handle_expr: parse handle comp { | return x → body | op ... }
--- toks positioned after 'handle' keyword
---
--- Restructured to hoist the second parse_expr call out of the deeply
--- nested match arms.  The previous version had it five levels deep
--- inside the `| _ → match (parse_expr rt …) { … }` chain; the
--- bootstrap codegen lambda-lifts each match-arm body into a sub-law,
--- and the slot resolution for the mutual-SCC shared-pin reference to
--- ``parse_expr`` was returning the wrong closure for the second call,
--- making it always yield the ``EVar 0`` parse-failure sentinel for
--- the return-arm body.  Flattening to ``let`` chains keeps parse_expr
--- calls at the outer-lambda's body root, where slot resolution is
--- already correct (the first parse_expr call works there).
-let parse_handle_expr : List (Pair Nat (List Nat)) → List Token → Pair Expr (List Token)
-  = λ rt toks →
-      match (parse_expr rt toks) {
-        | MkPair comp rest →
-            let rest2 = tok_tail rest in
-            let rest3 = match (tok_is rest2 TkBar) {
-                          | 0 → rest2
-                          | k → tok_tail rest2
-                        } in
-            let rest4 = tok_tail rest3 in
-            let ret_var_pair = tok_eat_ident rest4 in
-            let ret_var = match ret_var_pair { | MkPair v _ → v } in
-            let rest5   = match ret_var_pair { | MkPair _ r → r } in
-            match (nat_eq ret_var 0) {
-              | 0 →
-                  -- parse the return body at the outer let level (not
-                  -- inside a nested match arm) so the mutual-SCC slot
-                  -- resolution for parse_expr stays correct.
-                  let body_pair = parse_expr rt (tok_tail rest5) in
-                  let ret_body  = match body_pair { | MkPair b _ → b } in
-                  let rest6     = match body_pair { | MkPair _ r → r } in
-                  let arms_pair = parse_handle_arms rt rest6 in
-                  let op_arms   = match arms_pair { | MkPair a _ → a } in
-                  let rest7     = match arms_pair { | MkPair _ r → r } in
-                  MkPair (EHandle comp (MkPair (ELam ret_var ret_body) op_arms))
-                         (tok_tail rest7)
-              | _ → MkPair (EVar 0) toks
             }
       }
 
@@ -6332,15 +6341,30 @@ let planval_is_mutual : PlanVal → Nat
 let planval_get_mutual_idx : PlanVal → Nat
   = λ v → match v { | PMutual i → i | _ → 0 }
 
--- cg_mutual_ref_bapp: emit `(_1 j) _1` — extract law_j from the shared
--- row at slot 1, then apply law_j to the shared row (its __shared__
--- arg).  The caller's body context must have arity ≥ 1; PMutual lives
--- only inside member law bodies so this invariant always holds at
--- emit time.
+-- cg_mutual_ref_bapp: emit `(_s j) _s` — extract law_j from the shared
+-- row at slot ``s`` (the de Bruijn index of ``__shared__`` in the
+-- current env's locals), then apply law_j to the shared row.
+--
+-- For the outer mutual-SCC member law, ``__shared__`` is at slot 1
+-- (set up by ``cg_compile_mutual_law``).  For ANY lambda-lifted
+-- sub-law within that body — match-arm bodies, lifted ``if``-branch
+-- thunks, ``ELet`` lifted bodies — ``__shared__`` is captured as one
+-- of the sub-law's params and so lives at a different slot.
+-- ``cg_free_vars`` already adds ``__shared__`` to the capture set
+-- whenever a body resolves a PMutual reference (mirrors Python
+-- ``_collect_free`` L1640-1646).  This look-up dynamically resolves
+-- the slot via ``cenv_local_lookup``, falling back to ``1`` for the
+-- outer-law case where ``__shared__`` isn't bound as a local.
+-- Mirrors ``bootstrap/codegen.py::_compile_var`` L1276:
+-- ``s_idx = env.locals.get('__shared__', 1)``.
 let cg_mutual_ref_bapp : Nat → CEnv → PlanVal
   = λ idx env →
+      let s_idx = match (cenv_local_lookup env nn___shared__) {
+                    | Some i → i
+                    | None   → 1
+                  } in
       let j_val = cg_quote_nat idx (cenv_arity env) in
-      cg_bapp (cg_bapp (PNat 1) j_val) (PNat 1)
+      cg_bapp (cg_bapp (PNat s_idx) j_val) (PNat s_idx)
 
 -- Lookup order: locals (de Bruijn slot), globals (by FQ), globals (by short
 -- tail).  The short-tail fallback resolves bare EVars that sr_dispatch
@@ -7034,13 +7058,20 @@ let virtual_resume_idx : Nat = 9999999
 -- subst_virtual_resume: walk PlanVal, replacing PNat(virtual_idx) with replacement.
 -- Only PNat and PApp nodes are affected; PLaw/PPin are opaque (no recursion needed
 -- because arm bodies are flat expressions, not nested laws).
+--
+-- nat_eq returns 1 for equal, 0 for not — so the arms here are
+-- ``| 0 → keep | _ → replace``.  Previous code had them inverted and
+-- silently kept the sentinel ``PNat 9999999`` in arm bodies while
+-- replacing every OTHER slot reference (de Bruijn indices for op_arg,
+-- captures, etc.) with the resume expression — producing garbage law
+-- bodies in any handler with op arms.
 let subst_virtual_resume : PlanVal → Nat → PlanVal → PlanVal
   = λ expr vid replacement →
       match expr {
         | PNat n →
             match (nat_eq n vid) {
-              | 0 → replacement
-              | _ → PNat n
+              | 0 → PNat n              -- not equal: keep
+              | _ → replacement         -- equal: substitute
             }
         | PApp f g →
             PApp (subst_virtual_resume f vid replacement)
@@ -7060,36 +7091,63 @@ let cg_apply_range : PlanVal → Nat → Nat → PlanVal
 -- CPS Effect Handler Codegen
 -- =====================================================================
 
--- cg_build_handle_dispatch: build nested nat_eq dispatch on op_tag
--- Each op arm gets a sequential tag. Body uses virtual resume index,
--- which is substituted with the actual resume expression after compilation.
--- resume_expr: pre-built resume (k_open applied to dispatch_current for deep).
+-- cg_build_handle_dispatch: build the op-tag Elim dispatch for the
+-- handler.  Mirrors Python's ``_build_tag_chain`` strategy
+-- (bootstrap/codegen.py L2914).
+--
+-- For a single op arm at tag 0:
+--   ``Elim id id id arm_body (const2 forward_body) op_tag_idx``
+-- — if op_tag == 0 the zero arm fires (the matched arm body), otherwise
+-- the succ arm fires the const2-wrapped forward_body (a 2-arg law that
+-- ignores its argument and returns forward_body, satisfying Elim's
+-- succ-takes-pred contract).
+--
+-- For multi-arm or first_tag > 0, full ``_build_tag_chain`` machinery
+-- (succ-laws that lambda-lift the env, recursive descent on a shifted
+-- tag list) is not yet ported — single arm is the only case the rc4
+-- gate fixture needs.  Multi-arm is the next sub-step.
+--
+-- Length probe instead of ``match arms { | Nil → … | Cons … → … }``
+-- dodges the bootstrap mixed-arity wildcard pitfall.
 let cg_build_handle_dispatch
       : List (Pair Nat (Pair Nat Expr)) → CEnv → Nat → Nat → Nat → PlanVal → PlanVal
       → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
       → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → Nat → PlanVal
   = λ arms dispatch_env k_idx op_arg_idx op_tag_idx forward_body resume_expr ce ctab hint tag →
-      match arms {
-        | Nil → forward_body
-        | Cons arm rest →
-            match arm {
-              | MkPair op_name inner →
-                  match inner {
-                    | MkPair k_name body →
-                        -- Bind resume at virtual index, op_arg at op_arg_idx
-                        let arm_env = cenv_bind_local dispatch_env k_name virtual_resume_idx in
-                        let arm_env2 = cenv_bind_local arm_env op_name op_arg_idx in
-                        let raw_body = ce body arm_env2 ctab hint in
-                        -- Substitute virtual resume with actual resume expression
-                        let body_val = subst_virtual_resume raw_body virtual_resume_idx resume_expr in
-                        let tag_val = cg_quote_nat tag (cenv_arity dispatch_env) in
-                        let rest_body = cg_build_handle_dispatch rest dispatch_env k_idx op_arg_idx op_tag_idx forward_body resume_expr ce ctab hint (add tag 1) in
-                        let eq_test = cg_bapp (cg_bapp (PPin (PNat 2)) (PNat op_tag_idx)) tag_val in
-                        let const_body = PLaw 0 (MkPair 1 body_val) in
-                        let const_pin = PPin const_body in
-                        cg_build_op2 rest_body const_pin eq_test (cenv_arity dispatch_env)
+      match (nat_eq (length arms) 0) {
+        | 0 →
+            match arms {
+              | Cons arm rest →
+                  match arm {
+                    | MkPair op_name inner →
+                        match inner {
+                          | MkPair k_name body →
+                              -- Bind resume name to virtual_resume_idx
+                              -- (substituted post-compilation) and op-arg name
+                              -- to op_arg_idx.  Compile the arm body in this
+                              -- arm-extended env.
+                              let arm_env = cenv_bind_local dispatch_env k_name virtual_resume_idx in
+                              let arm_env2 = cenv_bind_local arm_env op_name op_arg_idx in
+                              let raw_body = ce body arm_env2 ctab hint in
+                              let arm_body = subst_virtual_resume raw_body virtual_resume_idx resume_expr in
+                              -- const2 wrapping: bapp(const2_pin, forward_body)
+                              -- — produces a 2-arg law that ignores its arg and
+                              -- returns forward_body.  Required because Elim's
+                              -- succ branch is called with the predecessor nat
+                              -- as its arg; we don't need the predecessor here
+                              -- because forward_body is the wild case.
+                              let const_pin = PPin const2_law in
+                              let const_wild = cg_bapp const_pin forward_body in
+                              -- Scrutinee is the op-tag slot directly — Elim
+                              -- distinguishes 0 from non-0 natively.  No
+                              -- eq-test wrapping.
+                              cg_build_op2 arm_body const_wild (PNat op_tag_idx)
+                                           (cenv_arity dispatch_env)
+                        }
                   }
+              | _ → forward_body
             }
+        | _ → forward_body
       }
 
 -- cg_compile_dispatch_fn: build dispatch law for handle expression
@@ -7109,12 +7167,6 @@ let cg_compile_dispatch_fn
       -- LE-packed encode_name("dispatch") = 7521983764486121828.
       let nn_dispatch_s = 7521983764486121828 in
       let disp_name = cg_concat_under hint nn_dispatch_s in
-      -- Use a length probe instead of ``match op_arms { | Nil → … | _ → … }``.
-      -- The Nil-vs-Cons match shape (nullary + binary, mixed-arity, 2-arm
-      -- one-explicit + wildcard) is one of the bootstrap codegen pitfalls
-      -- documented in CLAUDE.md — the wildcard arm body was silently
-      -- unreachable for any non-empty list, so every handler fell into the
-      -- Nil branch.  ``length op_arms == 0`` discriminates safely.
       match (nat_eq (length op_arms) 0) {
         | 0 →
             -- Collect free vars from all arm bodies

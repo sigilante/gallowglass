@@ -1096,22 +1096,18 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
-    @unittest.expectedFailure
     def test_do_notation_simple(self):
         """``xx ← inc () in inc xx`` — do-notation bind inside
         ``handle``.  Bootstrap M10 (CPS transform for effect handlers).
 
-        Self-host's ``cg_compile_do`` and ``cg_compile_handle`` exist
-        and produce *something* (not just the `0` fallback), but the
-        emitted laws diverge from Python's CPS output in several
-        places: extra captured-slot indirections in the dispatch
-        chain, ``(#pin inc)`` rather than the named-effect-op symbol
-        for cross-references, and apparent mis-numbering of
-        let-binding slots inside lifted continuations.  Closing
-        requires aligning the self-host's CPS transform with
-        ``bootstrap/codegen.py::_compile_handle`` /
-        ``_compile_do`` byte-for-byte — estimated 3-5 days of focused
-        work.  Deferred to rc4."""
+        Closed for rc4 (was xfail in rc3).  The self-host now mirrors
+        Python's CPS output byte-for-byte: ``parse_handle_*`` use the
+        ``_pe`` closure-passing convention so the mutual-SCC shared-pin
+        slot resolves correctly inside lifted match-arm sub-laws, and
+        ``cg_build_handle_dispatch`` matches the
+        ``bootstrap/codegen.py::_build_tag_chain`` shape
+        (op_tag-direct scrutinee + const2-wrapped wild + arm body at
+        Elim's zero slot).  See PR #106 for the full breakdown."""
         src = (
             'eff Counter {\n'
             '  inc : Nat → Nat\n'

@@ -173,7 +173,7 @@ class TestDataCsvGLS(unittest.TestCase):
         """GLS compiler has all effect codegen functions."""
         self.assertIn('Compiler.cg_compile_handle', self.gls_bc)
         self.assertIn('Compiler.cg_register_effs', self.gls_bc)
-        self.assertIn('Compiler.parse_handle_expr', self.gls_bc)
+        self.assertIn('Compiler.parse_handle_expr_pe', self.gls_bc)
         self.assertIn('Compiler.parse_eff_decl', self.gls_bc)
 
 

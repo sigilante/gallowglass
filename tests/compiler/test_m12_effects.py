@@ -355,7 +355,7 @@ class TestM12SelfhostRegression(unittest.TestCase):
                       'cg_register_eff_ops', 'cg_register_effs',
                       'kw_eff', 'kw_handle', 'kw_pure', 'kw_run',
                       'decl_is_eff', 'decl_get_eff_name', 'decl_get_eff_ops',
-                      'parse_eff_decl', 'parse_handle_expr',
+                      'parse_eff_decl', 'parse_handle_expr_pe',
                       'sr_collect_eff_op_names', 'sr_rewrite_handle_arms',
                       'cg_cf_handle_arms']:
             fq = f'Compiler.{name}'
