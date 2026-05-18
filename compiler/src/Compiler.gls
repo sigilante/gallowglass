@@ -511,7 +511,12 @@ type Expr =
   | EMatch Expr (List MatchArm)
   | EPin Nat (Pair Expr Expr)       -- name, (rhs, body)
   | EFix Nat (Pair (List Nat) Expr)  -- self_name, (params, body)
-  | EHandle Expr (Pair Expr (List (Pair Nat (Pair Nat Expr))))  -- comp, (return_body, op_arms)
+  -- EHandle: comp, (return_body, op_arms)
+  -- op arm = (op_name, (once_flag, (arg_name, (k_name, body))))
+  -- once_flag: 0 = deep (default), 1 = once-only (shallow resume)
+  -- arg_name: name nat of the op-arg pattern, or kw_underscore for `_`.
+  -- Mirrors Python's HandlerOp(once, op_name, arg_pats[0], resume, body).
+  | EHandle Expr (Pair Expr (List (Pair Nat (Pair Nat (Pair Nat (Pair Nat Expr))))))
   | EDo Nat (Pair Expr Expr)        -- bind_name, (rhs, body)
 
 type MatchArm =
@@ -582,6 +587,28 @@ type PlanVal =
                                     -- underlying value.  Mirrors Python
                                     -- bootstrap's _constrained_lets dict
                                     -- (codegen.py L254).
+  | POpTag Nat PlanVal              -- eff-op sentinel: (op_tag, underlying
+                                    -- PLaw).  Lives ONLY in env.globals as
+                                    -- the binding for an eff op registered
+                                    -- by cg_register_eff_ops.  The tag is the
+                                    -- global op-index (matching Python's
+                                    -- _next_op_tag counter), needed by
+                                    -- cg_compile_dispatch_fn so each handler
+                                    -- arm can look up the actual dispatch
+                                    -- tag for its op.  Without this, the
+                                    -- self-host assigned tags positionally
+                                    -- from arm source order, silently
+                                    -- mis-dispatching any handler whose arm
+                                    -- order != eff op order, or any handler
+                                    -- covering an op whose tag is non-zero
+                                    -- (e.g. the second op of an eff, or any
+                                    -- op of a second-declared eff).
+                                    -- cg_var_from_env unwraps POpTag before
+                                    -- emitting so call sites see the bare
+                                    -- PLaw (the tag is irrelevant for direct
+                                    -- invocation, only for handler dispatch).
+                                    -- Mirrors Python's effect_op_tags dict
+                                    -- (bootstrap/codegen.py L754).
 
 -- Compilation environment (4 fields → nested Pairs)
 -- globals : List (Pair Nat PlanVal)
@@ -704,6 +731,7 @@ let kw_handle       : Nat = 0x656c646e6168     -- "handle"
 let kw_pure         : Nat = 0x65727570         -- "pure"
 let kw_run          : Nat = 0x6e7572           -- "run"
 let kw_use          : Nat = 0x657375           -- "use"
+let kw_once         : Nat = 0x65636e6f         -- "once" (handler-arm modifier — shallow resume)
 
 -- =====================================================================
 -- Section 12: LexPos Helpers
@@ -2558,7 +2586,15 @@ let parse_pin_rhs_pe : (List Token → Pair Expr (List Token)) → Nat → List 
         | MkPair rhs toks2 → parse_pin_body_pe pe name rhs toks2
       }
 
--- parse_handle_op_arm_pe: parse | op_name arg_name k_name → body.
+-- parse_handle_op_arm_pe: parse `| once? op_name arg_name k_name → body`.
+-- The optional ``once`` keyword (an ident matching ``kw_once``, not a
+-- distinct token) marks the arm as one-shot — its resume captures the
+-- parent dispatch instead of the current handler.
+--
+-- Returned arm shape: ``(op_name, (once_flag, (arg_name, (k_name, body))))``.
+-- ``once_flag`` is 0 (deep, default) or 1 (shallow / once-only).
+-- ``arg_name`` is the op-arg pattern name nat or ``kw_underscore`` for `_`.
+--
 -- Takes ``pe`` (the parse-self closure) and routes through it for the
 -- arm-body sub-parse instead of referencing ``parse_expr`` directly.
 -- ``parse_expr`` is a mutual-SCC sibling of the original handle parsers;
@@ -2577,26 +2613,37 @@ let parse_pin_rhs_pe : (List Token → Pair Expr (List Token)) → Nat → List 
 let parse_handle_op_arm_pe
       : (List Token → Pair Expr (List Token))
       → List (Pair Nat (List Nat)) → List Token
-      → Pair (Pair Nat (Pair Nat Expr)) (List Token)
+      → Pair (Pair Nat (Pair Nat (Pair Nat (Pair Nat Expr)))) (List Token)
   = λ pe rt toks →
-      match (tok_eat_ident toks) {
+      -- Look for ``once`` modifier: a TkIdent whose nat == kw_once.
+      let probe = match (tok_peek toks) {
+            | TkIdent n →
+                match (Reaver.BPLAN.eq n kw_once) {
+                  | 0 → MkPair 0 toks
+                  | _ → MkPair 1 (tok_tail toks)
+                }
+            | _ → MkPair 0 toks
+          } in
+      let once_flag = match probe { | MkPair f _ → f } in
+      let toks1     = match probe { | MkPair _ ts → ts } in
+      match (tok_eat_ident toks1) {
         | MkPair op_name rest →
             match op_name {
-              | 0 → MkPair (MkPair 0 (MkPair 0 (EVar 0))) toks
+              | 0 → MkPair (MkPair 0 (MkPair 0 (MkPair 0 (MkPair 0 (EVar 0))))) toks
               | _ →
                 match (tok_eat_ident_or_wild rest) {
                   | MkPair arg_name rest2 →
                       match arg_name {
-                        | 0 → MkPair (MkPair op_name (MkPair 0 (EVar 0))) rest
+                        | 0 → MkPair (MkPair op_name (MkPair once_flag (MkPair 0 (MkPair 0 (EVar 0))))) rest
                         | _ →
                           match (tok_eat_ident_or_wild rest2) {
                             | MkPair k_name rest3 →
                                 match k_name {
-                                  | 0 → MkPair (MkPair op_name (MkPair arg_name (EVar 0))) rest2
+                                  | 0 → MkPair (MkPair op_name (MkPair once_flag (MkPair arg_name (MkPair 0 (EVar 0))))) rest2
                                   | _ →
                                     match (pe (tok_tail rest3)) {
                                       | MkPair body rest4 →
-                                          MkPair (MkPair op_name (MkPair k_name body)) rest4
+                                          MkPair (MkPair op_name (MkPair once_flag (MkPair arg_name (MkPair k_name body)))) rest4
                                     }
                                 }
                           }
@@ -2607,10 +2654,11 @@ let parse_handle_op_arm_pe
 
 -- parse_handle_arms_pe: parse op arms after return arm, before }.
 -- Recurses through ``pe`` (see parse_handle_op_arm_pe rationale).
+-- Arm tuple shape: see parse_handle_op_arm_pe.
 let parse_handle_arms_pe
       : (List Token → Pair Expr (List Token))
       → List (Pair Nat (List Nat)) → List Token
-      → Pair (List (Pair Nat (Pair Nat Expr))) (List Token)
+      → Pair (List (Pair Nat (Pair Nat (Pair Nat (Pair Nat Expr))))) (List Token)
   = λ pe rt toks →
       match (tok_is toks TkRBrace) {
         | 0 →
@@ -3355,13 +3403,23 @@ let skip_eff_op_type : List Token → List Token
   = fix λ self toks →
       match (tok_is toks TkRBrace) {
         | 0 →
-            match (tok_peek toks) {
-              | TkIdent _ →
-                  match (tok_is (tok_tail toks) TkColon) {
-                    | 0 → self (tok_tail toks)
-                    | _ → toks    -- ident followed by colon = next op
+            -- TkEof guard: ``tok_tail Nil`` returns ``Nil`` and
+            -- ``tok_peek Nil`` returns ``TkEof``; without an explicit
+            -- check, a truncated ``eff E { … `` (no closing ``}``) would
+            -- recurse forever.  Treat EOF the same as ``}`` — return
+            -- the cursor unchanged and let the caller's parse_eff_decl
+            -- handle the missing-brace recovery.  (Dwarf rc4 finding.)
+            match (tok_is toks TkEof) {
+              | 0 →
+                  match (tok_peek toks) {
+                    | TkIdent _ →
+                        match (tok_is (tok_tail toks) TkColon) {
+                          | 0 → self (tok_tail toks)
+                          | _ → toks    -- ident followed by colon = next op
+                        }
+                    | _ → self (tok_tail toks)
                   }
-              | _ → self (tok_tail toks)
+              | _ → toks
             }
         | _ → toks
       }
@@ -3811,6 +3869,16 @@ let planval_get_constraints : PlanVal → List Nat
 
 let planval_get_constrained_underlying : PlanVal → PlanVal
   = λ v → match v { | PConstrained _ inner → inner | _ → v }
+
+-- POpTag predicates (see PlanVal definition for the sentinel's role).
+let planval_is_op_tag : PlanVal → Nat
+  = λ v → match v { | POpTag _ _ → 1 | _ → 0 }
+
+let planval_get_op_tag_idx : PlanVal → Nat
+  = λ v → match v { | POpTag t _ → t | _ → 0 }
+
+let planval_get_op_tag_inner : PlanVal → PlanVal
+  = λ v → match v { | POpTag _ inner → inner | _ → v }
 
 -- -------------------------------------------------------------------
 -- Layer 2: PLAN value builders
@@ -4278,20 +4346,28 @@ let cg_cf_arms : (Expr → List Nat → CEnv → List Nat → List Nat)
             cg_cf_arms cf rest bound env (cf body ab env acc)
       }
 
--- cg_cf_handle_arms: collect free vars from handler op arms
+-- cg_cf_handle_arms: collect free vars from handler op arms.
+-- Arm shape: ``(op_name, (once_flag, (arg_name, (k_name, body))))``.
+-- Both arg_name and k_name are bound in the arm body's scope.
 let cg_cf_handle_arms
       : (Expr → List Nat → CEnv → List Nat → List Nat)
-      → List (Pair Nat (Pair Nat Expr)) → List Nat → CEnv → List Nat → List Nat
+      → List (Pair Nat (Pair Nat (Pair Nat (Pair Nat Expr)))) → List Nat → CEnv → List Nat → List Nat
   = λ cf arms bound env acc →
       match arms {
         | Nil → acc
         | Cons arm rest →
             match arm {
-              | MkPair _ inner →
-                  match inner {
-                    | MkPair k_name body →
-                        cg_cf_handle_arms cf rest bound env
-                          (cf body (Cons k_name bound) env acc)
+              | MkPair _ inner1 →
+                  match inner1 {
+                    | MkPair _ inner2 →
+                        match inner2 {
+                          | MkPair arg_name inner3 →
+                              match inner3 {
+                                | MkPair k_name body →
+                                    cg_cf_handle_arms cf rest bound env
+                                      (cf body (Cons k_name (Cons arg_name bound)) env acc)
+                              }
+                        }
                   }
             }
       }
@@ -6413,10 +6489,18 @@ let cg_var_from_env : Nat → CEnv → PlanVal
                   -- global.  Constrained-call dispatch happens one
                   -- layer up in cg_compile_app via the lookup that
                   -- still sees PConstrained.
+                  -- POpTag (eff-op binding): the tag is only relevant for
+                  -- handler dispatch; for direct invocation, unwrap to the
+                  -- underlying PLaw so emit sees the bare op symbol.
                   match (planval_is_mutual val) {
                     | 0 →
                         match (planval_is_constrained val) {
-                          | 0 → cg_resolve_global_val n val env
+                          | 0 →
+                              match (planval_is_op_tag val) {
+                                | 0 → cg_resolve_global_val n val env
+                                | _ → cg_resolve_global_val n
+                                        (planval_get_op_tag_inner val) env
+                              }
                           | _ → cg_resolve_global_val n
                                   (planval_get_constrained_underlying val) env
                         }
@@ -6434,7 +6518,12 @@ let cg_var_from_env : Nat → CEnv → PlanVal
                               match (planval_is_mutual val) {
                                 | 0 →
                                     match (planval_is_constrained val) {
-                                      | 0 → cg_resolve_global_val fq val env
+                                      | 0 →
+                                          match (planval_is_op_tag val) {
+                                            | 0 → cg_resolve_global_val fq val env
+                                            | _ → cg_resolve_global_val fq
+                                                    (planval_get_op_tag_inner val) env
+                                          }
                                       | _ → cg_resolve_global_val fq
                                               (planval_get_constrained_underlying val) env
                                     }
@@ -7116,27 +7205,62 @@ let cg_apply_range : PlanVal → Nat → Nat → PlanVal
 -- CPS Effect Handler Codegen
 -- =====================================================================
 
+-- cg_op_tag_lookup: extract the dispatch tag for a fully-qualified
+-- eff-op name from env.globals.  Returns 0 if the binding isn't a
+-- POpTag (i.e., the arm's op_name doesn't resolve to a known eff op).
+-- Bare-name fallback via short-tail scan mirrors cg_var_from_env.
+let cg_op_tag_lookup : Nat → CEnv → Nat
+  = λ n env →
+      match (cenv_global_lookup env n) {
+        | Some v → planval_get_op_tag_idx v
+        | None →
+            match (cg_global_lookup_by_short n (cenv_globals env)) {
+              | None → 0
+              | Some pair →
+                  match pair { | MkPair _ v → planval_get_op_tag_idx v }
+            }
+      }
+
 -- cg_compile_arm_bodies: compile each handle-arm's body and substitute
--- the virtual resume sentinel with the real resume expression.
--- Returns the compiled bodies in source (== op-tag) order.
+-- the virtual resume sentinel with the actual resume expression.  Two
+-- resume expressions are passed in: ``deep`` (k_open of dispatch_current
+-- — the default, reinstalls this handler) and ``shallow`` (k_open of
+-- dispatch_parent — for ``once`` arms, the handler is discharged).
+--
+-- Returns a list of ``(op_name_fq, compiled_body)`` pairs in source
+-- order.  The caller (cg_build_handle_dispatch) then looks up the
+-- dispatch tag for each op_name via POpTag in env.globals and sorts
+-- by tag before building the Elim cascade.
 let cg_compile_arm_bodies
-      : List (Pair Nat (Pair Nat Expr)) → CEnv → Nat → PlanVal
+      : List (Pair Nat (Pair Nat (Pair Nat (Pair Nat Expr)))) → CEnv → Nat → PlanVal → PlanVal
       → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
-      → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → List PlanVal
-  = fix λ self arms dispatch_env op_arg_idx resume_expr ce ctab hint →
+      → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → List (Pair Nat PlanVal)
+  = fix λ self arms dispatch_env op_arg_idx resume_deep resume_shallow ce ctab hint →
       match (nat_eq (length arms) 0) {
         | 0 →
             match arms {
               | Cons arm rest →
                   match arm {
-                    | MkPair op_name inner →
-                        match inner {
-                          | MkPair k_name body →
-                              let arm_env  = cenv_bind_local dispatch_env k_name virtual_resume_idx in
-                              let arm_env2 = cenv_bind_local arm_env op_name op_arg_idx in
-                              let raw_body = ce body arm_env2 ctab hint in
-                              let arm_body = subst_virtual_resume raw_body virtual_resume_idx resume_expr in
-                              Cons arm_body (self rest dispatch_env op_arg_idx resume_expr ce ctab hint)
+                    | MkPair op_name inner1 →
+                        match inner1 {
+                          | MkPair once_flag inner2 →
+                              match inner2 {
+                                | MkPair arg_name inner3 →
+                                    match inner3 {
+                                      | MkPair k_name body →
+                                          let arm_env  = cenv_bind_local dispatch_env k_name virtual_resume_idx in
+                                          -- bind ARG name (not op name) to the op_arg slot
+                                          let arm_env2 = cenv_bind_local arm_env arg_name op_arg_idx in
+                                          let raw_body = ce body arm_env2 ctab hint in
+                                          let resume = match (nat_eq once_flag 0) {
+                                                         | 0 → resume_shallow  -- once=1
+                                                         | _ → resume_deep      -- once=0 (deep, default)
+                                                       } in
+                                          let arm_body = subst_virtual_resume raw_body virtual_resume_idx resume in
+                                          Cons (MkPair op_name arm_body)
+                                               (self rest dispatch_env op_arg_idx resume_deep resume_shallow ce ctab hint)
+                                    }
+                              }
                         }
                   }
               | _ → Nil
@@ -7144,48 +7268,112 @@ let cg_compile_arm_bodies
         | _ → Nil
       }
 
+-- cg_pair_arms_with_tags: look up each arm's op_name in env.globals
+-- (via POpTag) and replace the op_name with its dispatch tag.
+let cg_pair_arms_with_tags : List (Pair Nat PlanVal) → CEnv → List (Pair Nat PlanVal)
+  = fix λ self arm_pairs env →
+      match arm_pairs {
+        | Nil → Nil
+        | Cons p rest →
+            match p {
+              | MkPair op_name body →
+                  let tag = cg_op_tag_lookup op_name env in
+                  Cons (MkPair tag body) (self rest env)
+            }
+      }
+
+-- cg_insert_arm_pair: insert ``p`` into already-sorted ``xs`` by tag (asc).
+let cg_insert_arm_pair : Pair Nat PlanVal → List (Pair Nat PlanVal) → List (Pair Nat PlanVal)
+  = fix λ self p xs →
+      match xs {
+        | Nil → Cons p Nil
+        | Cons y rest →
+            match p { | MkPair pt _ →
+              match y { | MkPair yt _ →
+                match (nat_lt pt yt) {
+                  | 0 → Cons y (self p rest)   -- pt >= yt: keep y, recurse
+                  | _ → Cons p xs              -- pt < yt: insert before y
+                }
+              }
+            }
+      }
+
+-- cg_sort_arm_pairs: insertion sort on ``(tag, body)`` pairs by tag.
+let cg_sort_arm_pairs : List (Pair Nat PlanVal) → List (Pair Nat PlanVal)
+  = fix λ self xs →
+      match xs {
+        | Nil → Nil
+        | Cons p rest → cg_insert_arm_pair p (self rest)
+      }
+
+-- cg_shift_tag_pairs: subtract ``k`` from each pair's tag (saturating).
+let cg_shift_tag_pairs : Nat → List (Pair Nat PlanVal) → List (Pair Nat PlanVal)
+  = fix λ self k xs →
+      match xs {
+        | Nil → Nil
+        | Cons p rest →
+            match p {
+              | MkPair t body →
+                  Cons (MkPair (Reaver.BPLAN.sub t k) body) (self k rest)
+            }
+      }
+
 -- cg_build_op_dispatch_chain: build the recursive Elim cascade on
--- op_tag for a list of pre-compiled arm bodies.  Mirrors Python's
--- ``_build_tag_chain`` (bootstrap/codegen.py L2914) for the
--- handler-dispatch case (sequential tags starting at 0, sorted, no
--- ``wild_var`` body — just a pre-compiled ``wild_val`` for the
--- catch-all forward path).
+-- op_tag for a sorted list of ``(tag, body)`` pairs.  Mirrors Python's
+-- ``_build_tag_chain`` (bootstrap/codegen.py L2914) — handles all three
+-- cases: ``first_tag > 0`` (skip with wild branches), single arm with
+-- first_tag = 0 (const2-wrap wild for succ), and multi-arm with
+-- first_tag = 0 (succ-law over shifted rest).
 --
 -- At each recursion level, the OUTER scrutinee is whatever the caller
 -- passes (the op_tag slot at the top level; the predecessor slot at
 -- inner levels).  ``Elim id id id zero succ scr`` selects:
---   * scr == 0 → ``zero``      (the current arm's body)
---   * scr  > 0 → ``succ pred``  (recurse on the rest with pred = scr - 1)
+--   * scr == 0 → ``zero``        (the current case)
+--   * scr  > 0 → ``succ pred``    (recurse with pred = scr - 1)
 --
--- For a single remaining arm: ``succ = const2 wild_val`` — ignores the
--- predecessor and returns the wild/forward body.
---
--- For multi-arm: ``succ = partially-applied 1-arg law`` whose body is
--- the recursive Elim cascade for the rest, with the predecessor slot
--- as the new scrutinee.  The succ-law lambda-lifts the env (arity =
--- env_arity + 1) and captures slots 1..env_arity via cg_apply_range
--- partial-app, so arm bodies' de Bruijn references to the outer
--- dispatch env stay correct through every level of nesting.
-let cg_build_op_dispatch_chain : List PlanVal → PlanVal → PlanVal → Nat → PlanVal
-  = fix λ self arms wild_val scrutinee env_arity →
-      match (nat_eq (length arms) 0) {
+-- The succ-law lambda-lifts the env (arity = env_arity + 1) and captures
+-- slots 1..env_arity via cg_apply_range partial-app, so arm bodies' de
+-- Bruijn references to the outer dispatch env stay correct through
+-- every level of nesting.
+let cg_build_op_dispatch_chain : List (Pair Nat PlanVal) → PlanVal → PlanVal → Nat → PlanVal
+  = fix λ self pairs wild_val scrutinee env_arity →
+      match (nat_eq (length pairs) 0) {
         | 0 →
-            match arms {
-              | Cons arm_body rest →
-                  match (nat_eq (length rest) 0) {
-                    | 0 →
-                        -- multi-arm: build succ-law over the rest
-                        let ext_arity = add env_arity 1 in
-                        let pred_ref  = PNat ext_arity in
-                        let inner     = self rest wild_val pred_ref ext_arity in
-                        let succ_law  = PPin (PLaw 0 (MkPair ext_arity inner)) in
-                        let succ      = cg_apply_range succ_law 1 env_arity in
-                        cg_build_op2 arm_body succ scrutinee env_arity
-                    | _ →
-                        -- single arm: const2-wrap the wild body
-                        let const_pin  = PPin const2_law in
-                        let const_wild = cg_bapp const_pin wild_val in
-                        cg_build_op2 arm_body const_wild scrutinee env_arity
+            match pairs {
+              | Cons head_pair rest →
+                  match head_pair {
+                    | MkPair first_tag first_body →
+                        match (nat_eq first_tag 0) {
+                          | 0 →
+                              -- first_tag > 0: zero arm is wild; succ
+                              -- recurses on the full list shifted by 1.
+                              let ext_arity = add env_arity 1 in
+                              let pred_ref  = PNat ext_arity in
+                              let shifted   = cg_shift_tag_pairs 1 pairs in
+                              let inner     = self shifted wild_val pred_ref ext_arity in
+                              let succ_law  = PPin (PLaw 0 (MkPair ext_arity inner)) in
+                              let succ      = cg_apply_range succ_law 1 env_arity in
+                              cg_build_op2 wild_val succ scrutinee env_arity
+                          | _ →
+                              -- first_tag == 0: zero arm is first_body.
+                              match (nat_eq (length rest) 0) {
+                                | 0 →
+                                    -- multi-arm: succ recurses on the rest
+                                    -- shifted by first_tag + 1 = 1.
+                                    let ext_arity = add env_arity 1 in
+                                    let pred_ref  = PNat ext_arity in
+                                    let shifted   = cg_shift_tag_pairs 1 rest in
+                                    let inner     = self shifted wild_val pred_ref ext_arity in
+                                    let succ_law  = PPin (PLaw 0 (MkPair ext_arity inner)) in
+                                    let succ      = cg_apply_range succ_law 1 env_arity in
+                                    cg_build_op2 first_body succ scrutinee env_arity
+                                | _ →
+                                    -- single arm: succ is const2-wrap of wild.
+                                    let const_pin  = PPin const2_law in
+                                    let const_wild = cg_bapp const_pin wild_val in
+                                    cg_build_op2 first_body const_wild scrutinee env_arity
+                              }
+                        }
                   }
               | _ → wild_val
             }
@@ -7193,25 +7381,31 @@ let cg_build_op_dispatch_chain : List PlanVal → PlanVal → PlanVal → Nat �
       }
 
 -- cg_build_handle_dispatch: build the op-tag Elim dispatch for the
--- handler.  Compiles arm bodies first (with resume substitution), then
--- threads them into the cg_build_op_dispatch_chain recursive cascade.
+-- handler.  Pipeline:
+--   1. Compile each arm body (cg_compile_arm_bodies) — picks resume
+--      expression per arm based on once_flag.  Result is
+--      ``[(op_name_fq, body), …]`` in source order.
+--   2. Pair each arm with its actual op-tag (cg_pair_arms_with_tags
+--      via POpTag in env.globals).
+--   3. Sort by tag (cg_sort_arm_pairs).
+--   4. Build the Elim cascade (cg_build_op_dispatch_chain).
 --
--- Mirrors Python's ``_build_tag_chain`` strategy
--- (bootstrap/codegen.py L2914) with the simplifying assumption that
--- arms appear in source-order = sequential-tag order starting at 0.
--- Per-arm op-tag lookup (handling out-of-order arms or arms whose tags
--- aren't 0..n-1 — e.g. when a handler covers only a subset of ops from
--- effects with multiple ops) is future work; the current acceptance
--- gate fixtures all have arm-order == tag-order.
+-- Mirrors Python's ``_compile_dispatch_fn`` + ``_build_tag_chain`` flow
+-- in bootstrap/codegen.py.  Closes Gnome's rc4 finding: positional
+-- dispatch silently mis-routes any handler covering a non-zero-tag op.
 let cg_build_handle_dispatch
-      : List (Pair Nat (Pair Nat Expr)) → CEnv → Nat → Nat → Nat → PlanVal → PlanVal
+      : List (Pair Nat (Pair Nat (Pair Nat (Pair Nat Expr)))) → CEnv
+      → Nat → Nat → Nat → PlanVal → PlanVal → PlanVal
       → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
-      → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → Nat → PlanVal
-  = λ arms dispatch_env k_idx op_arg_idx op_tag_idx forward_body resume_expr ce ctab hint tag →
+      → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
+  = λ arms dispatch_env k_idx op_arg_idx op_tag_idx forward_body resume_deep resume_shallow ce ctab hint →
       match (nat_eq (length arms) 0) {
         | 0 →
-            let arm_bodies = cg_compile_arm_bodies arms dispatch_env op_arg_idx resume_expr ce ctab hint in
-            cg_build_op_dispatch_chain arm_bodies forward_body
+            let op_body_pairs = cg_compile_arm_bodies arms dispatch_env op_arg_idx
+                                  resume_deep resume_shallow ce ctab hint in
+            let tag_body_pairs = cg_pair_arms_with_tags op_body_pairs dispatch_env in
+            let sorted = cg_sort_arm_pairs tag_body_pairs in
+            cg_build_op_dispatch_chain sorted forward_body
                                        (PNat op_tag_idx)
                                        (cenv_arity dispatch_env)
         | _ → forward_body
@@ -7221,10 +7415,11 @@ let cg_build_handle_dispatch
 -- Open-continuation protocol: k_open is 2-arg (dispatch, value).
 -- Dispatch law: L(n_cap+4, name, body)
 -- Slots: [cap_1..cap_n] [dispatch_parent] [op_tag] [op_arg] [k_open]
--- Deep handler: resume = k_open(dispatch_current).
+-- Deep handler: resume = k_open(dispatch_current)  — reinstalls this handler.
+-- Once  handler: resume = k_open(dispatch_parent)  — discharges this handler.
 -- Unhandled tags forward to dispatch_parent with k_open wrapped by forward_k.
 let cg_compile_dispatch_fn
-      : List (Pair Nat (Pair Nat Expr)) → CEnv
+      : List (Pair Nat (Pair Nat (Pair Nat (Pair Nat Expr)))) → CEnv
       → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat
       → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal) → PlanVal
   = λ op_arms env ctab hint ce →
@@ -7239,8 +7434,16 @@ let cg_compile_dispatch_fn
             -- Collect free vars from all arm bodies
             let all_bodies = map (λ arm →
                                     match arm {
-                                      | MkPair _ inner →
-                                          match inner { | MkPair _ body → body }
+                                      | MkPair _ inner1 →
+                                          match inner1 {
+                                            | MkPair _ inner2 →
+                                                match inner2 {
+                                                  | MkPair _ inner3 →
+                                                      match inner3 {
+                                                        | MkPair _ body → body
+                                                      }
+                                                }
+                                          }
                                     }) op_arms in
             let free_vars = cg_free_vars_bodies all_bodies Nil env in
             let n_cap = length free_vars in
@@ -7259,13 +7462,18 @@ let cg_compile_dispatch_fn
             let dispatch_fn_base = cg_apply_range (PNat 0) 1 n_cap in
             -- dispatch_current = dispatch_fn_base(dp) — full dispatch for deep arms
             let dispatch_current = cg_bapp dispatch_fn_base (PNat dp_idx) in
-            -- Resume expression: k_open(dispatch_current) — deep handler reinstalled
-            let resume_expr = cg_bapp (PNat k_idx) dispatch_current in
+            -- Resume expressions: deep (default) reinstalls THIS dispatch;
+            -- shallow (``once``) skips up to dispatch_parent so the handler
+            -- is discharged.  cg_compile_arm_bodies picks per-arm via the
+            -- arm's once_flag.  Mirrors Python's _compile_dispatch_fn
+            -- L3584-3589 branch on ``arm.once``.
+            let resume_deep    = cg_bapp (PNat k_idx) dispatch_current in
+            let resume_shallow = cg_bapp (PNat k_idx) (PNat dp_idx) in
             -- Forward body: wrap k_open with forward_k to preserve nested handler layers
             let k_open_forwarded = cg_bapp (cg_bapp (PPin cps_forward_k) (PNat k_idx)) dispatch_fn_base in
             let forward_body = cg_bapp (cg_bapp (cg_bapp (PNat dp_idx) (PNat op_tag_idx)) (PNat op_arg_idx)) k_open_forwarded in
             -- Build tag dispatch with virtual resume substitution
-            let dispatch_body = cg_build_handle_dispatch op_arms dispatch_env k_idx op_arg_idx op_tag_idx forward_body resume_expr ce ctab hint 0 in
+            let dispatch_body = cg_build_handle_dispatch op_arms dispatch_env k_idx op_arg_idx op_tag_idx forward_body resume_deep resume_shallow ce ctab hint in
             let dispatch_law = PPin (PLaw disp_name (MkPair total_arity dispatch_body)) in
             cg_apply_free_locals dispatch_law free_vars env
         | _ →
@@ -8138,7 +8346,12 @@ let cg_register_eff_ops
             -- body = dispatch(tag, op_arg, k) = A(A(A(N(2), tag_val), N(1)), N(3))
             let body = cg_bapp (cg_bapp (cg_bapp (PNat 2) tag_val) (PNat 1)) (PNat 3) in
             let val = PLaw op_name (MkPair 3 body) in
-            let new_env = cenv_bind_global env fq_op val in
+            -- env carries the POpTag-wrapped val so cg_compile_dispatch_fn can
+            -- look up the per-arm op-tag at handler compile time; `compiled`
+            -- (the emit-time bindings) gets the bare PLaw — emit never sees
+            -- POpTag (cg_var_from_env unwraps before tagging for emission).
+            let tagged = POpTag tag val in
+            let new_env = cenv_bind_global env fq_op tagged in
             let new_compiled = Cons (MkPair fq_op val) compiled in
             cg_register_eff_ops rest eff_fq mod_name new_env new_compiled (add tag 1)
       }
@@ -9191,28 +9404,35 @@ let sr_rewrite_arms
                  (sr_rewrite_arms pe rest bound gtab)
       }
 
--- sr_rewrite_handle_arms: rewrite handler op arm bodies
--- Each arm is (op_name, (k_name, body)). op_name is qualified via gtab,
--- k_name and arg implicit in body are bound.
+-- sr_rewrite_handle_arms: rewrite handler op arm bodies.
+-- Arm shape: ``(op_name, (once_flag, (arg_name, (k_name, body))))``.
+-- op_name is qualified via gtab.  Both arg_name and k_name are bound
+-- in the body's scope (they're slot-binders introduced by the arm).
 let sr_rewrite_handle_arms
       : (Expr → List Nat → List (Pair Nat Nat) → Expr)
-      → List (Pair Nat (Pair Nat Expr)) → List Nat → List (Pair Nat Nat)
-      → List (Pair Nat (Pair Nat Expr))
+      → List (Pair Nat (Pair Nat (Pair Nat (Pair Nat Expr)))) → List Nat → List (Pair Nat Nat)
+      → List (Pair Nat (Pair Nat (Pair Nat (Pair Nat Expr))))
   = λ pe arms bound gtab →
       match arms {
         | Nil → Nil
         | Cons arm rest →
             match arm {
-              | MkPair op_name inner →
-                  match inner {
-                    | MkPair k_name body →
-                        let fq_op = match (assoc_lookup op_name gtab) {
-                                      | None    → op_name
-                                      | Some fq → fq
-                                    } in
-                        let body2 = pe body (Cons k_name bound) gtab in
-                        Cons (MkPair fq_op (MkPair k_name body2))
-                             (sr_rewrite_handle_arms pe rest bound gtab)
+              | MkPair op_name inner1 →
+                  match inner1 {
+                    | MkPair once_flag inner2 →
+                        match inner2 {
+                          | MkPair arg_name inner3 →
+                              match inner3 {
+                                | MkPair k_name body →
+                                    let fq_op = match (assoc_lookup op_name gtab) {
+                                                  | None    → op_name
+                                                  | Some fq → fq
+                                                } in
+                                    let body2 = pe body (Cons k_name (Cons arg_name bound)) gtab in
+                                    Cons (MkPair fq_op (MkPair once_flag (MkPair arg_name (MkPair k_name body2))))
+                                         (sr_rewrite_handle_arms pe rest bound gtab)
+                              }
+                        }
                   }
             }
       }
