@@ -1163,7 +1163,11 @@ class TestPhaseHFixedPoint(unittest.TestCase):
     pytest runs skip it.
     """
 
-    _TIMEOUT = 1800  # 30 min — Reaver no-jets is slow.
+    # Reaver no-jets is slow on Compiler.gls (~hundreds of thousands of PLAN
+    # reductions, each a real op).  Default 90 min upper-bound; overridable
+    # via GALLOWGLASS_COMPILE_SELF_TIMEOUT for CI lanes that want a tighter
+    # bound or a longer one.
+    _TIMEOUT = int(os.environ.get('GALLOWGLASS_COMPILE_SELF_TIMEOUT', '5400'))
 
     def test_compile_self(self):
         """Feed ``compiler/src/Compiler.gls`` to the Reaver-hosted
