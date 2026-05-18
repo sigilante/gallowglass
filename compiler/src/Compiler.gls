@@ -3340,6 +3340,32 @@ let parse_inst_decl : List (Pair Nat (List Nat)) → List Token → Pair Decl (L
 -- parse_eff_op_names: parse op names from { name : type \n ... }
 -- Skips everything except idents before each colon (the op name).
 -- Stops at }.
+-- skip_eff_op_type: walk past one eff op's type signature, stopping at
+-- the next op name or the closing ``}``.  An op name is an identifier
+-- followed by ``:``; any other token sequence (including identifiers
+-- inside type expressions like ``Nat → Pair a b``) is skipped.
+--
+-- The previous parse_eff_op_names used ``skip_type_params``, which only
+-- skipped contiguous identifiers — so for ``get : Nat → Nat set : …``
+-- it stopped at the first ``→`` and the recursive call saw the arrow
+-- token, returned Nil, and silently dropped every op after the first.
+-- This helper looks one token ahead per ident to find the true op
+-- boundary.
+let skip_eff_op_type : List Token → List Token
+  = fix λ self toks →
+      match (tok_is toks TkRBrace) {
+        | 0 →
+            match (tok_peek toks) {
+              | TkIdent _ →
+                  match (tok_is (tok_tail toks) TkColon) {
+                    | 0 → self (tok_tail toks)
+                    | _ → toks    -- ident followed by colon = next op
+                  }
+              | _ → self (tok_tail toks)
+            }
+        | _ → toks
+      }
+
 let parse_eff_op_names : List Token → Pair (List Nat) (List Token)
   = λ toks →
       match (tok_is toks TkRBrace) {
@@ -3349,8 +3375,7 @@ let parse_eff_op_names : List Token → Pair (List Nat) (List Token)
                   match op_name {
                     | 0 → MkPair Nil (tok_tail toks)
                     | _ →
-                      -- skip tokens until next ident or }
-                      let rest2 = skip_type_params (tok_tail rest) in
+                      let rest2 = skip_eff_op_type (tok_tail rest) in
                       match (parse_eff_op_names rest2) {
                         | MkPair ops rest3 →
                             MkPair (Cons op_name ops) rest3
@@ -7091,29 +7116,14 @@ let cg_apply_range : PlanVal → Nat → Nat → PlanVal
 -- CPS Effect Handler Codegen
 -- =====================================================================
 
--- cg_build_handle_dispatch: build the op-tag Elim dispatch for the
--- handler.  Mirrors Python's ``_build_tag_chain`` strategy
--- (bootstrap/codegen.py L2914).
---
--- For a single op arm at tag 0:
---   ``Elim id id id arm_body (const2 forward_body) op_tag_idx``
--- — if op_tag == 0 the zero arm fires (the matched arm body), otherwise
--- the succ arm fires the const2-wrapped forward_body (a 2-arg law that
--- ignores its argument and returns forward_body, satisfying Elim's
--- succ-takes-pred contract).
---
--- For multi-arm or first_tag > 0, full ``_build_tag_chain`` machinery
--- (succ-laws that lambda-lift the env, recursive descent on a shifted
--- tag list) is not yet ported — single arm is the only case the rc4
--- gate fixture needs.  Multi-arm is the next sub-step.
---
--- Length probe instead of ``match arms { | Nil → … | Cons … → … }``
--- dodges the bootstrap mixed-arity wildcard pitfall.
-let cg_build_handle_dispatch
-      : List (Pair Nat (Pair Nat Expr)) → CEnv → Nat → Nat → Nat → PlanVal → PlanVal
+-- cg_compile_arm_bodies: compile each handle-arm's body and substitute
+-- the virtual resume sentinel with the real resume expression.
+-- Returns the compiled bodies in source (== op-tag) order.
+let cg_compile_arm_bodies
+      : List (Pair Nat (Pair Nat Expr)) → CEnv → Nat → PlanVal
       → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
-      → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → Nat → PlanVal
-  = λ arms dispatch_env k_idx op_arg_idx op_tag_idx forward_body resume_expr ce ctab hint tag →
+      → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → List PlanVal
+  = fix λ self arms dispatch_env op_arg_idx resume_expr ce ctab hint →
       match (nat_eq (length arms) 0) {
         | 0 →
             match arms {
@@ -7122,31 +7132,88 @@ let cg_build_handle_dispatch
                     | MkPair op_name inner →
                         match inner {
                           | MkPair k_name body →
-                              -- Bind resume name to virtual_resume_idx
-                              -- (substituted post-compilation) and op-arg name
-                              -- to op_arg_idx.  Compile the arm body in this
-                              -- arm-extended env.
-                              let arm_env = cenv_bind_local dispatch_env k_name virtual_resume_idx in
+                              let arm_env  = cenv_bind_local dispatch_env k_name virtual_resume_idx in
                               let arm_env2 = cenv_bind_local arm_env op_name op_arg_idx in
                               let raw_body = ce body arm_env2 ctab hint in
                               let arm_body = subst_virtual_resume raw_body virtual_resume_idx resume_expr in
-                              -- const2 wrapping: bapp(const2_pin, forward_body)
-                              -- — produces a 2-arg law that ignores its arg and
-                              -- returns forward_body.  Required because Elim's
-                              -- succ branch is called with the predecessor nat
-                              -- as its arg; we don't need the predecessor here
-                              -- because forward_body is the wild case.
-                              let const_pin = PPin const2_law in
-                              let const_wild = cg_bapp const_pin forward_body in
-                              -- Scrutinee is the op-tag slot directly — Elim
-                              -- distinguishes 0 from non-0 natively.  No
-                              -- eq-test wrapping.
-                              cg_build_op2 arm_body const_wild (PNat op_tag_idx)
-                                           (cenv_arity dispatch_env)
+                              Cons arm_body (self rest dispatch_env op_arg_idx resume_expr ce ctab hint)
                         }
                   }
-              | _ → forward_body
+              | _ → Nil
             }
+        | _ → Nil
+      }
+
+-- cg_build_op_dispatch_chain: build the recursive Elim cascade on
+-- op_tag for a list of pre-compiled arm bodies.  Mirrors Python's
+-- ``_build_tag_chain`` (bootstrap/codegen.py L2914) for the
+-- handler-dispatch case (sequential tags starting at 0, sorted, no
+-- ``wild_var`` body — just a pre-compiled ``wild_val`` for the
+-- catch-all forward path).
+--
+-- At each recursion level, the OUTER scrutinee is whatever the caller
+-- passes (the op_tag slot at the top level; the predecessor slot at
+-- inner levels).  ``Elim id id id zero succ scr`` selects:
+--   * scr == 0 → ``zero``      (the current arm's body)
+--   * scr  > 0 → ``succ pred``  (recurse on the rest with pred = scr - 1)
+--
+-- For a single remaining arm: ``succ = const2 wild_val`` — ignores the
+-- predecessor and returns the wild/forward body.
+--
+-- For multi-arm: ``succ = partially-applied 1-arg law`` whose body is
+-- the recursive Elim cascade for the rest, with the predecessor slot
+-- as the new scrutinee.  The succ-law lambda-lifts the env (arity =
+-- env_arity + 1) and captures slots 1..env_arity via cg_apply_range
+-- partial-app, so arm bodies' de Bruijn references to the outer
+-- dispatch env stay correct through every level of nesting.
+let cg_build_op_dispatch_chain : List PlanVal → PlanVal → PlanVal → Nat → PlanVal
+  = fix λ self arms wild_val scrutinee env_arity →
+      match (nat_eq (length arms) 0) {
+        | 0 →
+            match arms {
+              | Cons arm_body rest →
+                  match (nat_eq (length rest) 0) {
+                    | 0 →
+                        -- multi-arm: build succ-law over the rest
+                        let ext_arity = add env_arity 1 in
+                        let pred_ref  = PNat ext_arity in
+                        let inner     = self rest wild_val pred_ref ext_arity in
+                        let succ_law  = PPin (PLaw 0 (MkPair ext_arity inner)) in
+                        let succ      = cg_apply_range succ_law 1 env_arity in
+                        cg_build_op2 arm_body succ scrutinee env_arity
+                    | _ →
+                        -- single arm: const2-wrap the wild body
+                        let const_pin  = PPin const2_law in
+                        let const_wild = cg_bapp const_pin wild_val in
+                        cg_build_op2 arm_body const_wild scrutinee env_arity
+                  }
+              | _ → wild_val
+            }
+        | _ → wild_val
+      }
+
+-- cg_build_handle_dispatch: build the op-tag Elim dispatch for the
+-- handler.  Compiles arm bodies first (with resume substitution), then
+-- threads them into the cg_build_op_dispatch_chain recursive cascade.
+--
+-- Mirrors Python's ``_build_tag_chain`` strategy
+-- (bootstrap/codegen.py L2914) with the simplifying assumption that
+-- arms appear in source-order = sequential-tag order starting at 0.
+-- Per-arm op-tag lookup (handling out-of-order arms or arms whose tags
+-- aren't 0..n-1 — e.g. when a handler covers only a subset of ops from
+-- effects with multiple ops) is future work; the current acceptance
+-- gate fixtures all have arm-order == tag-order.
+let cg_build_handle_dispatch
+      : List (Pair Nat (Pair Nat Expr)) → CEnv → Nat → Nat → Nat → PlanVal → PlanVal
+      → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
+      → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → Nat → PlanVal
+  = λ arms dispatch_env k_idx op_arg_idx op_tag_idx forward_body resume_expr ce ctab hint tag →
+      match (nat_eq (length arms) 0) {
+        | 0 →
+            let arm_bodies = cg_compile_arm_bodies arms dispatch_env op_arg_idx resume_expr ce ctab hint in
+            cg_build_op_dispatch_chain arm_bodies forward_body
+                                       (PNat op_tag_idx)
+                                       (cenv_arity dispatch_env)
         | _ → forward_body
       }
 

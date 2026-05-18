@@ -2,13 +2,13 @@
   "comment": "Seed Compiler.plan for Python-less self-host builds. See tools/build-self-host.sh.",
   "compiler_plan": {
     "path": "compiler/dist/Compiler.plan",
-    "size_bytes": 1132484,
-    "blake3": "45229df8119e9d7b7271b8e6e567c3c4d55fb38ea6da9a6b04127efd6a4cbb32"
+    "size_bytes": 1136243,
+    "blake3": "1ab773e0e3f4f6f8d7b3f6a383392434fb460a594f353fa0006c8ffde50252f2"
   },
   "compiler_source": {
     "path": "compiler/src/Compiler.gls",
-    "size_bytes": 487324,
-    "blake3": "7863bf64550c55bd1a350ea24c56184894fd32e55b8c32c9b60aa4939a1e1ada"
+    "size_bytes": 490373,
+    "blake3": "da73b51fdf828bcef89600715c9c87cdb25810d3760bdf90da2b4b0bfdb68d54"
   },
   "produced_by": {
     "tool": "bootstrap/codegen.py (Python)",
