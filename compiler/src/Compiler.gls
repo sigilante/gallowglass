@@ -4794,6 +4794,34 @@ let cg_short_after_dot : Nat → Nat
         | _ → n
       }
 
+-- cg_seal_self: bind the law's self-reference as an ordinary local at slot 0
+-- (which is what N(0) already means) and clear cenv_self.  The generic
+-- free-variable capture path then threads self into any sub-law the compiler
+-- builds, instead of every builder re-threading it by hand.  Only inside a law
+-- body (arity > 0); at top level self is a global pin.  The cenv_local_lookup
+-- guards mirror Python's `setdefault` — a same-named parameter keeps its slot.
+-- Mirrors bootstrap/codegen.py::_seal_self.
+let cg_seal_self : CEnv → CEnv
+  = λ env →
+      match (cenv_arity env) {
+        | 0 → env
+        | _ →
+            match (cenv_self env) {
+              | None → env
+              | Some fq →
+                  let short = cg_short_after_dot fq in
+                  let e1 = match (cenv_local_lookup env fq) {
+                             | Some _ → env
+                             | None → cenv_bind_local env fq 0
+                           } in
+                  let e2 = match (cenv_local_lookup e1 short) {
+                             | Some _ → e1
+                             | None → cenv_bind_local e1 short 0
+                           } in
+                  cenv_set_self e2 None
+            }
+      }
+
 -- cg_body_uses_self: does expr reference env's self_ref?
 --
 -- Checks both the FQ name and its short tail (after the last '.') —
@@ -6296,8 +6324,9 @@ let cg_compile_lam_as_law : List Nat → Expr → CEnv
   = λ params body_expr env ce ctab hint →
       let g = cenv_globals env in
       let self = cenv_self env in
-      -- Body of this lambda is the new law's body root → mark top_of_law.
-      let body_env = cenv_mark_top_of_law (cg_make_lifted_env Nil params g self) in
+      -- Body of this lambda is the new law's body root → mark top_of_law,
+      -- then seal self as a local so recursion is captured generically.
+      let body_env = cg_seal_self (cenv_mark_top_of_law (cg_make_lifted_env Nil params g self)) in
       let body_val = ce body_expr body_env ctab hint in
       PLaw hint (MkPair (length params) body_val)
 
@@ -7053,7 +7082,8 @@ let cg_compile_fix : Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat)))
                   -- the body env, so nested lets in fix bodies always
                   -- lambda-lift.  We match that here.
                   let env1 = cg_bind_params params env0 in
-                  let body_val = ce body env1 ctab 0 in
+                  let env2 = cg_seal_self env1 in
+                  let body_val = ce body env2 ctab 0 in
                   PLaw hint (MkPair (length params) body_val)
             }
         | _ → PNat 0

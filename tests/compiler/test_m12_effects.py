@@ -327,6 +327,60 @@ let main : Nat
         result = bevaluate(compiled['Test.main'])
         self.assertEqual(result, 10)
 
+    def test_recursive_self_call_through_effect(self):
+        """A recursive self-call inside a `match` arm reached after an effect
+        (the arm is in a `do`-continuation) must dispatch to the recursive
+        function, not the continuation law it is lowered into.
+
+        Covers both forms of self-reference, since both are sealed as an
+        ordinary local at slot 0:
+          - a top-level recursive function,
+          - a local `fix λ self → …`.
+        And the negative case (no over-capture):
+          - a top-level recursive *value* (arity 0, self is a global pin).
+
+        Values ride on constructor payloads / literals (no predecessor-binding
+        `nn` arm) so each expected result is unambiguous.
+        """
+        def run(src):
+            return bevaluate(compile_via_bootstrap(src)['Test.main'])
+
+        prelude = """
+eff E { op : Nat → Resp }
+type Resp = | RStop Nat | RGo Nat
+"""
+        # top-level recursive function: recurses in the RGo arm → 42
+        top_fn = prelude + """
+let loop : Nat → Nat
+  = fn st → (resp ← op st in
+              match resp { | RStop vv → pure vv | RGo aa → loop aa })
+let main : Nat
+  = run (handle (loop 0) { | return vv → vv
+      | op aa kk → match aa { | 0 → kk (RGo 1) | nn → kk (RStop 42) } })
+"""
+        self.assertEqual(run(top_fn), 42)
+
+        # local `fix` recursion: same shape, anonymous → 42
+        fix_fn = prelude + """
+let main : Nat
+  = run (handle ((fix λ self st →
+        (resp ← op st in
+          match resp { | RStop vv → pure vv | RGo aa → self aa })) 0)
+      { | return vv → vv
+        | op aa kk → match aa { | 0 → kk (RGo 1) | nn → kk (RStop 42) } })
+"""
+        self.assertEqual(run(fix_fn), 42)
+
+        # top-level recursive value (arity 0): self is a global pin, not N(0);
+        # must compile without over-capturing a self slot → 7
+        top_val = prelude + """
+let go : Nat
+  = (resp ← op 0 in match resp { | RStop vv → pure vv | RGo aa → go })
+let main : Nat
+  = run (handle go { | return vv → vv | op aa kk → kk (RStop 7) })
+"""
+        self.assertEqual(run(top_val), 7)
+
 
 # ---------------------------------------------------------------------------
 # Test: GLS compiler self-hosting regression

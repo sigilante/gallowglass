@@ -957,6 +957,7 @@ class Compiler:
             param_name = self._pat_var_name(pat)
             body_env = body_env.bind_param(param_name)
 
+        self._seal_self(body_env)
         body_val = self._compile_expr(inner_body, body_env, name_hint)
         total_arity = len(dict_param_fqs) + len(user_params)
         name_nat = encode_name(name_hint)
@@ -1101,6 +1102,7 @@ class Compiler:
             body_env = body_env.bind_param(param_name)
 
         body_env.top_of_law = True
+        self._seal_self(body_env)
         body_val = self._compile_expr(body_expr, body_env, fq)
         total_arity = len(dict_param_fqs) + len(user_params)
         name_nat = encode_name(decl.name)
@@ -1578,9 +1580,21 @@ class Compiler:
                 body_env = body_env.bind_param(param_name)
 
         body_env.top_of_law = True
+        self._seal_self(body_env)
         body_val = self._compile_expr(body_expr, body_env, name_hint)
         name_nat = encode_name(name_hint) if name_hint else 0
         return L(len(params), name_nat, body_val)
+
+    def _seal_self(self, env: Env) -> None:
+        """Bind the law's self-reference as an ordinary local at slot 0 (N(0))
+        and clear self_ref_name, so the generic free-variable capture path
+        threads self into any sub-law the compiler generates — no per-site
+        special-casing.  Only inside a law body (arity > 0); at top level self
+        is a global pin.  `setdefault` lets a same-named parameter win."""
+        if env.self_ref_name and env.arity > 0:
+            env.locals.setdefault(env.self_ref_name, 0)
+            env.locals.setdefault(env.self_ref_name.split('.')[-1], 0)
+            env.self_ref_name = ''
 
     def _compile_lam_lifted(self, params: list, body_expr: Any, env: Env, name_hint: str) -> Any:
         """
@@ -3405,6 +3419,7 @@ class Compiler:
             pn = self._pat_var_name(pat)
             body_env = body_env.bind_param(pn)
 
+        self._seal_self(body_env)
         body_val = self._compile_expr(body_expr, body_env)
         name_nat = encode_name(name_hint) if name_hint else 0
         law = L(len(user_params), name_nat, body_val)
@@ -3679,7 +3694,9 @@ class Compiler:
 
         Partial application: inner_cont_open(caps, k_open_outer) is 2-arg (dispatch, x).
         """
-        # Collect free vars from rhs and body (excluding the do-bound name x)
+        # Collect free vars from rhs and body (excluding the do-bound name x).
+        # Self is an ordinary local (slot 0, via `_seal_self`), so a recursive
+        # self-call is captured here like any other free variable.
         all_free: set = set()
         self._collect_free(expr.rhs, set(), env, all_free)
         self._collect_free(expr.body, {expr.name}, env, all_free)
