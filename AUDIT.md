@@ -488,18 +488,22 @@ so future sessions can pick up where the current one stopped.)
       Phase G3 300s timeout — `parse_decl`'s let branch used this exact
       shape, so the `MkPair 0 _ → MkPair (DLet 0 (EVar 0)) toks` sentinel
       always won, `parse_program` recursed forever on the same input, and
-      `length` walked an infinite Cons spine. Fix is fail-loud rather than
-      full transformation: `_compile_con_match` now raises `CodegenError`
-      with a message naming the offending constructor and pointing at
-      the extract-then-dispatch workaround (`compiler/src/Compiler.gls::
-      parse_lambda_params` is the canonical shape). All 25 affected sites
-      in `Compiler.gls` were refactored to the workaround in commits
-      40d2199 / 18e6f5b / 0df4ef6 — none trip the new error. A proper fix
-      (group same-tag arms and synthesise a nested field dispatch) is
-      future work; the current behaviour ensures the bug can never bite
-      silently again. Pinned by `test_same_constructor_literal_field_rejected`
-      and `test_same_constructor_no_literal_still_ok` in
-      `tests/bootstrap/test_codegen.py`.
+      `length` walked an infinite Cons spine. The Python bootstrap now
+      applies a collapse pass (`_collapse_same_tag_arms` /
+      `_try_collapse_tag_group` in `bootstrap/codegen.py`) that rewrites
+      multi-arm same-constructor groups with literal sentinels into a
+      single arm with an inner nat-match. The self-hosting compiler carries
+      the equivalent pass (`cg_collapse_same_tag_arms`, `cg_try_collapse_con_group`
+      and helpers in `compiler/src/Compiler.gls`), with `parse_ident_list`
+      extended to encode literal-nat field patterns as sentinels 1..96.
+      `cg_build_z_body` and `cg_build_m_body` were also corrected to use
+      the quote form `PApp(PNat 0)(PNat 0)` at arity=0, matching Python's
+      `body_nat(0,0)=A(N(0),N(0))` exactly. Pinned by
+      `test_same_constructor_literal_field_rejected`,
+      `test_same_constructor_no_literal_still_ok` in
+      `tests/bootstrap/test_codegen.py`, and
+      `test_same_constructor_literal_field_collapses` in
+      `tests/reaver/test_selfhost.py`.
 
 D1–D4 above were the IDE-tooling prerequisites that landed
 back-to-back in support of the new `bootstrap/mcp_server.py` (PR #74) —

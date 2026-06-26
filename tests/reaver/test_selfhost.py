@@ -1121,15 +1121,12 @@ class TestPhaseG3ByteIdentity(unittest.TestCase):
         )
         self._assert_byte_identical(src)
 
-    @unittest.expectedFailure
     def test_same_constructor_literal_field_collapses(self):
         """`match (MkPair 0 99) { | MkPair 0 _ -> 1 | MkPair n _ -> 2 }` —
-        the same-constructor collapse pass auto-rewrites this in the
-        Python bootstrap (``bootstrap/codegen.py::_collapse_same_tag_arms``).
-        Currently xfail: the Gallowglass self-host's own codegen
-        (``compiler/src/Compiler.gls``) does not yet carry that pass, so
-        the self-host trips on the old behaviour.  Porting the collapse
-        to ``Compiler.gls`` closes this.  AUDIT.md D9 follow-up.
+        the same-constructor collapse pass auto-rewrites this to a single
+        arm with an inner nat-match on the literal field (AUDIT.md D9).
+        Ported to Compiler.gls: ``cg_collapse_same_tag_arms`` + the
+        ``parse_ident_list`` sentinel encoding for literal-nat fields.
         """
         src = (
             'type Pair a b = | MkPair a b\n'

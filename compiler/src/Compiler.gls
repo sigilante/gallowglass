@@ -1612,16 +1612,27 @@ let parse_ident_list : List Token → Pair (List Nat) (List Token)
       -- `cenv_bind_local 0 slot` adds a never-looked-up entry.  Use
       -- `Reaver.BPLAN.eq` to peek the token (TkUnderscore is a nullary
       -- constructor, i.e. a bare Nat) and recurse, otherwise fall through
-      -- to the original ident-only path.
+      -- to the ident-or-literal path.
       match (Reaver.BPLAN.eq (tok_peek toks) TkUnderscore) {
         | 0 →
-            match (tok_eat_ident toks) {
-              | MkPair n rest →
-                  match n {
-                    | 0 → MkPair Nil toks
-                    | _ →
-                        match (parse_ident_list rest) {
-                          | MkPair names rest2 → MkPair (Cons n names) rest2
+            -- Not underscore: check for TkNat (literal field pattern, e.g.
+            -- `| MkPair 0 _ → …`) before falling through to the ident path.
+            -- Sentinel encoding: wildcard=0, literal n → n+1 (safe because
+            -- real idents encode to ≥ 97 = 'a'; sentinels occupy 1..96).
+            match (tok_peek toks) {
+              | TkNat lit →
+                  match (parse_ident_list (tok_tail toks)) {
+                    | MkPair names rest → MkPair (Cons (Reaver.BPLAN.add lit 1) names) rest
+                  }
+              | _ →
+                  match (tok_eat_ident toks) {
+                    | MkPair n rest →
+                        match n {
+                          | 0 → MkPair Nil toks
+                          | _ →
+                              match (parse_ident_list rest) {
+                                | MkPair names rest2 → MkPair (Cons n names) rest2
+                              }
                         }
                   }
             }
@@ -5525,7 +5536,11 @@ let cg_build_z_body : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr) �
             ce z_expr env ctab body_hint
         | None →
             match wild {
-              | None → cg_quote_nat 0 (cenv_arity env)
+              | None →
+                  -- body_nat(0, arity) = A(N(0),N(0)) for all arity >= 0 since
+                  -- k=0 <= arity always.  Use the quote form unconditionally so
+                  -- top-level (arity=0) emission matches Python's (0 0) sentinel.
+                  PApp (PNat 0) (PNat 0)
               | Some p →
                   match p {
                     | MkPair _ wb →
@@ -5564,7 +5579,10 @@ let cg_build_m_body : List (Pair Nat Expr) → Option (Pair (Option Nat) Expr) �
               | None →
                   match (nat_eq (cenv_arity env) 0) {
                     | 0 → cg_bapp const2_pin (PApp (PNat 0) (PNat 0))
-                    | _ → PApp const2_pin (PNat 0)
+                    -- arity=0: top-level direct PApp; must use quote form
+                    -- A(N(0),N(0)) for the inner arg so emit_pval produces (0 0)
+                    -- — mirrors Python L2525: A(const2_pin, body_nat(0,0)).
+                    | _ → PApp const2_pin (PApp (PNat 0) (PNat 0))
                   }
               | Some p →
                   match p {
@@ -6170,12 +6188,182 @@ let cg_build_app_handler : List MatchArm → Option (Pair (Option Nat) Expr) →
                } in
       cg_apply_free_locals r1 free_locals env
 
+-- ===================================================================
+-- D9: Same-constructor literal-field collapse pass.
+-- Mirrors Python's _collapse_same_tag_arms / _try_collapse_tag_group.
+-- ===================================================================
+
+-- nn_dispatch_var: synthetic variable name used when the fallback arm
+-- has a wildcard at the distinguishing field position.
+-- Encodes "_disp" LE (0x707369645F); ≥ 97 so not a lit sentinel (1..96).
+let nn_dispatch_var : Nat = 0x707369645F
+
+-- cg_is_lit_sentinel: True if n is a literal-field sentinel (1..96).
+-- Sentinel encoding: wildcard=0, literal n → n+1; real idents ≥ 97 ('a').
+let cg_is_lit_sentinel : Nat → Bool
+  = λ n →
+      if nat_eq n 0 then False
+      else nat_lt n 97
+
+-- cg_has_lit_field: True if any field in the list is a literal sentinel.
+let cg_has_lit_field : List Nat → Bool
+  = λ fields → any cg_is_lit_sentinel fields
+
+-- cg_find_lit_field: return Some(MkPair pos decoded_val) for the first
+-- literal sentinel in fields, with position counter starting at pos_acc.
+-- decoded_val = sentinel - 1.  Returns None if no sentinel found.
+let cg_find_lit_field : List Nat → Nat → Option (Pair Nat Nat)
+  = fix λ self fields pos_acc →
+        match fields {
+          | Nil → None
+          | Cons f rest →
+              if cg_is_lit_sentinel f
+              then Some (MkPair pos_acc (Reaver.BPLAN.sub f 1))
+              else self rest (Reaver.BPLAN.add pos_acc 1)
+        }
+
+-- cg_nth_field: return field name at 0-indexed position, or 0 if OOB.
+let cg_nth_field : List Nat → Nat → Nat
+  = fix λ self fields pos →
+        match fields {
+          | Nil → 0
+          | Cons f rest →
+              match (nat_eq pos 0) {
+                | 0 → self rest (Reaver.BPLAN.sub pos 1)
+                | _ → f
+              }
+        }
+
+-- cg_replace_nth_field: return list with field at pos replaced by new_val.
+let cg_replace_nth_field : List Nat → Nat → Nat → List Nat
+  = fix λ self fields pos new_val →
+        match fields {
+          | Nil → Nil
+          | Cons f rest →
+              match (nat_eq pos 0) {
+                | 0 → Cons f (self rest (Reaver.BPLAN.sub pos 1) new_val)
+                | _ → Cons new_val rest
+              }
+        }
+
+-- cg_lit_pairs_for_pos: collect (nat_val, body) pairs from arms where
+-- the field at lit_pos is a literal sentinel.  nat_val = sentinel - 1.
+let cg_lit_pairs_for_pos : List MatchArm → Nat → List (Pair Nat Expr)
+  = λ arms lit_pos →
+      foldl (λ acc arm →
+               let f = cg_nth_field (arm_get_con_fields arm) lit_pos in
+               if cg_is_lit_sentinel f
+               then append acc (Cons (MkPair (Reaver.BPLAN.sub f 1) (arm_get_con_body arm)) Nil)
+               else acc) Nil arms
+
+-- cg_try_collapse_con_group: try to collapse a multi-arm same-constructor
+-- group where some arms carry literal field sentinels.  Supported shape:
+-- one or more literal arms + exactly one fallback arm (all vars/wildcards).
+-- Returns Some(collapsed_arm) on success; None to leave unchanged.
+let cg_try_collapse_con_group : Nat → List MatchArm → Option MatchArm
+  = λ con_name group →
+      match group {
+        | Nil → None
+        | Cons _ rest_check →
+            match rest_check {
+              | Nil → None
+              | _ →
+                  let fallback_arms = filter (λ arm →
+                                                if cg_has_lit_field (arm_get_con_fields arm)
+                                                then False
+                                                else True) group in
+                  let literal_arms  = filter (λ arm →
+                                                cg_has_lit_field (arm_get_con_fields arm)) group in
+                  match fallback_arms {
+                    | Nil → None
+                    | Cons fb_arm rest_fb →
+                        match rest_fb {
+                          | Nil →
+                              match literal_arms {
+                                | Nil → None
+                                | Cons first_lit _ →
+                                    match (cg_find_lit_field (arm_get_con_fields first_lit) 0) {
+                                      | None → None
+                                      | Some lit_pv →
+                                          match lit_pv {
+                                            | MkPair lit_pos _ →
+                                                let ok = all (λ arm →
+                                                                if cg_has_lit_field (arm_get_con_fields arm)
+                                                                then
+                                                                    match (cg_find_lit_field (arm_get_con_fields arm) 0) {
+                                                                      | None → False
+                                                                      | Some pv2 →
+                                                                          match pv2 {
+                                                                            | MkPair p _ → nat_eq p lit_pos
+                                                                          }
+                                                                    }
+                                                                else True) group in
+                                                if ok
+                                                then
+                                                    let fb_fields = arm_get_con_fields fb_arm in
+                                                    let fb_f      = cg_nth_field fb_fields lit_pos in
+                                                    let dispatch_var =
+                                                          if nat_eq fb_f 0
+                                                          then nn_dispatch_var
+                                                          else fb_f in
+                                                    let new_fields = cg_replace_nth_field fb_fields lit_pos dispatch_var in
+                                                    let lit_pairs  = cg_lit_pairs_for_pos group lit_pos in
+                                                    let inner_arms = append
+                                                                       (map (λ p →
+                                                                               match p {
+                                                                                 | MkPair v body → ArmNat v body
+                                                                               }) lit_pairs)
+                                                                       (Cons (ArmVar 0 (arm_get_con_body fb_arm)) Nil) in
+                                                    Some (ArmCon con_name
+                                                                 (MkPair new_fields
+                                                                         (EMatch (EVar dispatch_var) inner_arms)))
+                                                else None
+                                          }
+                                    }
+                              }
+                          | _ → None
+                        }
+                  }
+            }
+      }
+
+-- cg_collapse_same_tag_arms_go: worker with `seen` (processed constructor
+-- names) so each unique constructor is handled exactly once.
+-- Uses Reaver.BPLAN.eq (O(1)) instead of nat_eq (O(value)) for constructor
+-- name comparisons — constructor names are large identifier nats (≥ 97),
+-- and nat_eq on them would require billions of recursive PLAN steps.
+let cg_collapse_same_tag_arms_go : List Nat → List MatchArm → List MatchArm
+  = fix λ self seen remaining →
+        match remaining {
+          | Nil → Nil
+          | Cons arm rest →
+              let con_name = arm_get_con_name arm in
+              if any (Reaver.BPLAN.eq con_name) seen
+              then self (Cons con_name seen) rest
+              else
+                  let group = filter (λ a → Reaver.BPLAN.eq (arm_get_con_name a) con_name) remaining in
+                  let tail  = filter (λ a →
+                                        match (Reaver.BPLAN.eq (arm_get_con_name a) con_name) {
+                                          | 0 → True
+                                          | _ → False
+                                        }) rest in
+                  match (cg_try_collapse_con_group con_name group) {
+                    | None    → append group (self (Cons con_name seen) tail)
+                    | Some ca → Cons ca (self (Cons con_name seen) tail)
+                  }
+        }
+
+-- cg_collapse_same_tag_arms: collapse multi-arm same-constructor groups.
+let cg_collapse_same_tag_arms : List MatchArm → List MatchArm
+  = λ arms → cg_collapse_same_tag_arms_go Nil arms
+
 -- cg_compile_con_match: compile a constructor match expression
 let cg_compile_con_match : PlanVal → List MatchArm → CEnv
                           → (Expr → CEnv → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal)
                           → List (Pair Nat (Pair Nat (Pair Nat Nat))) → Nat → PlanVal
   = λ scr arms env ce ctab hint →
       let con_arms = filter arm_is_con arms in
+      let con_arms = cg_collapse_same_tag_arms con_arms in
       let field_arms = cg_filter_field_arms con_arms in
       let nullary_arms = cg_filter_nullary_arms con_arms in
       let wild = cg_extract_wild_arm arms in
