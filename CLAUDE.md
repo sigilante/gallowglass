@@ -152,6 +152,10 @@ See `bootstrap/BOOTSTRAP.md` for what the restricted dialect permits.
 # without it pin.py warns and falls back to SHA-256 — see A3 in AUDIT.md).
 pip install -r requirements.txt
 
+# If you modify compiler/src/Compiler.gls, install the pre-commit hook once
+# to guard compiler/dist/MANIFEST.json drift at commit time:
+# tools/install-hooks.sh
+
 # Compile a Gallowglass source file to legacy seed bytes (test-only path).
 # The source file should contain bare top-level declarations (let, type, ...)
 # — no enclosing `mod ModName { ... }` header. The module name 'Module' is

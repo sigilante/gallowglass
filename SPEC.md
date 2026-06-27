@@ -21,7 +21,7 @@ The implementation comprises:
 - A **core prelude** (`prelude/src/Core/`) of 112 definitions across 8 modules, with pin-based module loading (BLAKE3-256), round-trip-verified Glass IR emission, and type-annotated Glass IR.
 - A **self-hosting compiler** (`compiler/src/Compiler.gls`) written in restricted Gallowglass, emitting Plan Assembler. Validated end-to-end via the BPLAN harness: GLS `emit_program` processes the full `Compiler.gls` module and produces correct Plan Assembler output.
 
-Forward work (Rust VM, debugger, hardening, RPLAN self-host validation on Reaver) is tracked in `ROADMAP.md`.
+Forward work (Rust VM, debugger, hardening) is tracked in `ROADMAP.md`. RPLAN self-host validation on Reaver (Phase G) and the compile-self fixed point (Phase H) are both complete.
 
 **Bootstrap language:** Python (not Sire). The bootstrap compiler lives in `bootstrap/*.py`.
 Sire stubs were sketched but never executed; they were removed from the tree
@@ -853,6 +853,8 @@ Combinators: id, const, flip, fix, ·, |>, fst, snd, absurd
 | Python bootstrap compiler | ✅ Complete | `bootstrap/` |
 | Core prelude (112 definitions across 8 modules) | ✅ Complete | `prelude/src/Core/` |
 | Self-hosting compiler | ✅ Validated via BPLAN harness | `compiler/src/` |
+| RPLAN self-host on Reaver (Phase G) | ✅ Complete — byte-identical to Python bootstrap | `tests/reaver/test_selfhost.py` |
+| Compile-self fixed point (Phase H) | ✅ Complete — `test_compile_self` passes | `tests/reaver/test_selfhost.py` |
 | Rust VM | 🔲 Forward work | `vm/src/` |
 | Debugger | 🔲 Forward work | — |
 
@@ -865,11 +867,10 @@ Combinators: id, const, flip, fix, ·, |>, fst, snd, absurd
 | Reaver differential | Bytewise comparison vs Reaver reference | `tests/reaver/test_differential.py` |
 | ~~planvm seed loading~~ | Archived — xocore is no longer a deployment target (DECISIONS.md) | — |
 
-The BPLAN harness partially closes this gap: GLS `emit_program` is verified
-against the full `Compiler.gls` module. RPLAN self-host validation on Reaver
-(running the compiler under Reaver on its own source and comparing output) is
-forward work; see `ROADMAP.md`. Reaver (`sol-plunder/reaver`) is the CLI eval
-solution for full evaluation-based CI.
+The BPLAN harness validates GLS `emit_program` against the full `Compiler.gls`
+module. Phase G (RPLAN self-host on Reaver) and Phase H (compile-self fixed
+point) are both complete; see `ROADMAP.md` for details. Reaver
+(`sol-plunder/reaver`) is the CLI eval solution for full evaluation-based CI.
 15. Key References
 DECISIONS.md — design rationale for all non-obvious choices
 spec/00-primitives.md — Core.Primitives complete declarations

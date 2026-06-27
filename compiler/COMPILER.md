@@ -139,8 +139,8 @@ type Env = { globals : List (Text, PlanVal), locals : List (Text, Nat), arity : 
 ## 4. External Mods Required
 
 The self-hosting compiler needs BPLAN jets for I/O and byte operations. These
-are declared with `external mod` and compile to real planvm opcode pins (for
-`Core.PLAN`) or opaque sentinels resolved by planvm's jet registry.
+are declared with `external mod` and compile to PLAN opcode pins (for
+`Core.PLAN`) or BPLAN named primitives resolved by Reaver's op dispatcher.
 
 ```gallowglass
 external mod Core.PLAN {
@@ -180,16 +180,16 @@ external mod Core.IO {
 }
 ```
 
-**Opcode mapping for Core.Nat, Core.Bytes, Core.Text, Core.IO:** These map to
-planvm opcodes 5–30+ (see `vendor/PLAN/planvm-amd64/plan.s prim.tab`). The
-Python bootstrap currently emits opaque sentinels for these; CI validates seed
-loading only. The self-hosting compiler will actually invoke them at runtime on
-`x/plan`.
+**Op mapping for Core.Nat, Core.Bytes, Core.Text, Core.IO:** These map to
+BPLAN named primitives dispatched by name+arity in Reaver's op table (see
+`vendor/reaver/src/hs/Plan.hs op 66` and `bootstrap/bplan_deps.py`). The
+Python bootstrap emits the canonical named-op form; `tests/sanity/test_bplan_deps.py`
+canaries every op against `Plan.hs` so vendor.lock bumps that rename or
+re-arity an op are caught immediately.
 
-When extending the runtime surface, map FQ names to opcode numbers in
-`Compiler._CORE_PLAN_OPCODES` (or an analogous table). Verify each mapping
-against the runtime's primitive table before coding compiler logic that
-depends on it.
+When extending the runtime surface, add the FQ name → arity mapping to
+`bootstrap/bplan_deps.py` and verify the name exists in `Plan.hs` before
+coding compiler logic that depends on it.
 
 ---
 

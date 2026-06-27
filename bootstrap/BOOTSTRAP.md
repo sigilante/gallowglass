@@ -21,14 +21,16 @@ those values to the PLAN seed format understood by `x/plan` (xocore-tech/PLAN).
 
 ```
 bootstrap/
-  lexer.py       ← Bytes → token list
-  parser.py      ← Token list → AST
-  scope.py       ← Scope resolution: qualified names, module namespacing
-  typecheck.py   ← Restricted HM unification
-  codegen.py     ← AST → PLAN values (de Bruijn, constructors, pattern match)
-  emit.py        ← PLAN value → seed bytes (spec/07-seed-format.md)
-  glass_ir.py    ← Debug renderer: PLAN values → Glass IR text
-  ast.py         ← AST node definitions
+  lexer.py          ← Bytes → token list
+  parser.py         ← Token list → AST
+  scope.py          ← Scope resolution: qualified names, module namespacing
+  typecheck.py      ← Restricted HM unification
+  codegen.py        ← AST → PLAN values (de Bruijn, constructors, pattern match)
+  emit_seed.py      ← PLAN value → seed bytes (legacy binary path; spec/07-seed-format.md)
+  emit_pla.py       ← PLAN value → Plan Assembler text (production Reaver path)
+  glass_ir.py       ← Spec-conforming AST renderer: type-annotated Glass IR with FQ names, pin hashes, SCC groups
+  glass_ir_debug.py ← Debug renderer: PLAN values → Glass IR text (for developer inspection)
+  ast.py            ← AST node definitions
 ```
 
 ### 1.1 Why Python
@@ -91,15 +93,18 @@ syntax (spec/06-surface-syntax.md).
 | do-notation (`x ← rhs in body`) | CPS bind: lambda-lifts continuation over captured locals |
 | `pure v` | No-op CPS computation: `λ dispatch k → k v`; terminates do chains |
 
-### 2.2 Excluded (deferred to self-hosting compiler)
+### 2.2 Excluded
 
 | Feature | Reason |
 |---|---|
 | Effect rows in types | Parsed, never unified |
 | Contracts (`\| pre`, `\| post`) | No solver in bootstrap |
-| `module` / `import` | Multi-file compilation deferred |
-| Typeclasses | Deferred |
-| Row-polymorphic records | Deferred |
+| Row-polymorphic records | Deferred post-1.0 |
+
+> **Note:** Multi-file compilation (`use` imports) was completed in M12 and
+> typeclasses (including constrained-let codegen and call-site dict insertion)
+> were completed in M11/M12.1. Both are fully implemented in the bootstrap.
+> The table above reflects what remains genuinely excluded.
 
 ### 2.3 Effect Handling
 

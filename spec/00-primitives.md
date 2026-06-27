@@ -18,31 +18,38 @@ There are 101 operations across 11 modules. Each operation is declared using the
 
 ## 1. Core.PLAN
 
-Direct access to the five PLAN opcodes. These are the lowest-level operations in the system. Every other primitive is ultimately built from these.
+> **Warning: historical opcode numbering.** The opcode assignments below
+> (`0=mk_law`, `1=reflect`, `2=nat_case`, `3=inc`, `4=pin`) use the deprecated
+> xocore-tech/PLAN five-opcode ABI. The canonical Reaver ABI has **three
+> opcodes**: `0=Pin`, `1=Law`, `2=Elim`. `inc` and `force` are BPLAN named
+> primitives, not PLAN opcodes. See `SPEC.md §2.1` for the authoritative
+> opcode table. This section is retained for historical context.
+
+Direct access to PLAN's foundational operations. These are the lowest-level operations in the system. Every other primitive is ultimately built from these.
 
 ```gallowglass
 external mod Core.PLAN {
-  -- Opcode 0: construct a law from name, arity, and body
+  -- Opcode 0 (xocore ABI): construct a law from name, arity, and body
   mk_law    : Nat → Nat → a → {External} Law
 
-  -- Opcode 1: dispatch on PLAN constructor (pin/law/app/nat)
+  -- Opcode 1 (xocore ABI): dispatch on PLAN constructor (pin/law/app/nat)
   reflect   : a → (Pin → b) → (Law → b) → (a → a → b) → (Nat → b) → {External} b
 
-  -- Opcode 2: structural recursion on naturals
+  -- Opcode 2 (xocore ABI): structural recursion on naturals
   --   nat_case zero_val succ_fn n
   --   if n = 0: zero_val
   --   if n > 0: succ_fn (n - 1)
   nat_case  : b → (Nat → b) → Nat → {External} b
 
-  -- Opcode 3: increment a natural number
+  -- Opcode 3 (xocore ABI) / BPLAN named primitive: increment a natural number
   inc       : Nat → {External} Nat
 
-  -- Opcode 4: pin a value (normalize and content-address)
+  -- Opcode 4 (xocore ABI): pin a value (normalize and content-address)
   pin       : a → {External} Pin
 }
 ```
 
-**PLAN encoding:** Each operation compiles to a direct invocation of the corresponding opcode (0--4). These are the only operations that map one-to-one to PLAN opcodes. The `Law` and `Pin` types referenced here are abstract PLAN-level entities; they are opaque at the Gallowglass level and are only manipulated through `Core.Inspect`.
+**PLAN encoding:** In the canonical Reaver ABI, `mk_law` → Law opcode (1), `reflect` → Elim opcode (2), `nat_case` → Elim opcode (2) specialised to Nat, `inc` → BPLAN named primitive, `pin` → Pin opcode (0). See `spec/04-plan-encoding.md` and `vendor/reaver/src/hs/Plan.hs` for authoritative mappings.
 
 **Count: 5 operations**
 

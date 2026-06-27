@@ -208,6 +208,10 @@ def emit_program(compiled: dict[str, Any], *,
 
     `trailer` is appended verbatim after the last `(#bind ...)` line. Tests
     use it to inject `(Trace Module_main 0)` for end-to-end runs.
+
+    Not thread-safe: uses module-level globals (_bind_symbols, _bind_skip_id)
+    to thread the binding table through recursive emit calls. Concurrent
+    invocations will corrupt each other's state.
     """
     # Build an identity → symbol table so cross-binding references in each
     # body emit as the bare symbol of the referenced binding instead of

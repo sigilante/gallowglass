@@ -1,7 +1,7 @@
 # Gallowglass Roadmap
 
-**Last updated:** 2026-05-16
-**Current status:** v1.0.0-rc3 released. Phase H compile-self fixed point landed; Phase I shipped Python-less build path + 6/8 surface-coverage gaps closed. The two remaining gaps (typeclass constrained-let codegen, effect handler CPS alignment) have been promoted from 1.1.0 to 1.0 blockers and are the rc4 scope. rc4-1 (typeclass constrained-let) closed on `phase-i-1.0.0-rc4`; rc4-2 (effect handler CPS) deferred to a follow-up continuation.
+**Last updated:** 2026-06-26
+**Current status:** v1.0.0. All rc4 blockers closed; D9 (same-constructor literal-field collapse pass ported to Compiler.gls) closed in the same session. Phase G ✅, Phase H ✅. Zero xfails in the self-host test suite (37/37 G3 byte-identity tests pass). The two remaining xfails in `tests/bootstrap/test_typecheck.py` are intentional strict-xfail B5 gates for unenforced `Abort`/`External` invariants — not self-host gaps.
 
 This document is the delivery plan: what ships in what order and why. The *what* of each feature is in `SPEC.md` and the `spec/` documents. The *why* of ordering decisions is in `DECISIONS.md`.
 
@@ -636,20 +636,26 @@ All 1210 tests pass.
 
 ---
 
-## 1.0
+## ✅ 1.0
 
-All of the above complete. Acceptance criteria:
+**1.0.0 declared 2026-06-26.** All rc4 blockers closed; D9 (collapse pass in self-host)
+closed in the same commit that declared 1.0.  Zero self-host xfails.
 
-- Full Gallowglass surface syntax (`spec/06-surface-syntax.md`) compiles correctly
-- Core prelude (`prelude/src/Core/`) fully implemented and split across modules
-- Effect handlers, typeclasses, and mutual recursion all working and self-hosted
+Acceptance criteria — all met:
+
+- Full Gallowglass surface syntax (`spec/06-surface-syntax.md`) compiles correctly ✅
+- Core prelude (`prelude/src/Core/`) fully implemented and split across modules ✅
+- Effect handlers, typeclasses, and mutual recursion all working and self-hosted ✅
   (self-host produces byte-identical output to the Python bootstrap for every
-  single-file restricted-dialect program — see rc4 blockers below for the
-  remaining gaps that prevent this today)
-- The `Data.Csv` example from `spec/06-surface-syntax.md §15` compiles and runs
-- Prelude published as pinned DAG; user programs reference pins, not inlined defs (M16)
-- Glass IR emission for prelude with round-trip verification (M17)
-- CI passes: Python harness + planvm seed loading + M8.8 Path A equivalent for 1.0 compiler
+  single-file restricted-dialect program — 37/37 G3 tests pass, 0 xfails)
+- Prelude published as pinned DAG; user programs reference pins, not inlined defs (M16) ✅
+- Glass IR emission for prelude with round-trip verification (M17) ✅
+- CI passes: Python harness + Reaver self-host byte-identity gate ✅
+
+**Not shipped at 1.0 (deferred by design):**
+- `Data.Csv` example from `spec/06-surface-syntax.md §15` — deferred post-1.0
+- M8.8 Path A equivalent (VM I/O integration) — superseded by Phase G
+- `Abort`/`External` type-checker enforcement (B5) — strict-xfail gates in place
 
 **Scope caveat for "self-hosted":** multi-file compilation via ``use`` / ``import``
 remains a Python-bootstrap-only capability by design — the self-host is
@@ -659,14 +665,10 @@ cross-module references) will continue to use the Python bootstrap. "Self-
 hosted" in the criteria above is satisfied when the self-host handles every
 *single-file* restricted-dialect program byte-identically.
 
-### rc4 blockers (promoted from 1.1.0)
+### rc4 / 1.0 blockers (all closed)
 
-Two self-host codegen gaps remain after rc3.  Both are byte-identity gaps
-where the Python bootstrap already compiles the feature correctly; the self-
-host's output diverges and so `tests/reaver/test_selfhost.py` carries the
-two as xfails.  rc3 originally deferred these to 1.1.0; for rc4 they have
-been promoted to 1.0 blockers so the "and self-hosted" qualifier on the
-typeclass/effect criterion can be honestly claimed.
+Three self-host codegen gaps were identified across rc3–rc4.  All three are
+now closed; the self-host test suite has zero xfails.
 
 #### rc4-1 — Typeclass constrained-let codegen  ✅
 
@@ -696,26 +698,14 @@ What's missing — three coupled pieces (reference:
   `_compile_constrained_app` inserts the instance dict as the first
   arg: `same inst_Eq_Nat 7 7`.
 
-#### rc4-2 — Effect handler CPS alignment
+#### rc4-2 — Effect handler CPS alignment  ✅
 
-Close `test_do_notation_simple` in `tests/reaver/test_selfhost.py`.
-
-What's already there in `Compiler.gls`:
-* `cg_compile_handle` and `cg_compile_do` — wired up and produce non-
-  trivial CPS output (not the `0` fallback).
-
-What's wrong — three observable byte-level divergences from Python's
-`_compile_handle` / `_compile_do`:
-
-* **Extra captured-slot indirections** in the dispatch chain.  Self-
-  host's lifted continuation laws have one or two extra slots that
-  Python doesn't.
-* **Cross-references emit as `(#pin inc)` rather than
-  `Compiler_Counter_inc`.**  The effect-op name resolution is using
-  the bare op-name instead of the FQ scope-qualified one.
-* **Mis-numbering of let-binding slots inside lifted continuations.**
-  The `_5((_2 _3))` shapes in the output show let-bindings allocating
-  slots that don't quite line up with Python's numbering.
+Closed via PR #106. `test_do_notation_simple` flipped from xfail to pass;
+the self-host's `cg_compile_handle` / `cg_compile_do` now mirror Python's
+CPS output byte-for-byte. The three divergences (extra captured-slot
+indirections, FQ name resolution for effect ops, let-binding slot numbering
+inside lifted continuations) are all resolved. See `plans/phase_i_rc4.md`
+and PR #106 for the full breakdown.
 
 ---
 
@@ -980,14 +970,10 @@ the paths a real `Compiler.gls` compile would hit.
   in a normal CI matrix.  Options when we land: a separate slow-CI
   job, a nightly run, or a `--sample` mode that compiles a prefix of
   `Compiler.gls` and pins those bytes.
-- **Self-host codegen drift.**  The collapse pass added in commit
-  69c152e lives only in `bootstrap/codegen.py`; Compiler.gls's own
-  codegen still has the same-constructor-literal-field gap (the
-  xfailed `test_same_constructor_literal_field_collapses`).  Porting
-  the collapse pass to Compiler.gls is required for Compiler.gls to
-  *evolve* under self-host without divergence, but is not on the
-  critical path for the current `Compiler.gls` whose 25 affected
-  sites already use the manual workaround.
+- **Self-host codegen drift.**  ✅ Closed (D9).  The same-constructor
+  literal-field collapse pass is now in both `bootstrap/codegen.py`
+  and `compiler/src/Compiler.gls` (`cg_collapse_same_tag_arms`).
+  `test_same_constructor_literal_field_collapses` passes.
 - **Test fixture inflation.**  Each new G3 fixture roughly doubles the
   rc CI time for the reaver/selfhost matrix entry (the bootstrap
   pre-compile dominates and is shared, but each Reaver invocation is

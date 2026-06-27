@@ -4,16 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gallowglass-kernel"
-version = "0.999999"
+version = "1.0.0"
 description = "Jupyter kernel for the Gallowglass programming language (PLAN target)."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    { name = "Neal Davis", email = "davisneale@gmail.com" },
+    { name = "Sigilante", email = "davisneale@gmail.com" },
 ]
 keywords = ["gallowglass", "plan", "jupyter", "kernel", "language"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "License :: OSI Approved :: MIT License",
     "Framework :: Jupyter",
     "Intended Audience :: Developers",
